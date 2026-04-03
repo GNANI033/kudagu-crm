@@ -1303,7 +1303,12 @@ async function doDeleteOrder(oid){
 let stockAlerts = [];   // populated by pollStockAlerts()
 let inventorySnapshot = [];
 let inventorySnapshotAt = null;
-const INVENTORY_URL = 'http://localhost:8001';  // adjust if inventory runs elsewhere
+const INVENTORY_URL = (() => {
+  // Browser-side calls must target the same server host, not the viewer's localhost.
+  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
+  const host = window.location.hostname || 'localhost';
+  return `${protocol}//${host}:8001`;
+})();
 
 async function pollStockAlerts(){
   try{
