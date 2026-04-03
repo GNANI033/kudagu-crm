@@ -564,6 +564,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   }
   .ph-title { font-size: 18px; }
   .ph-sub { font-size: 11.5px; }
+  .dash-sale-btn { display: none; }
 
   /* ── BOTTOM TAB BAR ── */
   .bottom-nav {
@@ -699,6 +700,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <button class="nb" onclick="nav('orders')"><span class="nb-ic">≡</span><span>Orders</span></button>
     <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
     <button class="nb" onclick="nav('inventory')"><span class="nb-ic">▦</span><span>Inventory</span></button>
+    <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
     <div class="sb-sect">People</div>
     <button class="nb" onclick="nav('customers')"><span class="nb-ic">◉</span><span>Customers</span></button>
     <div class="sb-sect">Config</div>
@@ -719,7 +721,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   <div class="view active" id="view-dashboard">
     <div class="ph">
       <div><div class="ph-title">Overview</div><div class="ph-sub" id="dd"></div></div>
-      <button class="btn btn-p btn-sm" onclick="nav('sales')">＋ Record Sale</button>
+      <button class="btn btn-p btn-sm dash-sale-btn" onclick="nav('sales')">＋ Record Sale</button>
     </div>
     <div class="stats-merged" id="sg"></div>
     <div class="stats-merged" id="sg2"></div>
@@ -842,6 +844,61 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <div class="card">
       <div class="ch"><div class="ct">Stock Levels</div></div>
       <div class="cb" id="inv-body"></div>
+    </div>
+  </div>
+
+  <!-- DISTRIBUTION -->
+  <div class="view" id="view-distribution">
+    <div class="ph">
+      <div>
+        <div class="ph-title">Distribution</div>
+        <div class="ph-sub" id="dist-sub">Distributor batches</div>
+      </div>
+    </div>
+    <div class="stats-merged" style="margin-bottom:14px">
+      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Active Batches</div><div class="sv" id="dist-total-active">0</div></div><div class="sbox-half"><div class="sl">Completed</div><div class="sv green" id="dist-total-completed">0</div></div></div></div>
+      <div class="sbox"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Total Qty</div><div class="sv" id="dist-total-qty">0</div><div class="sn">Across all distributor batches</div></div></div></div>
+    </div>
+    <div class="card">
+      <div class="ch"><div class="ct">Create Distributor Batch</div></div>
+      <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+        <div class="fr">
+          <div class="fg"><label>Distributor Name <span class="req">*</span></label><input type="text" id="dist-name" placeholder="e.g. Kumar Agencies"></div>
+          <div class="fg"><label>Quantity (pcs) <span class="req">*</span></label><input type="number" id="dist-qty" min="1" value="1"></div>
+        </div>
+        <div class="fr">
+          <div class="fg"><label>Product <span class="req">*</span></label><select id="dist-prod" onchange="onDistProductChange()"><option value="">Select product…</option></select></div>
+          <div class="fg"><label>Size <span class="req">*</span></label><select id="dist-variant"><option value="">Select size…</option></select></div>
+        </div>
+        <div class="fr">
+          <div class="fg">
+            <label>Commission (₹)</label>
+            <div class="input-prefix"><span>₹</span><input type="number" id="dist-commission" min="0" step="0.01" value="0"></div>
+            <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Can be 0.</div>
+          </div>
+          <div class="fg">
+            <label>Commission Scope</label>
+            <div class="toggle-row">
+              <div>
+                <div class="toggle-lbl">Whole Batch Commission</div>
+                <div class="toggle-sub">OFF = per pcs (default)</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="dist-comm-batch">
+                <span class="toggle-track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="fg"><label>Notes</label><textarea id="dist-notes" rows="2" placeholder="Optional notes"></textarea></div>
+        <div class="sar">
+          <button class="btn btn-p" onclick="createDistributorBatch()">Create Batch</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch"><div class="ct">Batches</div></div>
+      <div class="cb" id="dist-body"></div>
     </div>
   </div>
 
@@ -970,6 +1027,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <span class="bnav-icon">▦</span>
     <span>Stock</span>
   </button>
+  <button class="bnav-item" id="bnav-distribution" onclick="nav('distribution')">
+    <span class="bnav-icon">◫</span>
+    <span>Dist</span>
+  </button>
   <button class="bnav-item" id="bnav-customers" onclick="nav('customers')">
     <span class="bnav-icon">◉</span>
     <span>People</span>
@@ -986,6 +1047,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260403-14"></script>
+<script src="/static/app.js?v=20260403-15"></script>
 </body>
 </html>

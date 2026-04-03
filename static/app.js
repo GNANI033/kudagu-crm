@@ -160,7 +160,11 @@ async function postJSONWithTimeout(path, body, timeoutMs=45000){
 function getPricing(pid,sz){ const p=S.products.find(x=>x.id===pid); if(!p||!p.pricing||!p.pricing[sz]) return null; return p.pricing[sz]; }
 function getSalePrice(pid,sz,ch){ const pr=getPricing(pid,sz); if(!pr||!pr.salePrices) return 0; return parseFloat(pr.salePrices[ch]||pr.salePrices.retail||0); }
 function getTotalCost(pid,sz){ const pr=getPricing(pid,sz); if(!pr) return 0; return (pr.expenses||[]).reduce((s,e)=>s+(parseFloat(e.cost)||0),0); }
-function orderRevenue(o){ return getSalePrice(o.prodId,o.variant,o.channel||'retail')*(o.qty||1); }
+function orderRevenue(o){
+  const rr=parseFloat(o.realizedRevenue);
+  if(Number.isFinite(rr)&&rr>=0) return rr;
+  return getSalePrice(o.prodId,o.variant,o.channel||'retail')*(o.qty||1);
+}
 function paymentGatewayCommissionPct(){
   const raw=parseFloat(S?.shippingProfile?.paymentGatewayCommissionPct);
   return Number.isFinite(raw)&&raw>=0 ? raw : 3;
@@ -222,6 +226,21 @@ function variantToGrams(v){
   if(s.endsWith('kg')){ const n=parseFloat(s.replace('kg','').trim()); return isNaN(n)?0:n*1000; }
   if(s.endsWith('g')){ const n=parseFloat(s.replace('g','').trim()); return isNaN(n)?0:n; }
   return 0;
+}
+function isDistributorOrder(o){
+  return !!(o&&o.distribution&&typeof o.distribution==='object'&&String(o.distribution.distributorName||'').trim());
+}
+function distributorLabel(o){
+  if(!isDistributorOrder(o)) return '';
+  return `Batch sold via ${o.distribution.distributorName}`;
+}
+function batchCommissionTotal(b){
+  const qty=parseInt(b?.qty||0)||0;
+  const rate=parseFloat(b?.commission||0)||0;
+  return (b?.commissionMode==='batch') ? rate : (rate*qty);
+}
+function commissionModeLabel(mode){
+  return mode==='batch'?'Whole batch':'Per pcs';
 }
 
 // ─── TOAST ───────────────────────────────────────────────────────────────────
@@ -638,17 +657,17 @@ function shippingLabel(oid,action){
 function isMobile(){ return window.innerWidth < 600; }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
-// Sidebar nav: dashboard=0, orders=1, alerts=2, inventory=3, customers=4, settings=5
+// Sidebar nav: dashboard=0, orders=1, alerts=2, inventory=3, distribution=4, customers=5, settings=6
 function nav(p){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   // Desktop sidebar
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,orders:1,alerts:2,inventory:3,customers:4,settings:5};
+  const IDX={dashboard:0,orders:1,alerts:2,inventory:3,distribution:4,customers:5,settings:6};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',inventory:'bnav-inventory',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',inventory:'bnav-inventory',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
@@ -656,6 +675,7 @@ function nav(p){
   if(p==='orders')    rOrders();
   if(p==='alerts')    rAlerts();
   if(p==='inventory') rInventory();
+  if(p==='distribution') rDistribution();
   if(p==='customers') rCustomers();
   if(p==='sales')     { populateProdSelect(); setDefaultDate(); }
   if(p==='settings')  { sPanel('products'); rSettings(); }
@@ -777,7 +797,7 @@ async function submitEditCustomer(cid){
   try{
     const updated=await api.put(`/api/customers/${cid}`,{name,phone,area,email:g('ec-email').value.trim(),address:g('ec-address').value.trim()});
     const idx=S.customers.findIndex(c=>c.id===cid); if(idx>=0) S.customers[idx]=updated;
-    S.orders.forEach(o=>{if(o.cid===cid){o.cname=name;o.cphone=phone;}});
+    S.orders.forEach(o=>{if(o.cid===cid){o.cname=name;o.cphone=phone;o.carea=area;}});
     closeModal(); toast(name+' updated','ok'); rCustomers();
   }catch(e){toast('Error: '+e.message,'err');}
 }
@@ -951,6 +971,10 @@ function orderRow(o){
   const disc=parseFloat(o.discount||0);
   const comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
+  const isDist=isDistributorOrder(o);
+  const distName=isDist?String(o.distribution.distributorName||'').trim():'';
+  const customerTitle=isDist?'Distributor Channel':o.cname;
+  const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):o.carea;
   const statusBtn=`<div class="status-dropdown-wrap">
     <button class="status-badge ${STATUS_CLS[o.status||'pending']} status-clickable" onclick="toggleStatusDropdown(${o.id},this)">${STATUS_LABEL[o.status]||o.status} ▾</button>
     <div class="status-dropdown" id="sdrop-${o.id}">
@@ -959,7 +983,10 @@ function orderRow(o){
   </div>`;
   return`<tr>
     <td><span class="pill pn" style="font-size:10.5px;font-family:monospace">#${o.id}</span></td>
-    <td><div style="font-weight:600">${o.cname}</div><div style="font-size:11.5px;color:var(--text-3)">${o.carea}</div></td>
+    <td>
+      <div style="font-weight:600">${esc(customerTitle)}</div>
+      <div style="font-size:11.5px;color:var(--text-3)">${esc(customerSub)}</div>
+    </td>
     <td style="color:var(--text-2);max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${o.prod}</td>
     <td><span class="pill pn">${VL[o.variant]||o.variant}</span></td>
     <td style="font-weight:600">${o.qty}</td>
@@ -988,13 +1015,18 @@ function orderMobileCard(o){
   const rev=orderRevenue(o),prof=orderProfit(o);
   const disc=parseFloat(o.discount||0),comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
+  const isDist=isDistributorOrder(o);
+  const distName=isDist?String(o.distribution.distributorName||'').trim():'';
+  const customerTitle=isDist?'Distributor Channel':o.cname;
+  const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
   const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
   return`<div class="order-card">
     <div class="order-card-top">
       <div>
-        <div class="order-card-name">${esc(o.cname)}</div>
-        <div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>
+        <div class="order-card-name">${esc(customerTitle)}</div>
+        <div class="order-card-prod">${customerSub}</div>
+        ${isDist?`<div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>`:''}
       </div>
       <div class="order-card-right">
         <div class="order-card-right-top">
@@ -1298,6 +1330,194 @@ async function doDeleteOrder(oid){
   }catch(e){toast('Error: '+e.message,'err');}
 }
 
+// ─── DISTRIBUTION ─────────────────────────────────────────────────────────────
+function distProductOptions(selected=''){
+  return `<option value="">Select product…</option>` + (S.products||[]).map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join('');
+}
+function distVariantOptions(pid, selected=''){
+  const prod=(S.products||[]).find(p=>p.id===pid);
+  const sizes=(prod?.sizes&&prod.sizes.length)?prod.sizes:DEFAULT_SIZES;
+  return sizes.map(sz=>`<option value="${sz}" ${sz===selected?'selected':''}>${VL[sz]||sz}</option>`).join('');
+}
+function onDistProductChange(){
+  const pid=g('dist-prod')?.value||'';
+  const sel=g('dist-variant');
+  if(!sel) return;
+  sel.innerHTML=pid?distVariantOptions(pid):'<option value="">Select size…</option>';
+}
+async function createDistributorBatch(){
+  const distributorName=(g('dist-name')?.value||'').trim();
+  const prodId=(g('dist-prod')?.value||'').trim();
+  const variant=(g('dist-variant')?.value||'').trim();
+  const qty=parseInt(g('dist-qty')?.value||0)||0;
+  const commission=Math.max(0,parseFloat(g('dist-commission')?.value||0)||0);
+  const commissionMode=(g('dist-comm-batch')?.checked)?'batch':'per_pcs';
+  const notes=(g('dist-notes')?.value||'').trim();
+  if(!distributorName){ toast('Distributor name is required','err'); return; }
+  if(!prodId||!variant){ toast('Select product and size','err'); return; }
+  if(qty<=0){ toast('Quantity must be greater than 0','err'); return; }
+  try{
+    const batch=await api.post('/api/distribution/batches',{distributorName,prodId,variant,qty,commission,commissionMode,notes,at:Date.now()});
+    S.distributorBatches=S.distributorBatches||[];
+    S.distributorBatches.unshift(batch);
+    g('dist-name').value='';
+    g('dist-prod').value='';
+    g('dist-variant').innerHTML='<option value="">Select size…</option>';
+    g('dist-qty').value='1';
+    g('dist-commission').value='0';
+    g('dist-comm-batch').checked=false;
+    g('dist-notes').value='';
+    rDistribution();
+    toast('Distributor batch added','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function openCompleteDistributorBatch(batchId){
+  const b=(S.distributorBatches||[]).find(x=>x.id===batchId);
+  if(!b) return;
+  const suggested=(getSalePrice(b.prodId,b.variant,'retail')*(parseInt(b.qty||0)||0))||0;
+  openModal(`
+    <div class="modal-title">Complete Distributor Batch</div>
+    <div style="font-size:12px;color:var(--text-3);margin-top:6px">
+      ${esc(b.distributorName)} · ${esc(b.prod)} · ${VL[b.variant]||b.variant} × ${b.qty}
+    </div>
+    <div class="sumbox" style="margin-top:14px">
+      <div class="sr"><span class="sk">Commission mode</span><span class="sval">${commissionModeLabel(b.commissionMode)}</span></div>
+      <div class="sr"><span class="sk">Commission value</span><span class="sval">₹${(parseFloat(b.commission||0)||0).toFixed(2)}</span></div>
+      <div class="sr"><span class="sk">Total commission</span><span class="sval">₹${batchCommissionTotal(b).toFixed(2)}</span></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
+      <div class="fg">
+        <label>Amount Collected (₹) <span class="req">*</span></label>
+        <div class="input-prefix"><span>₹</span><input type="number" id="dist-amount-collected" min="0" step="0.01" value="${Number(suggested||0).toFixed(0)}"></div>
+      </div>
+      <div class="fg">
+        <label>Payment Method</label>
+        <select id="dist-pm">
+          <option value="">— Select —</option>
+          ${PAYMENT_METHODS.map(m=>`<option value="${m}">${m}</option>`).join('')}
+        </select>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="submitCompleteDistributorBatch(${batchId})">Mark Completed</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+}
+async function submitCompleteDistributorBatch(batchId){
+  const amountCollected=parseFloat(g('dist-amount-collected')?.value||0);
+  const paymentMethod=(g('dist-pm')?.value||'').trim();
+  if(!Number.isFinite(amountCollected)||amountCollected<0){
+    toast('Enter a valid collected amount','err');
+    return;
+  }
+  try{
+    const res=await api.post(`/api/distribution/batches/${batchId}/complete`,{amountCollected,paymentMethod,at:Date.now()});
+    S.distributorBatches=(S.distributorBatches||[]).map(b=>b.id===batchId?res.batch:b);
+    S.orders=S.orders||[];
+    S.orders.unshift(res.order);
+    closeModal();
+    rDistribution();
+    rOrders();
+    rDash();
+    updBadge();
+    toast(`Batch completed via ${res.batch.distributorName}`,'ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+function distributionRow(b){
+  const qty=parseInt(b.qty||0)||0;
+  const tot=batchCommissionTotal(b);
+  const created=fd(b.at||Date.now());
+  const completed=b.completedAt?fd(b.completedAt):'—';
+  const st=b.status==='completed'
+    ? `<span class="status-badge st-completed">Completed</span>`
+    : `<span class="status-badge st-confirmed">Active</span>`;
+  const action=b.status==='active'
+    ? `<button class="btn btn-p btn-xs" onclick="openCompleteDistributorBatch(${b.id})">Complete</button>`
+    : `<span class="pill pn" style="display:inline-flex;align-items:center;justify-content:center;white-space:nowrap">Order&nbsp;#${b.orderId||'—'}</span>`;
+  return `<tr>
+    <td><span class="pill pn" style="font-size:10.5px;font-family:monospace">#${b.id}</span></td>
+    <td><div style="font-weight:600">${esc(b.distributorName||'')}</div></td>
+    <td style="max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(b.prod||'')}</td>
+    <td><span class="pill pn">${VL[b.variant]||esc(b.variant||'')}</span></td>
+    <td style="font-weight:600">${qty}</td>
+    <td>
+      <div>${commissionModeLabel(b.commissionMode)} · ₹${(parseFloat(b.commission||0)||0).toFixed(2)}</div>
+      <div style="font-size:11px;color:var(--text-3)">Total: ₹${tot.toFixed(2)}</div>
+    </td>
+    <td>${st}</td>
+    <td style="color:var(--text-3)">${created}${b.status==='completed'?`<br><span style="font-size:11px">Done: ${completed}</span>`:''}</td>
+    <td style="text-align:center;vertical-align:middle">${action}</td>
+  </tr>`;
+}
+function distributionMobileCard(b){
+  const qty=parseInt(b.qty||0)||0;
+  const tot=batchCommissionTotal(b);
+  return `<div class="order-card">
+    <div class="order-card-top">
+      <div>
+        <div class="order-card-name">${esc(b.distributorName||'')}</div>
+        <div class="order-card-prod">${esc(b.prod||'')} · ${VL[b.variant]||b.variant} × ${qty}</div>
+      </div>
+      <div class="order-card-right">
+        <div class="order-card-right-top">
+          <span class="order-card-rev">₹${tot.toFixed(0)}</span>
+          ${b.status==='active'?`<button class="order-card-menu" onclick="openCompleteDistributorBatch(${b.id})" title="Complete">✓</button>`:''}
+        </div>
+        <span style="font-size:11px;color:var(--text-3)">${fd(b.at||Date.now())}</span>
+      </div>
+    </div>
+    <div class="order-card-meta">
+      <span class="pill pn">${commissionModeLabel(b.commissionMode)}</span>
+      <span class="pill pn">₹${(parseFloat(b.commission||0)||0).toFixed(2)}</span>
+      ${b.status==='completed'?`<span class="status-badge st-completed">Completed</span>`:`<span class="status-badge st-confirmed">Active</span>`}
+      ${b.orderId?`<span style="font-size:11px;color:var(--text-3)">Order #${b.orderId}</span>`:''}
+    </div>
+  </div>`;
+}
+function rDistribution(){
+  const list=(S.distributorBatches||[]);
+  const prodSel=g('dist-prod');
+  if(prodSel){
+    const cur=prodSel.value||'';
+    prodSel.innerHTML=distProductOptions(cur);
+    prodSel.value=cur;
+    const variantSel=g('dist-variant');
+    if(cur){
+      const currentVar=variantSel?.value||'';
+      if(variantSel) variantSel.innerHTML=distVariantOptions(cur,currentVar);
+    }else if(variantSel && !variantSel.value){
+      variantSel.innerHTML='<option value="">Select size…</option>';
+    }
+  }
+  if(g('dist-qty') && !g('dist-qty').value) g('dist-qty').value='1';
+  if(g('dist-commission') && !g('dist-commission').value) g('dist-commission').value='0';
+
+  const active=list.filter(b=>b.status==='active');
+  const done=list.filter(b=>b.status==='completed');
+  if(g('dist-sub')){
+    g('dist-sub').textContent=`${list.length} batches · ${active.length} active · ${done.length} completed`;
+  }
+  if(g('dist-total-active')) g('dist-total-active').textContent=String(active.length);
+  if(g('dist-total-completed')) g('dist-total-completed').textContent=String(done.length);
+  if(g('dist-total-qty')) g('dist-total-qty').textContent=String(list.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0));
+
+  const host=g('dist-body');
+  if(!host) return;
+  if(!list.length){
+    host.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">No distributor batches yet</div><div class="es">Create the first batch above and mark it completed once money is collected.</div></div>`;
+    return;
+  }
+  const desktop=`<div class="tbl-wrap"><table class="tbl">
+    <thead><tr><th>#</th><th>Distributor</th><th>Product</th><th>Size</th><th>Qty</th><th>Commission</th><th>Status</th><th>Date</th><th></th></tr></thead>
+    <tbody>${list.map(distributionRow).join('')}</tbody>
+  </table></div>`;
+  const mobile=`<div class="order-card-list">${list.map(distributionMobileCard).join('')}</div>`;
+  host.innerHTML=desktop+mobile;
+}
+
 // ─── STOCK ALERTS (from Inventory app on port 8001) ──────────────────────────
 let stockAlerts = [];   // populated by pollStockAlerts()
 let inventorySnapshot = [];
@@ -1328,6 +1548,7 @@ async function pollStockAlerts(){
 // ─── ALERTS ──────────────────────────────────────────────────────────────────
 function getAlerts(){
   const now=Date.now(),alerts=[],byC={};
+  const closedSet=new Set((S.closedFollowUps||[]).map(r=>`${r.cid}:${r.orderId}`));
   S.orders.forEach(o=>(byC[o.cid]=byC[o.cid]||[]).push(o));
   Object.keys(byC).forEach(cid=>{
     const orders=byC[cid].sort((a,b)=>b.at-a.at),last=orders[0];
@@ -1336,7 +1557,8 @@ function getAlerts(){
     if(n>=5){const gaps=[];for(let i=0;i<Math.min(n-1,5);i++)gaps.push((orders[i].at-orders[i+1].at)/864e5);avg=Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);ad=Math.round(avg*.9);mode='smart';}
     else{ad=(W[last.variant]||10)*last.qty;mode='def';}
     const dl=ad-(now-last.at)/864e5;
-    if(dl<=3)alerts.push({cust,last,dl:Math.round(dl),mode,avg,n});
+    const key=`${cust.id}:${last.id}`;
+    if(dl<=3 && !closedSet.has(key))alerts.push({cust,last,dl:Math.round(dl),mode,avg,n});
   });
   return alerts.sort((a,b)=>a.dl-b.dl);
 }
@@ -1395,11 +1617,46 @@ function rAlerts(){
       if(a.mode==='smart')pills+=` <span class="pill pg">Smart · avg ${a.avg}d</span>`;
       else pills+=` <span class="pill pn">${a.n}/5 orders</span>`;
       const desc=a.mode==='smart'?`Based on ${a.n} orders — avg every ${a.avg} days. Last: ${a.last.prod} (${VL[a.last.variant]||a.last.variant})`:`Last: ${a.last.prod} ${VL[a.last.variant]||a.last.variant} ×${a.last.qty} on ${fd(a.last.at)}`;
-      return`<div class="ai ${cls}"><div class="adot ${cls}"></div><div class="ab"><div class="an">${a.cust.name} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${a.cust.area}</span></div><div class="ad">${desc}</div><div class="at2">${pills}</div></div><div class="aa"><a href="${wa}" target="_blank" class="btn btn-follow-up btn-sm">${WA_ICON} Follow Up</a></div></div>`;
+      return`<div class="ai ${cls}"><div class="adot ${cls}"></div><div class="ab"><div class="an">${a.cust.name} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${a.cust.area}</span></div><div class="ad">${desc}</div><div class="at2">${pills}</div></div><div class="aa" style="display:flex;gap:8px;flex-wrap:wrap"><a href="${wa}" target="_blank" class="btn btn-follow-up btn-sm">${WA_ICON} Follow Up</a><button class="btn btn-s btn-sm" onclick="openCloseAlertModal(${a.cust.id},${a.last.id})">Add Note & Close</button></div></div>`;
     }).join('');
   }
 
   body.innerHTML = html;
+}
+
+function openCloseAlertModal(cid,orderId){
+  const cust=(S.customers||[]).find(c=>Number(c.id)===Number(cid));
+  const custName=String(cust?.name||'Customer');
+  openModal(`
+    <div class="modal-title">Close Follow-up Alert</div>
+    <div style="font-size:12.5px;color:var(--text-3);margin-top:6px">Customer: <strong>${custName||'Customer'}</strong></div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
+      <div class="fg">
+        <label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+        <textarea id="followup-close-note" rows="3" placeholder="e.g. Called customer, asked to follow up next week"></textarea>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="submitCloseFollowUp(${cid},${orderId})">Save & Close Alert</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+}
+async function submitCloseFollowUp(cid,orderId){
+  const note=(g('followup-close-note')?.value||'').trim();
+  try{
+    const res=await api.post('/api/alerts/followups/close',{cid,orderId,note,at:Date.now()});
+    S.closedFollowUps=S.closedFollowUps||[];
+    S.closedFollowUps=S.closedFollowUps.filter(r=>!(Number(r.cid)===Number(cid)&&Number(r.orderId)===Number(orderId)));
+    S.closedFollowUps.push({cid:res.cid,orderId:res.orderId,note:res.note||'',closedAt:res.closedAt||Date.now()});
+    closeModal();
+    rAlerts();
+    rDash();
+    updBadge();
+    toast('Alert closed','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
 }
 
 function rInventory(){
@@ -1529,15 +1786,59 @@ function rDash(){
   const f=calcFin();
   const inv=calcInventoryUsageFromOrders();
   const hasData=S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
+  const completedOrders=S.orders.filter(isCompleted);
+  const completedCount=completedOrders.length;
+  const totalCustomers=S.customers.length;
+  const totalOrders=S.orders.length;
+  const ordersPerCustomer=totalCustomers>0?(totalOrders/totalCustomers):0;
+  const orderCountByCid={};
+  (S.orders||[]).forEach(o=>{
+    if(!o||!o.cid||o.cid<=0) return;
+    orderCountByCid[o.cid]=(orderCountByCid[o.cid]||0)+1;
+  });
+  const orderedCustomers=Object.keys(orderCountByCid).length;
+  const repeatCustomers=Object.values(orderCountByCid).filter(n=>n>=2).length;
+  const retentionPct=orderedCustomers>0?(repeatCustomers/orderedCustomers)*100:null;
 
-  // Row 1: Customers+Orders merged | Revenue+Profit merged
+  // Row 1: Revenue + Profit | MoM + YoY
   g('sg').innerHTML=`
+    <div class="sbox ${!hasData?'accent-top':f.profAll>=0?'green-top':'red-top'}">
+      <div class="sbox-inner">
+        <div class="sbox-half">
+          <div class="sl">Revenue</div>
+          <div class="sv">${hasData?fC(f.revAll):'—'}</div>
+          <div class="sn">${hasData?'This month: '+fC(f.revM):'Add pricing in Settings'}</div>
+        </div>
+        <div class="sbox-half">
+          <div class="sl">Profit</div>
+          <div class="sv ${!hasData?'':f.profAll>=0?'green':'red'}">${hasData?fC(f.profAll):'—'}</div>
+          <div class="sn">${hasData?'This month: '+fC(f.profM):'—'}</div>
+        </div>
+      </div>
+    </div>
+    <div class="sbox ${f.mom==null&&f.yoy==null?'accent-top':(f.mom<0||f.yoy<0)?'red-top':'green-top'}">
+      <div class="sbox-inner">
+        <div class="sbox-half">
+          <div class="sl">MoM Change</div>
+          <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
+          <div class="sn ${pCls(f.mom)}">${f.mom==null?'Not enough data':'This month: '+fC(f.revM)}</div>
+        </div>
+        <div class="sbox-half">
+          <div class="sl">YoY Change</div>
+          <div class="sv ${f.yoy==null?'':f.yoy>=0?'green':'red'}">${f.yoy==null?'—':fPct(f.yoy)+pArr(f.yoy)}</div>
+          <div class="sn ${pCls(f.yoy)}">${f.yoy==null?'Not enough data':'vs last year'}</div>
+        </div>
+      </div>
+    </div>`;
+
+  // Row 2: Avg Order Value + Inventory Moved | Customers + Alerts
+  g('sg2').innerHTML=`
     <div class="sbox accent-top">
       <div class="sbox-inner">
         <div class="sbox-half">
-          <div class="sl">Customers</div>
-          <div class="sv">${S.customers.length}</div>
-          <div class="sn">${S.orders.length} total orders</div>
+          <div class="sl">Avg Order Value</div>
+          <div class="sv">${hasData&&completedCount>0?fC(f.revAll/completedCount):'—'}</div>
+          <div class="sn">${hasData?'Per completed order':'—'}</div>
         </div>
         <div class="sbox-half">
           <div class="sl">Inventory Moved</div>
@@ -1549,9 +1850,12 @@ function rDash(){
     <div class="sbox ${alerts.length?'red-top':'accent-top'}">
       <div class="sbox-inner">
         <div class="sbox-half">
-          <div class="sl">Revenue</div>
-          <div class="sv">${hasData?fC(f.revAll):'—'}</div>
-          <div class="sn">${hasData?'This month: '+fC(f.revM):'Add pricing in Settings'}</div>
+          <div class="sl">Customers</div>
+          <div class="sv">${totalCustomers}</div>
+          <div class="sn">
+            ${totalCustomers>0?`${ordersPerCustomer.toFixed(2)} orders/customer`:'No customers yet'}
+            ${retentionPct==null?'':' · '+retentionPct.toFixed(0)+'% retention'}
+          </div>
         </div>
         <div class="sbox-half">
           <div class="sl">Alerts</div>
@@ -1561,48 +1865,18 @@ function rDash(){
       </div>
     </div>`;
 
-  // Row 2: MoM | YoY merged
-  g('sg2').innerHTML=`
-    <div class="sbox ${f.mom==null?'accent-top':f.mom>=0?'green-top':'red-top'}">
-      <div class="sbox-inner">
-        <div class="sbox-half">
-          <div class="sl">MoM Change</div>
-          <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
-          <div class="sn ${pCls(f.mom)}">${f.mom==null?'Not enough data':'This month: '+fC(f.revM)}</div>
-        </div>
-        <div class="sbox-half">
-          <div class="sl">Profit</div>
-          <div class="sv ${!hasData?'':f.profAll>=0?'green':'red'}">${hasData?fC(f.profAll):'—'}</div>
-          <div class="sn">${hasData?'This month: '+fC(f.profM):'—'}</div>
-        </div>
-      </div>
-    </div>
-    <div class="sbox ${f.yoy==null?'accent-top':f.yoy>=0?'green-top':'red-top'}">
-      <div class="sbox-inner">
-        <div class="sbox-half">
-          <div class="sl">YoY Change</div>
-          <div class="sv ${f.yoy==null?'':f.yoy>=0?'green':'red'}">${f.yoy==null?'—':fPct(f.yoy)+pArr(f.yoy)}</div>
-          <div class="sn ${pCls(f.yoy)}">${f.yoy==null?'Not enough data':'vs last year'}</div>
-        </div>
-        <div class="sbox-half">
-          <div class="sl">Avg Order Value</div>
-          <div class="sv">${hasData&&S.orders.filter(isCompleted).length>0?fC(f.revAll/S.orders.filter(isCompleted).length):'—'}</div>
-          <div class="sn">${hasData?'Per completed order':'—'}</div>
-        </div>
-      </div>
-    </div>`;
-
   // Recent orders — clean design-system rows
   const dO=g('d-orders');
   const recent=S.orders.slice(0,6);
   dO.innerHTML=recent.length?recent.map(o=>{
     const rev=orderRevenue(o),opts=statusOpts(o.channel||'retail');
+    const nameLabel=isDistributorOrder(o)?'Distributor Channel':o.cname;
     const stCls=STATUS_CLS[o.status||'pending'];
     const stLbl=STATUS_LABEL[o.status]||o.status;
     const stSelect=`<select class="inline-status-sel ${stCls}" onchange="dashQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
     return`<div class="dash-order-row">
       <div class="dash-order-info">
-        <div class="dor-name">${esc(o.cname)}</div>
+        <div class="dor-name">${esc(nameLabel)}</div>
         <div class="dor-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} · <span class="ch-badge ch-badge--${o.channel||'retail'}" style="padding:1px 6px;font-size:10.5px">${CHANNEL_MAP[o.channel||'retail']?.label||o.channel}</span></div>
       </div>
       <div class="dash-order-meta">
@@ -1958,6 +2232,7 @@ function dateToISO(ts){ const d=new Date(ts);return`${d.getFullYear()}-${String(
 async function init(){
   try{ S=await api.get('/api/data'); }
   catch(err){ g('toasts').innerHTML=`<div class="toast err">Cannot reach server: ${err.message}</div>`; return; }
+  if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   // Poll inventory stock levels (silently fails if inventory app is not running)
   await pollStockAlerts();
   // Re-poll every 5 minutes

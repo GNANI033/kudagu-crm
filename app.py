@@ -47,8 +47,11 @@ SYNC_LOCK = threading.Lock()
 DEFAULT_DATA: dict = {
     "customers": [],
     "orders": [],
+    "distributorBatches": [],
+    "closedFollowUps": [],
     "cid": 1,
     "oid": 1,
+    "dbid": 1,
     "pid": 6,
     "waDefaultTpl": (
         "Hi {{customer_name}}, your last order was on {{last_order_date}}. "
@@ -94,10 +97,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products"):
+    for key in ("customers", "orders", "products", "distributorBatches", "closedFollowUps"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid"):
+    for key in ("cid", "oid", "dbid"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -163,11 +166,66 @@ def migrate(data: dict) -> dict:
             o["inventorySyncedAt"] = None
         if "shipping" not in o or not isinstance(o.get("shipping"), dict):
             o["shipping"] = {}
+        if "realizedRevenue" not in o:
+            o["realizedRevenue"] = None
+        if "distribution" not in o or not isinstance(o.get("distribution"), dict):
+            o["distribution"] = {}
         # Migrate old delivered/payment_received → completed
         if o["status"] in ("delivered", "payment_received"):
             o["status"] = "completed"
 
+    for b in data["distributorBatches"]:
+        if "status" not in b:
+            b["status"] = "active"
+        if "commissionMode" not in b:
+            b["commissionMode"] = "per_pcs"
+        if b["commissionMode"] not in ("per_pcs", "batch"):
+            b["commissionMode"] = "per_pcs"
+        try:
+            b["commission"] = float(b.get("commission", 0) or 0)
+        except (TypeError, ValueError):
+            b["commission"] = 0.0
+        if b["commission"] < 0:
+            b["commission"] = 0.0
+        try:
+            b["qty"] = max(1, int(b.get("qty", 1) or 1))
+        except (TypeError, ValueError):
+            b["qty"] = 1
+        if "amountCollected" not in b:
+            b["amountCollected"] = None
+        if "paymentMethod" not in b:
+            b["paymentMethod"] = ""
+        if "completedAt" not in b:
+            b["completedAt"] = None
+        if "orderId" not in b:
+            b["orderId"] = None
+
+    cleaned_closed: list[dict] = []
+    for row in data.get("closedFollowUps", []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            cid = int(row.get("cid", 0) or 0)
+            order_id = int(row.get("orderId", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid <= 0 or order_id <= 0:
+            continue
+        cleaned_closed.append(
+            {
+                "cid": cid,
+                "orderId": order_id,
+                "note": str(row.get("note", "") or "").strip(),
+                "closedAt": int(row.get("closedAt") or int(time.time() * 1000)),
+            }
+        )
+    data["closedFollowUps"] = cleaned_closed
+
     return data
+
+
+def _normalize_commission_mode(raw: Any) -> str:
+    return "batch" if str(raw or "").strip().lower() == "batch" else "per_pcs"
 
 
 def _normalize_composition(composition: Any) -> list[dict]:
@@ -678,12 +736,13 @@ async def update_customer(customer_id: int, request: Request):
     for key in ("name", "phone", "area", "email", "address"):
         if key in body:
             data["customers"][idx][key] = body[key]
-    # Also update denormalised name/phone on all their orders
-    if "name" in body or "phone" in body:
+    # Also update denormalised customer fields on all their orders
+    if "name" in body or "phone" in body or "area" in body:
         for o in data["orders"]:
             if o["cid"] == customer_id:
                 if "name"  in body: o["cname"]  = body["name"]
                 if "phone" in body: o["cphone"] = body["phone"]
+                if "area"  in body: o["carea"]  = body["area"]
     write_data(data)
     return data["customers"][idx]
 
@@ -725,6 +784,8 @@ async def add_order(request: Request):
         "commission":    float(body.get("commission", 0) or 0),
         "paymentMethod": body.get("paymentMethod", ""),
         "at":            body["at"],
+        "realizedRevenue": body.get("realizedRevenue"),
+        "distribution": body.get("distribution", {}),
         "inventorySynced": False,
         "inventorySyncedAt": None,
         "shipping": body.get("shipping", {}),
@@ -745,12 +806,213 @@ async def update_order(order_id: int, request: Request):
     if idx is None:
         raise HTTPException(status_code=404, detail="Order not found")
     prev = copy.deepcopy(data["orders"][idx])
-    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping"):
+    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution"):
         if key in body:
             data["orders"][idx][key] = body[key]
     _reconcile_order_inventory(data, idx, prev_order=prev)
     write_data(data)
     return data["orders"][idx]
+
+
+@app.post("/api/distribution/batches")
+async def add_distribution_batch(request: Request):
+    body = await request.json()
+    required = ("distributorName", "prodId", "variant", "qty")
+    if not all(k in body for k in required):
+        raise HTTPException(status_code=400, detail=f"Required fields: {required}")
+
+    data = migrate(read_data())
+    product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
+    if product is None:
+        raise HTTPException(status_code=400, detail="Product not found")
+
+    commission_mode = _normalize_commission_mode(body.get("commissionMode"))
+    try:
+        commission = float(body.get("commission", 0) or 0)
+    except (TypeError, ValueError):
+        commission = 0.0
+    if commission < 0:
+        raise HTTPException(status_code=400, detail="Commission cannot be negative")
+    try:
+        qty = int(body.get("qty", 0) or 0)
+    except (TypeError, ValueError):
+        qty = 0
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
+
+    batch = {
+        "id": data["dbid"],
+        "distributorName": str(body.get("distributorName", "")).strip(),
+        "prodId": body["prodId"],
+        "prod": product.get("name", body["prodId"]),
+        "variant": body["variant"],
+        "qty": qty,
+        "commission": commission,
+        "commissionMode": commission_mode,
+        "status": "active",
+        "notes": str(body.get("notes", "")).strip(),
+        "at": int(body.get("at") or int(time.time() * 1000)),
+        "completedAt": None,
+        "amountCollected": None,
+        "paymentMethod": "",
+        "orderId": None,
+    }
+    if not batch["distributorName"]:
+        raise HTTPException(status_code=400, detail="Distributor name is required")
+
+    data["distributorBatches"].insert(0, batch)
+    data["dbid"] += 1
+    write_data(data)
+    return batch
+
+
+@app.put("/api/distribution/batches/{batch_id}")
+async def update_distribution_batch(batch_id: int, request: Request):
+    body = await request.json()
+    data = migrate(read_data())
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    batch = data["distributorBatches"][idx]
+    if batch.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Completed batch cannot be edited")
+
+    if "distributorName" in body:
+        batch["distributorName"] = str(body.get("distributorName", "")).strip()
+    if "prodId" in body:
+        product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
+        if product is None:
+            raise HTTPException(status_code=400, detail="Product not found")
+        batch["prodId"] = body["prodId"]
+        batch["prod"] = product.get("name", body["prodId"])
+    if "variant" in body:
+        batch["variant"] = body["variant"]
+    if "qty" in body:
+        try:
+            qty = int(body.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
+        batch["qty"] = qty
+    if "commission" in body:
+        try:
+            comm = float(body.get("commission", 0) or 0)
+        except (TypeError, ValueError):
+            comm = 0.0
+        if comm < 0:
+            raise HTTPException(status_code=400, detail="Commission cannot be negative")
+        batch["commission"] = comm
+    if "commissionMode" in body:
+        batch["commissionMode"] = _normalize_commission_mode(body.get("commissionMode"))
+    if "notes" in body:
+        batch["notes"] = str(body.get("notes", "")).strip()
+    if not str(batch.get("distributorName", "")).strip():
+        raise HTTPException(status_code=400, detail="Distributor name is required")
+
+    write_data(data)
+    return batch
+
+
+@app.post("/api/distribution/batches/{batch_id}/complete")
+async def complete_distribution_batch(batch_id: int, request: Request):
+    body = await request.json()
+    data = migrate(read_data())
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    batch = data["distributorBatches"][idx]
+    if batch.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Batch already completed")
+
+    try:
+        amount_collected = float(body.get("amountCollected", 0) or 0)
+    except (TypeError, ValueError):
+        amount_collected = 0.0
+    if amount_collected < 0:
+        raise HTTPException(status_code=400, detail="Amount collected cannot be negative")
+
+    qty = int(batch.get("qty") or 0)
+    commission_mode = _normalize_commission_mode(batch.get("commissionMode"))
+    commission_rate = float(batch.get("commission", 0) or 0)
+    total_commission = commission_rate if commission_mode == "batch" else commission_rate * qty
+    now_ms = int(body.get("at") or int(time.time() * 1000))
+    product = next((p for p in data["products"] if p.get("id") == batch.get("prodId")), None)
+    prod_name = product.get("name") if product else batch.get("prod", batch.get("prodId"))
+
+    order = {
+        "id": data["oid"],
+        "cid": 0,
+        "cname": str(batch.get("distributorName", "")).strip() or "Distributor",
+        "cphone": "",
+        "carea": "Distribution Channel",
+        "prod": prod_name,
+        "prodId": batch.get("prodId"),
+        "variant": batch.get("variant"),
+        "qty": qty,
+        "channel": "retail",
+        "status": "completed",
+        "discount": 0.0,
+        "commission": float(total_commission or 0),
+        "paymentMethod": str(body.get("paymentMethod", "")).strip(),
+        "at": now_ms,
+        "realizedRevenue": amount_collected,
+        "distribution": {
+            "batchId": int(batch.get("id")),
+            "distributorName": str(batch.get("distributorName", "")).strip(),
+            "commissionMode": commission_mode,
+            "commissionRate": float(commission_rate or 0),
+            "totalCommission": float(total_commission or 0),
+            "amountCollected": float(amount_collected or 0),
+        },
+        "inventorySynced": False,
+        "inventorySyncedAt": None,
+        "shipping": {},
+    }
+    data["orders"].insert(0, order)
+    data["oid"] += 1
+
+    batch["status"] = "completed"
+    batch["completedAt"] = now_ms
+    batch["amountCollected"] = float(amount_collected or 0)
+    batch["paymentMethod"] = str(body.get("paymentMethod", "")).strip()
+    batch["orderId"] = order["id"]
+
+    _reconcile_order_inventory(data, 0, prev_order=None, force=True)
+    write_data(data)
+    return {"batch": batch, "order": order}
+
+
+@app.post("/api/alerts/followups/close")
+async def close_followup_alert(request: Request):
+    body = await request.json()
+    try:
+        cid = int(body.get("cid", 0) or 0)
+        order_id = int(body.get("orderId", 0) or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid cid/orderId")
+    if cid <= 0 or order_id <= 0:
+        raise HTTPException(status_code=400, detail="cid and orderId are required")
+
+    note = str(body.get("note", "") or "").strip()
+    closed_at = int(body.get("at") or int(time.time() * 1000))
+
+    data = migrate(read_data())
+    data["closedFollowUps"] = [
+        r
+        for r in data.get("closedFollowUps", [])
+        if not (int(r.get("cid", 0)) == cid and int(r.get("orderId", 0)) == order_id)
+    ]
+    data["closedFollowUps"].append(
+        {
+            "cid": cid,
+            "orderId": order_id,
+            "note": note,
+            "closedAt": closed_at,
+        }
+    )
+    write_data(data)
+    return {"ok": True, "cid": cid, "orderId": order_id, "note": note, "closedAt": closed_at}
 
 
 @app.get("/api/orders/{order_id}/shipping-label.pdf")
