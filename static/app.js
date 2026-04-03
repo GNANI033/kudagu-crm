@@ -484,7 +484,7 @@ function openShippedStatusPopup(oid, from='orders'){
       </div>
       <div class="fg">
         <label>Tracking Link</label>
-        <div class="fr" style="grid-template-columns:1fr auto">
+        <div class="split-input-row">
           <input id="ship-track-link" type="text" readonly value="${esc(ship.trackingUrl||'')}" placeholder="Auto-generated from template + AWB">
           <button class="btn btn-s" onclick="copyTrackingLinkFromModal()">Copy</button>
         </div>
@@ -618,7 +618,7 @@ function shippingLabel(oid,action){
       </div>
       <div class="fg">
         <label>Tracking Link</label>
-        <div class="fr" style="grid-template-columns:1fr auto">
+        <div class="split-input-row">
           <input id="ship-track-link" type="text" readonly value="${esc(ship.trackingUrl||'')}" placeholder="Auto-generated from template + AWB">
           <button class="btn btn-s" onclick="copyTrackingLinkFromModal()">Copy</button>
         </div>
@@ -997,7 +997,10 @@ function orderMobileCard(o){
         <div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>
       </div>
       <div class="order-card-right">
-        ${isCompleted(o)&&rev>0?`<span class="order-card-rev">₹${rev.toFixed(0)}</span>`:''}
+        <div class="order-card-right-top">
+          ${isCompleted(o)&&rev>0?`<span class="order-card-rev">₹${rev.toFixed(0)}</span>`:''}
+          <button class="order-card-menu" onclick="openOrderMenu(${o.id},this)" title="More options">⋯</button>
+        </div>
         <span style="font-size:11px;color:var(--text-3)">${fd(o.at)}</span>
       </div>
     </div>
@@ -1006,10 +1009,6 @@ function orderMobileCard(o){
       ${stSel}
       ${profLine}
       ${disc>0||comm.total>0?`<span style="font-size:11px;color:var(--text-3)">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</span>`:''}
-    </div>
-    <div class="order-card-actions">
-      <button class="btn btn-g btn-xs" style="flex:1;justify-content:center" onclick="openEditOrder(${o.id})">Edit order</button>
-      <button class="btn btn-g btn-xs dots-btn" onclick="openOrderMenu(${o.id},this)">⋯</button>
     </div>
   </div>`;
 }
@@ -1677,7 +1676,7 @@ function inventoryProductOptions(selected=''){
   return base+list;
 }
 function buildExistingCompRows(pid, rows){
-  return rows.map((r,i)=>`<div class="pc-comp-row" style="display:grid;grid-template-columns:1fr 120px 40px;gap:8px;align-items:center">
+  return rows.map((r,i)=>`<div class="pc-comp-row">
     <select id="pc-comp-prod-${pid}-${i}">${inventoryProductOptions(r.inventoryProductId||'')}</select>
     <div class="input-prefix"><span>%</span><input id="pc-comp-pct-${pid}-${i}" type="number" min="0.01" max="100" step="0.01" value="${r.percentage||''}" oninput="refreshExistingCompHint('${pid}')"></div>
     <button class="btn btn-g btn-xs" onclick="removeExistingCompRow('${pid}',${i})">✕</button>
@@ -1768,7 +1767,7 @@ function renderCompositionRows(rows){
   const opts=inventorySnapshot.length
     ? `<option value="">Select inventory product…</option>${inventorySnapshot.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('')}`
     : '<option value="">Inventory app not connected</option>';
-  wrap.innerHTML=rows.map((r,i)=>`<div class="comp-row" style="display:grid;grid-template-columns:1fr 120px 40px;gap:8px;align-items:center">
+  wrap.innerHTML=rows.map((r,i)=>`<div class="comp-row">
     <select class="comp-prod" onchange="refreshCompositionHint()">${opts}</select>
     <div class="input-prefix"><span>%</span><input class="comp-pct" type="number" min="0.01" max="100" step="0.01" value="${r.percentage||''}" oninput="refreshCompositionHint()"></div>
     <button class="btn btn-g btn-xs" onclick="removeCompositionRow(${i})">✕</button>
