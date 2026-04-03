@@ -1353,17 +1353,25 @@ async function createDistributorBatch(){
   const commission=Math.max(0,parseFloat(g('dist-commission')?.value||0)||0);
   const commissionMode=(g('dist-comm-batch')?.checked)?'batch':'per_pcs';
   const notes=(g('dist-notes')?.value||'').trim();
+  const dateVal=(g('dist-date')?.value||'').trim();
+  let at=Date.now();
+  if(dateVal){
+    const [y,m,d]=dateVal.split('-').map(Number);
+    const dt=new Date(y,m-1,d,12,0,0);
+    if(!isNaN(dt.getTime())) at=dt.getTime();
+  }
   if(!distributorName){ toast('Distributor name is required','err'); return; }
   if(!prodId||!variant){ toast('Select product and size','err'); return; }
   if(qty<=0){ toast('Quantity must be greater than 0','err'); return; }
   try{
-    const batch=await api.post('/api/distribution/batches',{distributorName,prodId,variant,qty,commission,commissionMode,notes,at:Date.now()});
+    const batch=await api.post('/api/distribution/batches',{distributorName,prodId,variant,qty,commission,commissionMode,notes,at});
     S.distributorBatches=S.distributorBatches||[];
     S.distributorBatches.unshift(batch);
     g('dist-name').value='';
     g('dist-prod').value='';
     g('dist-variant').innerHTML='<option value="">Select size…</option>';
     g('dist-qty').value='1';
+    g('dist-date').value=todayISO();
     g('dist-commission').value='0';
     g('dist-comm-batch').checked=false;
     g('dist-notes').value='';
@@ -1493,6 +1501,7 @@ function rDistribution(){
     }
   }
   if(g('dist-qty') && !g('dist-qty').value) g('dist-qty').value='1';
+  if(g('dist-date') && !g('dist-date').value) g('dist-date').value=todayISO();
   if(g('dist-commission') && !g('dist-commission').value) g('dist-commission').value='0';
 
   const active=list.filter(b=>b.status==='active');
@@ -1562,12 +1571,26 @@ function getAlerts(){
   });
   return alerts.sort((a,b)=>a.dl-b.dl);
 }
+function getDistributorAgingAlerts(minDays=15){
+  const now=Date.now();
+  const dayMs=86400000;
+  return (S.distributorBatches||[])
+    .filter(b=>String(b.status||'').toLowerCase()==='active')
+    .map(b=>{
+      const at=Number(b.at)||0;
+      const ageDays=at>0?Math.floor((now-at)/dayMs):0;
+      return {...b,ageDays};
+    })
+    .filter(b=>b.ageDays>minDays)
+    .sort((a,b)=>b.ageDays-a.ageDays);
+}
 function rAlerts(){
-  const alerts=getAlerts(), body=g('al-body');
+  const alerts=getAlerts(), distAlerts=getDistributorAgingAlerts(15), body=g('al-body');
   const hasReorder = alerts.length > 0;
+  const hasDist    = distAlerts.length > 0;
   const hasStock   = stockAlerts.length > 0;
 
-  if(!hasReorder && !hasStock){
+  if(!hasReorder && !hasStock && !hasDist){
     body.innerHTML=`<div class="empty"><div class="ei">✓</div><div class="et">No alerts right now</div><div class="es">All customers are on track and stock levels are healthy</div></div>`;
     return;
   }
@@ -1603,9 +1626,30 @@ function rAlerts(){
     }).join('');
   }
 
+  // ── Distribution aging alerts section ──
+  if(hasDist){
+    html += `<div class="alert-section-header ${hasStock?'mt12':''}">
+      <span class="alert-section-title">Distributor Pending</span>
+      <span class="alert-section-count">${distAlerts.length}</span>
+      <span class="alert-section-badge reorder">Distribution</span>
+    </div>`;
+    html += distAlerts.map(a=>{
+      const started=fd(a.at||Date.now());
+      return `<div class="ai sm">
+        <div class="adot sm"></div>
+        <div class="ab">
+          <div class="an">${esc(a.distributorName||'Distributor')} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${a.ageDays} days pending</span></div>
+          <div class="ad">${esc(a.prod||'Product')} · ${VL[a.variant]||a.variant} × ${a.qty||0} pcs · started ${started}</div>
+          <div class="at2"><span class="pill pa">Over 15 days</span><span class="pill pn">Distribution aging</span></div>
+        </div>
+        <div class="aa"><button class="btn btn-s btn-sm" onclick="nav('distribution')">View Batch →</button></div>
+      </div>`;
+    }).join('');
+  }
+
   // ── Reorder alerts section ──
   if(hasReorder){
-    html += `<div class="alert-section-header ${hasStock?'mt12':''}">
+    html += `<div class="alert-section-header ${(hasStock||hasDist)?'mt12':''}">
       <span class="alert-section-title">Customer Re-order</span>
       <span class="alert-section-count">${alerts.length}</span>
       <span class="alert-section-badge reorder">Follow-up</span>
@@ -1751,7 +1795,7 @@ async function syncAndRefreshInventory(){
 // ─── fGrams helper for CRM (mirrors inventory app) ────────────────────────────
 function fGrams(g){ return g >= 1000 ? (g/1000).toFixed(2)+' kg' : Number(g||0).toFixed(0)+' g'; }
 function updBadge(){
-  const n = getAlerts().length + stockAlerts.length;
+  const n = getAlerts().length + getDistributorAgingAlerts(15).length + stockAlerts.length;
   // Desktop sidebar badge
   const el=g('nav-alerts'); const ex=el.querySelector('.n-badge'); if(ex) ex.remove();
   if(n>0) el.insertAdjacentHTML('beforeend',`<span class="n-badge">${n}</span>`);
@@ -1782,6 +1826,8 @@ function calcInventoryUsageFromOrders(){
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 function rDash(){
   const alerts=getAlerts();
+  const distAlerts=getDistributorAgingAlerts(15);
+  const allOpsAlerts=alerts.length+distAlerts.length;
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const f=calcFin();
   const inv=calcInventoryUsageFromOrders();
@@ -1847,7 +1893,7 @@ function rDash(){
         </div>
       </div>
     </div>
-    <div class="sbox ${alerts.length?'red-top':'accent-top'}">
+    <div class="sbox ${allOpsAlerts?'red-top':'accent-top'}">
       <div class="sbox-inner">
         <div class="sbox-half">
           <div class="sl">Customers</div>
@@ -1859,8 +1905,8 @@ function rDash(){
         </div>
         <div class="sbox-half">
           <div class="sl">Alerts</div>
-          <div class="sv ${alerts.length?'red':''}">${alerts.length}</div>
-          <div class="sn">${alerts.length?'Need follow-up':'All on track'}</div>
+          <div class="sv ${allOpsAlerts?'red':''}">${allOpsAlerts}</div>
+          <div class="sn">${allOpsAlerts?'Need attention':'All on track'}</div>
         </div>
       </div>
     </div>`;
@@ -1888,11 +1934,27 @@ function rDash(){
 
   // Alerts panel
   const dA=g('d-al');
-  g('d-ab').innerHTML=alerts.length?`<span class="pill pr" style="font-size:10px;padding:1px 7px">${alerts.length}</span>`:'';
-  dA.innerHTML=alerts.length?alerts.slice(0,4).map(a=>{
-    const ov=a.dl<=0,wa=buildWaUrl(a);
-    return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${a.mode==='smart'?'sm':ov?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${a.cust.name}</div><div style="font-size:11.5px;color:var(--text-3)">${a.last.prod} · ${VL[a.last.variant]||a.last.variant}</div><div style="margin-top:5px">${ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`}</div></div><a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs" style="flex-shrink:0">${WA_ICON} Remind</a></div>`;
-  }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">✓</div><div class="et">All customers on track</div></div>`;
+  const totalAlerts=alerts.length+stockAlerts.length+distAlerts.length;
+  g('d-ab').innerHTML=totalAlerts?`<span class="pill pr" style="font-size:10px;padding:1px 7px">${totalAlerts}</span>`:'';
+  const dashAlertRows=[];
+  alerts.forEach(a=>dashAlertRows.push({type:'reorder',data:a}));
+  stockAlerts.forEach(s=>dashAlertRows.push({type:'stock',data:s}));
+  distAlerts.forEach(d=>dashAlertRows.push({type:'dist',data:d}));
+
+  dA.innerHTML=dashAlertRows.length?dashAlertRows.slice(0,6).map(item=>{
+    if(item.type==='reorder'){
+      const a=item.data;
+      const ov=a.dl<=0,wa=buildWaUrl(a);
+      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${a.mode==='smart'?'sm':ov?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${a.cust.name} <span class="pill pn" style="margin-left:6px">Re-order</span></div><div style="font-size:11.5px;color:var(--text-3)">${a.last.prod} · ${VL[a.last.variant]||a.last.variant}</div><div style="margin-top:5px">${ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`}</div></div><a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs" style="flex-shrink:0">${WA_ICON} Remind</a></div>`;
+    }
+    if(item.type==='stock'){
+      const s=item.data;
+      const isCrit=(Number(s.stockGrams)||0)<=Number(s.lowStockThreshold||0)*0.5;
+      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${isCrit?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(s.name)} <span class="pill pn" style="margin-left:6px">Stock</span></div><div style="font-size:11.5px;color:var(--text-3)">${fGrams(Number(s.stockGrams)||0)} left · threshold ${fGrams(Number(s.lowStockThreshold)||0)}</div><div style="margin-top:5px">${isCrit?`<span class="pill pr">Critical stock</span>`:`<span class="pill pa">Low stock</span>`}</div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('inventory')">View</button></div>`;
+    }
+    const d=item.data;
+    return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Product')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
+  }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">✓</div><div class="et">All alerts clear</div></div>`;
 }
 
 async function dashQuickStatus(oid,sel){
@@ -2227,6 +2289,11 @@ async function saveShippingSettings(){
 function g(id){ return document.getElementById(id); }
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function dateToISO(ts){ const d=new Date(ts);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
+function openNativePicker(id){
+  const el=g(id);
+  if(!el || typeof el.showPicker!=='function') return;
+  try{ el.showPicker(); }catch(_){ /* ignore */ }
+}
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 async function init(){
