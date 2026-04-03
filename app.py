@@ -435,6 +435,18 @@ def _get_inventory_data() -> dict | None:
         return None
 
 
+def _get_inventory_stock() -> list[dict] | None:
+    req = urlrequest.Request(f"{INVENTORY_URL}/api/stock", method="GET")
+    try:
+        with urlrequest.urlopen(req, timeout=3.0) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else []
+            return parsed if isinstance(parsed, list) else []
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        print(f"[CRM] Inventory stock fetch failed: {exc}")
+        return None
+
+
 def _delete_inventory_movement(product_id: str, movement_id: int) -> bool:
     req = urlrequest.Request(
         f"{INVENTORY_URL}/api/products/{product_id}/movements/{movement_id}",
@@ -808,6 +820,14 @@ async def sync_completed_orders():
         }
     finally:
         SYNC_LOCK.release()
+
+
+@app.get("/api/inventory/stock")
+async def inventory_stock():
+    stock = _get_inventory_stock()
+    if stock is None:
+        raise HTTPException(status_code=502, detail="Inventory service unavailable")
+    return stock
 
 
 @app.delete("/api/orders/{order_id}")

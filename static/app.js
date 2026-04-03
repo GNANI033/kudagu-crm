@@ -1303,17 +1303,13 @@ async function doDeleteOrder(oid){
 let stockAlerts = [];   // populated by pollStockAlerts()
 let inventorySnapshot = [];
 let inventorySnapshotAt = null;
-const INVENTORY_URL = (() => {
-  // Browser-side calls must target the same server host, not the viewer's localhost.
-  const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-  const host = window.location.hostname || 'localhost';
-  return `${protocol}//${host}:8001`;
-})();
+let inventoryConnected = false;
 
 async function pollStockAlerts(){
   try{
-    const data = await fetch(`${INVENTORY_URL}/api/stock`).then(r=>r.ok?r.json():[]);
+    const data = await fetch('/api/inventory/stock').then(r=>r.ok?r.json():[]);
     inventorySnapshot = Array.isArray(data)?data:[];
+    inventoryConnected = true;
     inventorySnapshotAt = Date.now();
     stockAlerts = inventorySnapshot.filter(p=>p.isLow);
     if(g('np-comp-rows')){
@@ -1323,6 +1319,7 @@ async function pollStockAlerts(){
     updBadge(); // recount badge including stock alerts
   }catch(e){
     // Inventory app not running — silently degrade, no stock alerts shown
+    inventoryConnected = false;
     stockAlerts = [];
     inventorySnapshot = [];
     inventorySnapshotAt = null;
@@ -1418,15 +1415,19 @@ function rInventory(){
   const completed=(S.orders||[]).filter(o=>o.status==='completed');
   const synced=completed.filter(o=>o.inventorySynced).length;
   const syncPct=completed.length?((synced/completed.length)*100):0;
-  sub.textContent=items.length?`${items.length} products synced from inventory app`:'Inventory service not connected';
+  sub.textContent=inventoryConnected?`${items.length} products synced from inventory app`:'Inventory service not connected';
   if(updated) updated.textContent=inventorySnapshotAt?`Last sync: ${new Date(inventorySnapshotAt).toLocaleString('en-IN')}`:'Last sync: —';
   if(stat){
     stat.innerHTML=`
       <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Tracked</div><div class="sv">${items.length}</div><div class="sn">Inventory products</div></div><div class="sbox-half"><div class="sl">Low Stock</div><div class="sv ${low.length?'red':''}">${low.length}</div><div class="sn">${low.length?'Needs restock':'Healthy levels'}</div></div></div></div>
       <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Inventory Moved</div><div class="sv">${fGrams(inv.moved)}</div><div class="sn">${inv.connected?`Inventory left: ${fGrams(total)}`:'Inventory app offline'}</div></div><div class="sbox-half"><div class="sl">Completed Synced</div><div class="sv">${synced}/${completed.length}</div><div class="sn">${completed.length?`${syncPct.toFixed(0)}% synced to inventory`:'No completed orders yet'}</div></div></div></div>`;
   }
-  if(!items.length){
+  if(!inventoryConnected){
     body.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">Inventory app is not reachable</div><div class="es">Run the inventory service to view stock inside CRM.</div></div>`;
+    return;
+  }
+  if(!items.length){
+    body.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">No inventory products found</div><div class="es">Inventory is connected. Add products in the Inventory app to track stock here.</div></div>`;
     return;
   }
   body.innerHTML=items.map(p=>{
@@ -1519,7 +1520,7 @@ function calcInventoryUsageFromOrders(){
     });
   });
   const left=(inventorySnapshot||[]).reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
-  return { moved, left, connected:(inventorySnapshot||[]).length>0 };
+  return { moved, left, connected:inventoryConnected };
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
