@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Kudagu Kaapi — Inventory</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Instrument+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f7f7f5;--surface:#fff;--surface-2:#f2f2ef;--surface-3:#eaeae6;
+  --border:#e4e4e0;--border-s:#c8c8c2;
+  --text:#111110;--text-2:#6b6b66;--text-3:#a0a09a;
+  --accent:#1a1a18;
+  --green:#16a34a;--green-bg:#f0fdf4;--green-bd:#bbf7d0;
+  --amber:#d97706;--amber-bg:#fffbeb;--amber-bd:#fde68a;
+  --red:#dc2626;--red-bg:#fef2f2;--red-bd:#fecaca;
+  --blue:#2563eb;--blue-bg:#eff6ff;--blue-bd:#bfdbfe;
+  --r:10px;--r-sm:6px;
+  --sh-sm:0 1px 3px rgba(0,0,0,.06),0 1px 2px rgba(0,0,0,.04);
+  --sh:0 4px 16px rgba(0,0,0,.07),0 1px 3px rgba(0,0,0,.05);
+  --sh-lg:0 12px 40px rgba(0,0,0,.1),0 2px 8px rgba(0,0,0,.06);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{-webkit-text-size-adjust:100%}
+body{font-family:'Instrument Sans',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.app{display:flex;min-height:100vh}
+
+/* ── SIDEBAR ── */
+.sidebar{width:220px;flex-shrink:0;background:var(--surface);border-right:1px solid var(--border);display:flex;flex-direction:column;position:fixed;top:0;left:0;bottom:0;z-index:100}
+.sb-logo{padding:22px 20px 18px;border-bottom:1px solid var(--border)}
+.sb-brand{font-family:'Syne',sans-serif;font-size:15px;font-weight:800;color:var(--text);letter-spacing:-.01em;line-height:1}
+.sb-brand span{color:var(--text-3);font-weight:400}
+.sb-tag{font-size:10.5px;color:var(--text-3);margin-top:3px;letter-spacing:.05em;text-transform:uppercase}
+.sb-nav{padding:10px 8px;flex:1;overflow-y:auto}
+.sb-sect{font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;padding:10px 10px 5px;margin-top:4px}
+.nb{display:flex;align-items:center;gap:9px;padding:9px 10px;border-radius:var(--r-sm);cursor:pointer;color:var(--text-2);font-size:13px;font-weight:500;transition:all .15s;border:none;background:none;width:100%;text-align:left;min-height:38px}
+.nb:hover{background:var(--surface-2);color:var(--text)}
+.nb.active{background:var(--accent);color:#fff}
+.nb-ic{width:15px;text-align:center;font-size:13px;flex-shrink:0;line-height:1}
+.sb-foot{padding:14px 18px;border-top:1px solid var(--border)}
+.sb-foot-lbl{font-size:11px;color:var(--text-3)}
+.sb-foot strong{display:block;font-family:'Syne',sans-serif;font-size:12.5px;font-weight:700;color:var(--text);margin-bottom:2px}
+.crm-link{display:block;margin-top:10px;padding:8px 10px;background:var(--surface-2);border:1px solid var(--border);border-radius:var(--r-sm);font-size:12px;font-weight:600;color:var(--text-2);text-decoration:none;transition:all .15s;text-align:center}
+.crm-link:hover{background:var(--surface-3);color:var(--text)}
+
+/* ── MAIN ── */
+.main{margin-left:220px;flex:1;padding:36px 40px;max-width:calc(100% - 220px)}
+.view{display:none;animation:fadeUp .2s ease}
+.view.active{display:block}
+@keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+
+/* ── PAGE HEADER ── */
+.ph{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:26px}
+.ph-title{font-family:'Syne',sans-serif;font-size:21px;font-weight:700;line-height:1.2}
+.ph-sub{font-size:12.5px;color:var(--text-3);margin-top:3px}
+
+/* ── STAT CARDS ── */
+.stats-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:20px}
+.sbox{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;box-shadow:var(--sh-sm)}
+.sbox.accent-top{border-top:2px solid var(--accent)}
+.sbox.green-top{border-top:2px solid var(--green)}
+.sbox.amber-top{border-top:2px solid var(--amber)}
+.sbox.red-top{border-top:2px solid var(--red)}
+.sl{font-size:11px;font-weight:600;color:var(--text-3);letter-spacing:.05em;text-transform:uppercase}
+.sv{font-family:'Syne',sans-serif;font-size:26px;font-weight:700;color:var(--text);margin-top:5px;line-height:1}
+.sv.red{color:var(--red)}.sv.green{color:var(--green)}.sv.amber{color:var(--amber)}
+.sn{font-size:11.5px;color:var(--text-3);margin-top:4px}
+
+/* ── CARD ── */
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh-sm);overflow:hidden}
+.ch{padding:16px 20px 0;display:flex;align-items:center;justify-content:space-between}
+.ct{font-family:'Syne',sans-serif;font-size:13.5px;font-weight:600;color:var(--text)}
+.cb{padding:18px 20px}
+.card+.card{margin-top:14px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+
+/* ── PRODUCT STOCK CARDS ── */
+.prod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.prod-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;box-shadow:var(--sh-sm);transition:box-shadow .15s,border-color .15s}
+.prod-card:hover{box-shadow:var(--sh);border-color:var(--border-s)}
+.prod-card.low-stock{border-left:3px solid var(--amber)}
+.prod-card.critical{border-left:3px solid var(--red)}
+.pc-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px}
+.pc-name{font-family:'Syne',sans-serif;font-size:14px;font-weight:700}
+.pc-threshold{font-size:11.5px;color:var(--text-3);margin-top:3px}
+.pc-stock{text-align:right}
+.pc-stock-val{font-family:'Syne',sans-serif;font-size:22px;font-weight:700;line-height:1}
+.pc-stock-lbl{font-size:11px;color:var(--text-3);margin-top:2px}
+.stock-bar-wrap{height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;margin-bottom:14px}
+.stock-bar{height:100%;border-radius:3px;transition:width .3s}
+.stock-bar.ok{background:var(--green)}
+.stock-bar.warn{background:var(--amber)}
+.stock-bar.crit{background:var(--red)}
+.pc-actions{display:flex;gap:8px}
+.pc-meta{display:flex;gap:14px;margin-bottom:12px}
+.pc-meta-item{font-size:12px;color:var(--text-2)}
+.pc-meta-item strong{color:var(--text);font-weight:700}
+
+/* ── MOVEMENT LIST ── */
+.mov-list{display:flex;flex-direction:column}
+.mov-item{display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)}
+.mov-item:last-child{border-bottom:none}
+.mov-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+.mov-dot.in{background:var(--green)}
+.mov-dot.out{background:var(--blue)}
+.mov-dot.adjustment{background:var(--amber)}
+.mov-body{flex:1;min-width:0}
+.mov-label{font-size:13px;font-weight:600}
+.mov-note{font-size:11.5px;color:var(--text-3);margin-top:1px}
+.mov-right{text-align:right;flex-shrink:0}
+.mov-grams{font-family:'Syne',sans-serif;font-size:13px;font-weight:700}
+.mov-grams.in{color:var(--green)}
+.mov-grams.out{color:var(--blue)}
+.mov-grams.adjustment{color:var(--amber)}
+.mov-date{font-size:11px;color:var(--text-3);margin-top:2px}
+
+/* ── FORM ── */
+.fg{display:flex;flex-direction:column;gap:6px}
+.fr{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+label{font-size:12px;font-weight:600;color:var(--text-2);letter-spacing:.02em}
+.req{color:var(--red);margin-left:2px}
+input,select,textarea{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;color:var(--text);font-family:'Instrument Sans',sans-serif;font-size:15px;outline:none;transition:border-color .15s,box-shadow .15s;width:100%;-webkit-appearance:none;appearance:none}
+input:focus,select:focus,textarea:focus{border-color:var(--text);box-shadow:0 0 0 3px rgba(17,17,16,.08)}
+input::placeholder,textarea::placeholder{color:var(--text-3)}
+select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23a0a09a'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
+select option{background:#fff;color:var(--text)}
+textarea{resize:vertical}
+hr{border:none;border-top:1px solid var(--border);margin:16px 0}
+.sl-label{font-size:11px;font-weight:700;color:var(--text-3);letter-spacing:.08em;text-transform:uppercase;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.sl-label::after{content:'';flex:1;border-top:1px solid var(--border)}
+
+/* ── BUTTONS ── */
+.btn{display:inline-flex;align-items:center;gap:6px;padding:9px 16px;border-radius:var(--r-sm);border:none;font-family:'Instrument Sans',sans-serif;font-size:13px;font-weight:600;cursor:pointer;transition:all .15s;line-height:1;text-decoration:none;min-height:40px;-webkit-tap-highlight-color:transparent}
+.btn-p{background:var(--accent);color:#fff}.btn-p:hover{background:#2d2d2b;box-shadow:var(--sh)}
+.btn-s{background:var(--surface-2);color:var(--text);border:1px solid var(--border)}.btn-s:hover{background:var(--surface-3)}
+.btn-g{background:transparent;color:var(--text-2)}.btn-g:hover{background:var(--surface-2);color:var(--text)}
+.btn-danger{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd)}.btn-danger:hover{background:#fee2e2}
+.btn-green{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd)}.btn-green:hover{background:#dcfce7}
+.btn-sm{padding:6px 12px;font-size:12px;min-height:34px}
+.btn-xs{padding:4px 9px;font-size:11px;min-height:30px}
+.btn-full{width:100%;justify-content:center;padding:12px 16px;min-height:46px}
+
+/* ── PILL & BADGE ── */
+.pill{display:inline-flex;align-items:center;padding:2px 8px;border-radius:20px;font-size:11.5px;font-weight:600}
+.pn{background:var(--surface-2);color:var(--text-2);border:1px solid var(--border)}
+.pg{background:var(--green-bg);color:var(--green);border:1px solid var(--green-bd)}
+.pa{background:var(--amber-bg);color:var(--amber);border:1px solid var(--amber-bd)}
+.pr{background:var(--red-bg);color:var(--red);border:1px solid var(--red-bd)}
+.pb{background:var(--blue-bg);color:var(--blue);border:1px solid var(--blue-bd)}
+
+/* ── MOVEMENT TYPE TABS ── */
+.type-tabs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:6px}
+.type-tab{padding:10px 8px;border:1px solid var(--border);border-radius:var(--r-sm);cursor:pointer;text-align:center;font-size:13px;font-weight:600;font-family:'Instrument Sans',sans-serif;transition:all .15s;background:var(--surface);color:var(--text-2);min-height:44px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:2px}
+.type-tab:hover{border-color:var(--border-s);background:var(--surface-2)}
+.type-tab.on.in{border-color:var(--green);background:var(--green-bg);color:var(--green)}
+.type-tab.on.out{border-color:var(--blue);background:var(--blue-bg);color:var(--blue)}
+.type-tab.on.adj{border-color:var(--amber);background:var(--amber-bg);color:var(--amber)}
+.type-tab-sub{font-size:10px;font-weight:400;opacity:.7}
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(17,17,16,.5);z-index:1000;display:none;align-items:center;justify-content:center;padding:16px}
+.modal-overlay.open{display:flex}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--r);box-shadow:var(--sh-lg);width:100%;max-width:480px;max-height:90vh;overflow-y:auto;padding:24px}
+.modal-title{font-family:'Syne',sans-serif;font-size:17px;font-weight:700;color:var(--text)}
+
+/* ── EMPTY ── */
+.empty{text-align:center;padding:48px 20px;color:var(--text-3)}
+.ei{font-size:28px;margin-bottom:12px}.et{font-size:14px;font-weight:600;color:var(--text-2);margin-bottom:6px}.es{font-size:13px}
+
+/* ── TOAST ── */
+.toasts{position:fixed;bottom:22px;right:16px;z-index:9000;display:flex;flex-direction:column;gap:8px;max-width:calc(100vw - 32px)}
+.toast{background:var(--text);color:#fff;border-radius:var(--r-sm);padding:12px 16px;font-size:13px;font-weight:500;box-shadow:var(--sh-lg);animation:tin .22s ease}
+.toast.ok{background:#15803d}.toast.err{background:var(--red)}
+@keyframes tin{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+
+/* ── CTX MENU ── */
+.ctx-menu{position:fixed;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);box-shadow:var(--sh-lg);z-index:500;min-width:175px;padding:4px;animation:fadeUp .12s ease}
+.ctx-item{display:flex;align-items:center;gap:8px;width:100%;padding:10px 13px;border:none;background:none;cursor:pointer;font-family:'Instrument Sans',sans-serif;font-size:13px;font-weight:500;color:var(--text-2);border-radius:4px;text-align:left;min-height:42px;transition:background .1s}
+.ctx-item:hover{background:var(--surface-2);color:var(--text)}
+.ctx-danger{color:var(--red)!important}.ctx-danger:hover{background:var(--red-bg)!important}
+.ctx-divider{border:none;border-top:1px solid var(--border);margin:4px 0}
+
+@media(max-width:900px){
+  .sidebar{width:56px}
+  .sb-brand,.sb-tag,.nb span:not(.nb-ic),.sb-sect,.sb-foot strong,.crm-link,.sb-foot-lbl{display:none}
+  .nb{justify-content:center;padding:10px}
+  .main{margin-left:56px;max-width:calc(100% - 56px);padding:24px 18px}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .two,.fr{grid-template-columns:1fr}
+  .prod-grid{grid-template-columns:1fr}
+}
+@media(max-width:480px){
+  .main{padding:16px 14px}
+  .stats-row{grid-template-columns:1fr 1fr}
+  .modal-overlay{align-items:flex-end;padding:0}
+  .modal-box{border-radius:var(--r) var(--r) 0 0;max-width:100%;max-height:92vh;padding:20px 16px}
+  .modal-box::before{content:'';display:block;width:36px;height:4px;background:var(--border-s);border-radius:2px;margin:0 auto 18px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-brand">Kudagu<span>.</span></div>
+    <div class="sb-tag">Inventory</div>
+  </div>
+  <nav class="sb-nav">
+    <div class="sb-sect">Overview</div>
+    <button class="nb active" onclick="nav('dashboard')"><span class="nb-ic">◈</span><span>Dashboard</span></button>
+    <button class="nb" onclick="nav('stock')"><span class="nb-ic">▦</span><span>Stock Levels</span></button>
+    <button class="nb" onclick="nav('movements')"><span class="nb-ic">↕</span><span>Movements</span></button>
+    <div class="sb-sect">Config</div>
+    <button class="nb" onclick="nav('products')"><span class="nb-ic">≡</span><span>Products</span></button>
+  </nav>
+  <div class="sb-foot">
+    <strong>Inventory Manager</strong>
+  </div>
+</aside>
+
+<div class="main">
+
+  <!-- DASHBOARD -->
+  <div class="view active" id="view-dashboard">
+    <div class="ph">
+      <div><div class="ph-title">Inventory Overview</div><div class="ph-sub" id="dash-date"></div></div>
+      <button class="btn btn-p btn-sm" onclick="openAddMovementModal()">+ Record Stock</button>
+    </div>
+    <div class="stats-row" id="dash-stats"></div>
+    <div class="two">
+      <div class="card">
+        <div class="ch"><div class="ct">Low Stock Alerts</div></div>
+        <div id="dash-low-stock"></div>
+      </div>
+      <div class="card">
+        <div class="ch"><div class="ct">Recent Movements</div><button class="btn btn-g btn-xs" onclick="nav('movements')">View all →</button></div>
+        <div id="dash-recent-mov"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STOCK LEVELS -->
+  <div class="view" id="view-stock">
+    <div class="ph">
+      <div><div class="ph-title">Stock Levels</div><div class="ph-sub" id="stock-sub"></div></div>
+      <button class="btn btn-p btn-sm" onclick="openAddMovementModal()">+ Record Stock</button>
+    </div>
+    <div class="prod-grid" id="stock-grid"></div>
+  </div>
+
+  <!-- MOVEMENTS -->
+  <div class="view" id="view-movements">
+    <div class="ph">
+      <div><div class="ph-title">All Movements</div><div class="ph-sub" id="mov-sub"></div></div>
+      <button class="btn btn-p btn-sm" onclick="openAddMovementModal()">+ Record Stock</button>
+    </div>
+    <div class="card"><div id="mov-list"></div></div>
+  </div>
+
+  <!-- PRODUCTS (config) -->
+  <div class="view" id="view-products">
+    <div class="ph">
+      <div><div class="ph-title">Products</div><div class="ph-sub">Manage products and low-stock thresholds</div></div>
+      <button class="btn btn-p btn-sm" onclick="openAddProductModal()">+ Add Product</button>
+    </div>
+    <div class="card"><div id="prod-config-list"></div></div>
+  </div>
+
+</div>
+</div>
+
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box" id="modal-box"></div>
+</div>
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js?v=20260401-2"></script>
+</body>
+</html>
