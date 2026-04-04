@@ -64,6 +64,12 @@ DEFAULT_DATA: dict = {
         "phone": "",
         "email": "",
         "gstin": "",
+        "shippedWaTemplate": (
+            "Hi {{customer_name}}, your order #{{order_id}} for {{product_name}} "
+            "has been shipped on {{ship_date}}.\n"
+            "AWB: {{awb}}\n"
+            "Courier: {{courier}}{{tracking_line}}"
+        ),
         "paymentGatewayCommissionPct": 3.0,
         "couriers": [],
         "trackingTemplates": {},
@@ -111,6 +117,8 @@ def migrate(data: dict) -> dict:
         data["shippingProfile"] = copy.deepcopy(DEFAULT_DATA["shippingProfile"])
     if "trackingTemplates" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("trackingTemplates"), dict):
         data["shippingProfile"]["trackingTemplates"] = {}
+    if "shippedWaTemplate" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("shippedWaTemplate"), str):
+        data["shippingProfile"]["shippedWaTemplate"] = DEFAULT_DATA["shippingProfile"]["shippedWaTemplate"]
     try:
         data["shippingProfile"]["paymentGatewayCommissionPct"] = float(
             data["shippingProfile"].get(
@@ -1210,6 +1218,8 @@ async def update_settings(request: Request):
         for key in ("companyName", "address", "phone", "email", "gstin"):
             if key in body["shippingProfile"]:
                 profile[key] = body["shippingProfile"][key]
+        if "shippedWaTemplate" in body["shippingProfile"]:
+            profile["shippedWaTemplate"] = str(body["shippingProfile"].get("shippedWaTemplate") or "").strip()
         if "paymentGatewayCommissionPct" in body["shippingProfile"]:
             try:
                 profile["paymentGatewayCommissionPct"] = float(body["shippingProfile"]["paymentGatewayCommissionPct"] or 0)

@@ -1001,6 +1001,23 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
                 <input id="ship-pg-commission" type="number" min="0" step="0.01" placeholder="3">
                 <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Applied automatically to all Website orders in profit calculation, regardless of payment method.</div>
               </div>
+              <div class="fg">
+                <label>Shipped WhatsApp Message Template</label>
+                <textarea id="ship-wa-template" rows="4" placeholder="Hi {{customer_name}}, your order #{{order_id}}..."></textarea>
+                <div class="token-chips">
+                  <span class="token-chip" onclick="insertShippingToken('{{customer_name}}')">{{customer_name}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{order_id}}')">{{order_id}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{product_name}}')">{{product_name}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{ship_date}}')">{{ship_date}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{awb}}')">{{awb}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{courier}}')">{{courier}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{tracking_url}}')">{{tracking_url}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{tracking_line}}')">{{tracking_line}}</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">
+                  Tokens: <code>{{customer_name}}</code> <code>{{order_id}}</code> <code>{{product_name}}</code> <code>{{ship_date}}</code> <code>{{awb}}</code> <code>{{courier}}</code> <code>{{tracking_url}}</code> <code>{{tracking_line}}</code>
+                </div>
+              </div>
               <div class="fg"><label>Company Address <span class="req">*</span></label><textarea id="ship-address" rows="3" placeholder="Full sender address for labels"></textarea></div>
               <div class="sl-label" style="margin-top:4px">Courier Rules</div>
               <div style="font-size:12px;color:var(--text-3)">Add courier service names manually. For each one, set tracking URL template and default label type (QR or barcode). Use <code>{{awb}}</code> in the URL.</div>
