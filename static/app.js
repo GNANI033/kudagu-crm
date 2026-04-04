@@ -1434,6 +1434,171 @@ async function submitCompleteDistributorBatch(batchId){
     toast('Error: '+e.message,'err');
   }
 }
+function openDistributionBatchMenu(batchId, btnEl){
+  closeOrderMenu();
+  const b=(S.distributorBatches||[]).find(x=>x.id===batchId);
+  if(!b) return;
+  const menu=document.createElement('div');
+  menu.className='ctx-menu';
+  menu.id='ctx-menu';
+  menu.innerHTML=`
+    <button class="ctx-item" onclick="closeOrderMenu();openEditDistributorBatch(${batchId})">Edit Batch</button>
+    <hr class="ctx-divider">
+    <button class="ctx-item ctx-danger" onclick="closeOrderMenu();openDeleteDistributorBatch(${batchId})">Delete Batch</button>
+  `;
+  document.body.appendChild(menu);
+  const r=btnEl.getBoundingClientRect();
+  positionCtxMenu(menu, r);
+  _menuOpen=`dist-${batchId}`;
+  setTimeout(()=>document.addEventListener('click',_closeMenuOutside,{once:true}),10);
+}
+function onEditDistProductChange(){
+  const pid=(g('edit-dist-prod')?.value||'').trim();
+  const sel=g('edit-dist-variant');
+  if(!sel) return;
+  sel.innerHTML=pid?distVariantOptions(pid):'<option value="">Select size…</option>';
+}
+function openEditDistributorBatch(batchId){
+  const b=(S.distributorBatches||[]).find(x=>x.id===batchId);
+  if(!b) return;
+  if(String(b.status||'').toLowerCase()==='completed'){
+    toast('Completed batch cannot be edited','err');
+    return;
+  }
+  openModal(`
+    <div class="modal-title">Edit Distributor Batch</div>
+    <div style="font-size:12px;color:var(--text-3);margin-top:6px">Batch #${b.id}</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
+      <div class="fg">
+        <label>Distributor Name <span class="req">*</span></label>
+        <input id="edit-dist-name" type="text" value="${esc(b.distributorName||'')}" placeholder="e.g. Coorg Wholesale">
+      </div>
+      <div class="fr">
+        <div class="fg">
+          <label>Product <span class="req">*</span></label>
+          <select id="edit-dist-prod" onchange="onEditDistProductChange()">${distProductOptions(b.prodId||'')}</select>
+        </div>
+        <div class="fg">
+          <label>Pack Size <span class="req">*</span></label>
+          <select id="edit-dist-variant">${distVariantOptions(b.prodId||'', b.variant||'')}</select>
+        </div>
+      </div>
+      <div class="fr">
+        <div class="fg">
+          <label>Quantity (packs) <span class="req">*</span></label>
+          <input id="edit-dist-qty" type="number" min="1" step="1" value="${parseInt(b.qty||0)||1}">
+        </div>
+        <div class="fg">
+          <label>Commission (₹)</label>
+          <div class="input-prefix"><span>₹</span><input id="edit-dist-commission" type="number" min="0" step="0.01" value="${(parseFloat(b.commission||0)||0).toFixed(2)}"></div>
+        </div>
+      </div>
+      <div class="toggle-row" style="margin:0">
+        <div>
+          <div class="toggle-lbl">Commission Mode</div>
+          <div class="toggle-sub">Enable for whole batch commission</div>
+        </div>
+        <label class="toggle-switch">
+          <input type="checkbox" id="edit-dist-comm-batch" ${b.commissionMode==='batch'?'checked':''}>
+          <span class="toggle-track"></span>
+        </label>
+      </div>
+      <div class="fg">
+        <label>Notes</label>
+        <textarea id="edit-dist-notes" rows="2" placeholder="Optional notes">${esc(b.notes||'')}</textarea>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="submitEditDistributorBatch(${batchId})">Save Changes</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+}
+async function submitEditDistributorBatch(batchId){
+  const distributorName=(g('edit-dist-name')?.value||'').trim();
+  const prodId=(g('edit-dist-prod')?.value||'').trim();
+  const variant=(g('edit-dist-variant')?.value||'').trim();
+  const qty=parseInt(g('edit-dist-qty')?.value||0)||0;
+  const commission=Math.max(0,parseFloat(g('edit-dist-commission')?.value||0)||0);
+  const commissionMode=(g('edit-dist-comm-batch')?.checked)?'batch':'per_pcs';
+  const notes=(g('edit-dist-notes')?.value||'').trim();
+  if(!distributorName){ toast('Distributor name is required','err'); return; }
+  if(!prodId||!variant){ toast('Select product and size','err'); return; }
+  if(qty<=0){ toast('Quantity must be greater than 0','err'); return; }
+  try{
+    const updated=await api.put(`/api/distribution/batches/${batchId}`,{distributorName,prodId,variant,qty,commission,commissionMode,notes});
+    S.distributorBatches=(S.distributorBatches||[]).map(b=>b.id===batchId?updated:b);
+    closeModal();
+    rDistribution();
+    rAlerts();
+    rDash();
+    updBadge();
+    toast('Distributor batch updated','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+function openDeleteDistributorBatch(batchId){
+  const b=(S.distributorBatches||[]).find(x=>x.id===batchId);
+  if(!b) return;
+  const linkedOrder=(parseInt(b.orderId||0)||0)>0;
+  openModal(`
+    <div class="modal-title">Delete Distributor Batch?</div>
+    <div style="font-size:12.5px;color:var(--text-3);margin-top:6px">
+      Batch #${b.id} · ${esc(b.distributorName||'Distributor')} · ${esc(b.prod||'')} · ${VL[b.variant]||b.variant} × ${parseInt(b.qty||0)||0}
+    </div>
+    ${linkedOrder?`<div style="margin-top:10px;padding:10px;border:1px solid var(--amber-bd);background:var(--amber-bg);color:var(--amber);border-radius:8px;font-size:12px">This completed batch is linked to Order #${b.orderId}. Deleting this batch will also delete that order.</div>`:''}
+    <div style="display:flex;gap:8px;margin-top:14px">
+      <button class="btn btn-danger" style="flex:1" onclick="doDeleteDistributorBatch(${batchId})">Yes, Delete</button>
+      <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+    </div>
+  `,'lg');
+}
+async function doDeleteDistributorBatch(batchId){
+  let res = null;
+  try{
+    // Prefer proxy-safe POST endpoint; fallback to DELETE for older servers.
+    try{
+      res=await api.post(`/api/distribution/batches/${batchId}/delete`,{});
+    }catch(primaryErr){
+      const msg=String(primaryErr?.message||'');
+      const isRouteMissing=msg.includes('"detail":"Not Found"')||msg.includes('404');
+      const isAlreadyGone=msg.toLowerCase().includes('batch not found');
+      if(isAlreadyGone){
+        res={ok:true,removedOrderId:null};
+      }else if(isRouteMissing){
+        try{
+          res=await api.del(`/api/distribution/batches/${batchId}`);
+        }catch(legacyErr){
+          const legacyMsg=String(legacyErr?.message||'');
+          if(legacyMsg.includes('405')){
+            throw new Error('Delete endpoint unavailable on server. Restart/redeploy CRM backend and try again.');
+          }
+          if(legacyMsg.toLowerCase().includes('batch not found')||legacyMsg.includes('404')){
+            res={ok:true,removedOrderId:null};
+          }else{
+            throw legacyErr;
+          }
+        }
+      }else{
+        throw primaryErr;
+      }
+    }
+    S.distributorBatches=(S.distributorBatches||[]).filter(b=>b.id!==batchId);
+    if(res && res.removedOrderId){
+      S.orders=(S.orders||[]).filter(o=>o.id!==res.removedOrderId);
+    }
+    closeModal();
+    rDistribution();
+    rOrders();
+    rAlerts();
+    rDash();
+    updBadge();
+    toast('Distributor batch deleted','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
 function distributionRow(b){
   const qty=parseInt(b.qty||0)||0;
   const tot=batchCommissionTotal(b);
@@ -1441,10 +1606,8 @@ function distributionRow(b){
   const completed=b.completedAt?fd(b.completedAt):'—';
   const st=b.status==='completed'
     ? `<span class="status-badge st-completed">Completed</span>`
-    : `<span class="status-badge st-confirmed">Active</span>`;
-  const action=b.status==='active'
-    ? `<button class="btn btn-p btn-xs" onclick="openCompleteDistributorBatch(${b.id})">Complete</button>`
-    : `<span class="pill pn" style="display:inline-flex;align-items:center;justify-content:center;white-space:nowrap">Order&nbsp;#${b.orderId||'—'}</span>`;
+    : `<button class="status-badge st-confirmed status-clickable" onclick="openCompleteDistributorBatch(${b.id})">Active ▾</button>`;
+  const action=`<button class="btn btn-g btn-xs dots-btn" onclick="openDistributionBatchMenu(${b.id},this)" title="More options">⋯</button>`;
   return `<tr>
     <td><span class="pill pn" style="font-size:10.5px;font-family:monospace">#${b.id}</span></td>
     <td><div style="font-weight:600">${esc(b.distributorName||'')}</div></td>
@@ -1472,7 +1635,7 @@ function distributionMobileCard(b){
       <div class="order-card-right">
         <div class="order-card-right-top">
           <span class="order-card-rev">₹${tot.toFixed(0)}</span>
-          ${b.status==='active'?`<button class="order-card-menu" onclick="openCompleteDistributorBatch(${b.id})" title="Complete">✓</button>`:''}
+          <button class="order-card-menu" onclick="openDistributionBatchMenu(${b.id},this)" title="More options">⋯</button>
         </div>
         <span style="font-size:11px;color:var(--text-3)">${fd(b.at||Date.now())}</span>
       </div>
@@ -1480,7 +1643,9 @@ function distributionMobileCard(b){
     <div class="order-card-meta">
       <span class="pill pn">${commissionModeLabel(b.commissionMode)}</span>
       <span class="pill pn">₹${(parseFloat(b.commission||0)||0).toFixed(2)}</span>
-      ${b.status==='completed'?`<span class="status-badge st-completed">Completed</span>`:`<span class="status-badge st-confirmed">Active</span>`}
+      ${b.status==='completed'
+        ? `<span class="status-badge st-completed">Completed</span>`
+        : `<button class="status-badge st-confirmed status-clickable" onclick="openCompleteDistributorBatch(${b.id})">Active ▾</button>`}
       ${b.orderId?`<span style="font-size:11px;color:var(--text-3)">Order #${b.orderId}</span>`:''}
     </div>
   </div>`;

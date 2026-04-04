@@ -914,6 +914,46 @@ async def update_distribution_batch(batch_id: int, request: Request):
     return batch
 
 
+def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    batch = data["distributorBatches"][idx]
+    removed_order_id = None
+    try:
+        linked_order_id = int(batch.get("orderId") or 0)
+    except (TypeError, ValueError):
+        linked_order_id = 0
+
+    if linked_order_id > 0:
+        order = next((o for o in data["orders"] if int(o.get("id", 0)) == linked_order_id), None)
+        if order is not None:
+            if order.get("inventorySynced") or order.get("status") == "completed":
+                _remove_inventory_movements_for_order(linked_order_id)
+            data["orders"] = [o for o in data["orders"] if int(o.get("id", 0)) != linked_order_id]
+            removed_order_id = linked_order_id
+
+    del data["distributorBatches"][idx]
+    return {"ok": True, "removedOrderId": removed_order_id}
+
+
+@app.delete("/api/distribution/batches/{batch_id}")
+async def delete_distribution_batch(batch_id: int):
+    data = migrate(read_data())
+    res = _delete_distribution_batch_from_data(data, batch_id)
+    write_data(data)
+    return res
+
+
+@app.post("/api/distribution/batches/{batch_id}/delete")
+async def delete_distribution_batch_via_post(batch_id: int):
+    data = migrate(read_data())
+    res = _delete_distribution_batch_from_data(data, batch_id)
+    write_data(data)
+    return res
+
+
 @app.post("/api/distribution/batches/{batch_id}/complete")
 async def complete_distribution_batch(batch_id: int, request: Request):
     body = await request.json()
