@@ -24,11 +24,15 @@ import copy
 import time
 import threading
 import textwrap
+import re
+import base64
+import csv
 from io import BytesIO
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib import parse as urlparse
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
@@ -74,6 +78,17 @@ DEFAULT_DATA: dict = {
         "couriers": [],
         "trackingTemplates": {},
     },
+    "marketingSettings": {
+        "aiBaseUrl": "https://api.openai.com/v1",
+        "aiModel": "",
+        "aiApiKey": "",
+        "systemPrompt": (
+            "You are a concise marketing assistant for a premium coffee brand in India. "
+            "Write a warm, personalized WhatsApp message in plain text. Keep it short, "
+            "specific to the customer context, and include a clear but soft call to action. "
+            "Avoid markdown, hashtags, and overhyped claims."
+        ),
+    },
     "products": [
         {"id": "p1", "name": "Coorg Filter Coffee Powder", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
         {"id": "p2", "name": "Coorg Pure Arabica",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
@@ -115,6 +130,17 @@ def migrate(data: dict) -> dict:
         data["waDefaultTpl"] = DEFAULT_DATA["waDefaultTpl"]
     if "shippingProfile" not in data or not isinstance(data.get("shippingProfile"), dict):
         data["shippingProfile"] = copy.deepcopy(DEFAULT_DATA["shippingProfile"])
+    if "marketingSettings" not in data or not isinstance(data.get("marketingSettings"), dict):
+        data["marketingSettings"] = copy.deepcopy(DEFAULT_DATA["marketingSettings"])
+    ms = data["marketingSettings"]
+    if "aiBaseUrl" not in ms or not isinstance(ms.get("aiBaseUrl"), str):
+        ms["aiBaseUrl"] = DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+    if "aiModel" not in ms or not isinstance(ms.get("aiModel"), str):
+        ms["aiModel"] = DEFAULT_DATA["marketingSettings"]["aiModel"]
+    if "aiApiKey" not in ms or not isinstance(ms.get("aiApiKey"), str):
+        ms["aiApiKey"] = DEFAULT_DATA["marketingSettings"]["aiApiKey"]
+    if "systemPrompt" not in ms or not isinstance(ms.get("systemPrompt"), str):
+        ms["systemPrompt"] = DEFAULT_DATA["marketingSettings"]["systemPrompt"]
     if "trackingTemplates" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("trackingTemplates"), dict):
         data["shippingProfile"]["trackingTemplates"] = {}
     if "shippedWaTemplate" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("shippedWaTemplate"), str):
@@ -229,11 +255,279 @@ def migrate(data: dict) -> dict:
         )
     data["closedFollowUps"] = cleaned_closed
 
+    for c in data["customers"]:
+        c["source"] = _normalize_customer_source(c.get("source"))
+        if "importBatchId" not in c:
+            c["importBatchId"] = ""
+        c["phone"] = _normalize_customer_phone(c.get("phone"))
+
     return data
 
 
 def _normalize_commission_mode(raw: Any) -> str:
     return "batch" if str(raw or "").strip().lower() == "batch" else "per_pcs"
+
+
+def _normalize_customer_source(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    return "bulk_import" if raw in ("bulk_import", "bulk", "import") else "manual"
+
+
+def _normalize_customer_phone(phone: Any) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    return digits
+
+
+def _build_customer(
+    cid: int,
+    name: str,
+    phone: str,
+    area: str,
+    email: str = "",
+    address: str = "",
+    at: Any = None,
+    source: str = "manual",
+    import_batch_id: str = "",
+) -> dict:
+    return {
+        "id": cid,
+        "name": str(name or "").strip(),
+        "phone": _normalize_customer_phone(phone),
+        "area": str(area or "").strip(),
+        "email": str(email or "").strip(),
+        "address": str(address or "").strip(),
+        "at": at,
+        "source": _normalize_customer_source(source),
+        "importBatchId": str(import_batch_id or "").strip(),
+    }
+
+
+def _extract_vcf_value(line: str) -> str:
+    if ":" not in line:
+        return ""
+    return line.split(":", 1)[1].strip()
+
+
+def _parse_vcf_contacts(vcf_text: str) -> list[dict]:
+    contacts: list[dict] = []
+    blocks = re.findall(r"BEGIN:VCARD(.*?)END:VCARD", vcf_text, flags=re.IGNORECASE | re.DOTALL)
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        name = ""
+        phone = ""
+        email = ""
+        address = ""
+        area = ""
+        for ln in lines:
+            up = ln.upper()
+            if up.startswith("FN"):
+                name = _extract_vcf_value(ln)
+            elif up.startswith("N:") and not name:
+                raw = _extract_vcf_value(ln)
+                parts = [p for p in raw.split(";") if p]
+                if parts:
+                    name = " ".join(parts[::-1]).strip()
+            elif up.startswith("TEL") and not phone:
+                phone = _extract_vcf_value(ln)
+            elif up.startswith("EMAIL") and not email:
+                email = _extract_vcf_value(ln)
+            elif up.startswith("ADR") and not address:
+                adr = _extract_vcf_value(ln)
+                adr_parts = [p.strip() for p in adr.split(";") if p.strip()]
+                address = ", ".join(adr_parts)
+                if adr_parts:
+                    area = adr_parts[1] if len(adr_parts) >= 2 else adr_parts[-1]
+        if name and phone:
+            contacts.append(
+                {
+                    "name": name.strip(),
+                    "phone": _normalize_customer_phone(phone),
+                    "area": area.strip(),
+                    "email": email.strip(),
+                    "address": address.strip(),
+                }
+            )
+    return contacts
+
+
+def _guess_row_value(row: dict, keys: list[str]) -> str:
+    for k in keys:
+        for rk, rv in row.items():
+            norm = str(rk or "").strip().lower().replace("_", "").replace(" ", "")
+            if norm == k:
+                return str(rv or "").strip()
+    return ""
+
+
+def _parse_excel_contacts(file_bytes: bytes) -> list[dict]:
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excel import requires openpyxl: {exc}") from exc
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(h or "").strip() for h in rows[0]]
+    contacts: list[dict] = []
+    for vals in rows[1:]:
+        row = {headers[i]: (vals[i] if i < len(vals) else "") for i in range(len(headers))}
+        name = _guess_row_value(row, ["name", "customername", "fullname", "clientname"])
+        phone = _guess_row_value(row, ["phone", "mobile", "phonenumber", "contact", "whatsapp", "whatsappnumber"])
+        if not name or not phone:
+            continue
+        area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
+        email = _guess_row_value(row, ["email", "mail", "emailid"])
+        address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        contacts.append(
+            {
+                "name": name.strip(),
+                "phone": _normalize_customer_phone(phone),
+                "area": area.strip(),
+                "email": email.strip(),
+                "address": address.strip(),
+            }
+        )
+    return contacts
+
+
+def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
+    text = file_bytes.decode("utf-8-sig", errors="ignore")
+    rdr = csv.DictReader(text.splitlines())
+    contacts: list[dict] = []
+    for row in rdr:
+        name = _guess_row_value(row, ["name", "customername", "fullname", "clientname"])
+        phone = _guess_row_value(row, ["phone", "mobile", "phonenumber", "contact", "whatsapp", "whatsappnumber"])
+        if not name or not phone:
+            continue
+        area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
+        email = _guess_row_value(row, ["email", "mail", "emailid"])
+        address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        contacts.append(
+            {
+                "name": name.strip(),
+                "phone": _normalize_customer_phone(phone),
+                "area": area.strip(),
+                "email": email.strip(),
+                "address": address.strip(),
+            }
+        )
+    return contacts
+
+
+def _client_safe_data(data: dict) -> dict:
+    """Return payload safe for frontend (avoid returning raw API key)."""
+    safe = copy.deepcopy(data)
+    ms = safe.get("marketingSettings")
+    if isinstance(ms, dict):
+        raw_key = str(ms.get("aiApiKey") or "").strip()
+        ms["hasApiKey"] = bool(raw_key)
+        ms["apiKeyPreview"] = ("*" * max(0, len(raw_key) - 4)) + raw_key[-4:] if raw_key else ""
+        ms["aiApiKey"] = ""
+    return safe
+
+
+def _digits_only(value: str) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _to_whatsapp_phone(phone: str) -> str:
+    digits = _digits_only(phone)
+    if digits.startswith("91") and len(digits) >= 12:
+        return digits
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
+
+
+def _order_summary_line(order: dict) -> str:
+    when = time.strftime("%d %b %Y", time.localtime((int(order.get("at") or 0)) / 1000)) if order.get("at") else "-"
+    prod = str(order.get("prod") or "").strip() or "-"
+    var = str(order.get("variant") or "").strip() or "-"
+    qty = int(order.get("qty") or 0)
+    status = str(order.get("status") or "").strip() or "-"
+    return f"{when}: {prod} ({var}) x{qty}, status={status}"
+
+
+def _build_customer_context(data: dict, customer: dict) -> str:
+    cid = customer.get("id")
+    orders = [o for o in data.get("orders", []) if o.get("cid") == cid]
+    orders_sorted = sorted(orders, key=lambda x: int(x.get("at") or 0), reverse=True)
+    last = orders_sorted[0] if orders_sorted else {}
+    recent_lines = [_order_summary_line(o) for o in orders_sorted[:5]]
+    lines = [
+        f"Customer Name: {str(customer.get('name') or '').strip() or '-'}",
+        f"Phone: {str(customer.get('phone') or '').strip() or '-'}",
+        f"Area: {str(customer.get('area') or '').strip() or '-'}",
+        f"Email: {str(customer.get('email') or '').strip() or '-'}",
+        f"Address: {str(customer.get('address') or '').strip() or '-'}",
+        f"Total Orders: {len(orders_sorted)}",
+        f"Last Ordered Product: {str(last.get('prod') or '-').strip() or '-'}",
+        f"Last Ordered Variant: {str(last.get('variant') or '-').strip() or '-'}",
+        f"Last Order Date: {time.strftime('%d %b %Y', time.localtime((int(last.get('at') or 0)) / 1000)) if last else '-'}",
+        "Recent Orders:",
+    ]
+    if recent_lines:
+        lines.extend([f"- {ln}" for ln in recent_lines])
+    else:
+        lines.append("- No orders yet")
+    return "\n".join(lines)
+
+
+def _extract_message_text(payload: dict) -> str:
+    """Extract assistant text from OpenAI-compatible responses."""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(str(block.get("text") or ""))
+                return "\n".join([p for p in parts if p]).strip()
+    return ""
+
+
+def _ai_chat_draft(base_url: str, api_key: str, model: str, system_prompt: str, user_prompt: str) -> str:
+    endpoint = base_url.rstrip("/") + "/chat/completions"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"AI provider error ({exc.code}): {detail[:400]}") from exc
+    except urlerror.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach AI provider: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI draft failed: {exc}") from exc
+    text = _extract_message_text(payload)
+    if not text:
+        raise HTTPException(status_code=502, detail="AI provider returned an empty response.")
+    return text
 
 
 def _normalize_composition(composition: Any) -> list[dict]:
@@ -693,7 +987,7 @@ async def get_data():
     """Return the full data.json contents."""
     data = read_data()
     data = migrate(data)
-    return JSONResponse(content=data)
+    return JSONResponse(content=_client_safe_data(data))
 
 
 @app.put("/api/data")
@@ -718,15 +1012,17 @@ async def add_customer(request: Request):
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
     data = migrate(read_data())
-    customer = {
-        "id":      data["cid"],
-        "name":    body["name"],
-        "phone":   body["phone"],
-        "area":    body["area"],
-        "email":   body.get("email", ""),
-        "address": body.get("address", ""),
-        "at":      body.get("at"),
-    }
+    customer = _build_customer(
+        cid=data["cid"],
+        name=body["name"],
+        phone=body["phone"],
+        area=body["area"],
+        email=body.get("email", ""),
+        address=body.get("address", ""),
+        at=body.get("at"),
+        source=body.get("source", "manual"),
+        import_batch_id=body.get("importBatchId", ""),
+    )
     data["customers"].append(customer)
     data["cid"] += 1
     write_data(data)
@@ -743,16 +1039,85 @@ async def update_customer(customer_id: int, request: Request):
         raise HTTPException(status_code=404, detail="Customer not found")
     for key in ("name", "phone", "area", "email", "address"):
         if key in body:
-            data["customers"][idx][key] = body[key]
+            if key == "phone":
+                data["customers"][idx][key] = _normalize_customer_phone(body[key])
+            else:
+                data["customers"][idx][key] = body[key]
     # Also update denormalised customer fields on all their orders
     if "name" in body or "phone" in body or "area" in body:
         for o in data["orders"]:
             if o["cid"] == customer_id:
                 if "name"  in body: o["cname"]  = body["name"]
-                if "phone" in body: o["cphone"] = body["phone"]
+                if "phone" in body: o["cphone"] = _normalize_customer_phone(body["phone"])
                 if "area"  in body: o["carea"]  = body["area"]
     write_data(data)
     return data["customers"][idx]
+
+
+@app.post("/api/customers/import")
+async def import_customers(request: Request):
+    body = await request.json()
+    fmt = str(body.get("format") or "").strip().lower()
+    b64 = str(body.get("contentBase64") or "").strip()
+    filename = str(body.get("filename") or "").strip()
+    if not fmt or not b64:
+        raise HTTPException(status_code=400, detail="format and contentBase64 are required")
+
+    try:
+        file_bytes = base64.b64decode(b64)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 file content")
+
+    if fmt == "vcf":
+        contacts = _parse_vcf_contacts(file_bytes.decode("utf-8", errors="ignore"))
+    elif fmt in ("xlsx", "xlsm"):
+        contacts = _parse_excel_contacts(file_bytes)
+    elif fmt == "csv":
+        contacts = _parse_csv_contacts(file_bytes)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported import format. Use .vcf, .xlsx, .xlsm, or .csv")
+
+    data = migrate(read_data())
+    existing_phone_set = {_normalize_customer_phone(c.get("phone")) for c in data.get("customers", [])}
+    import_batch_id = f"imp-{int(time.time() * 1000)}"
+    created: list[dict] = []
+    skipped = 0
+    for row in contacts:
+        name = str(row.get("name") or "").strip()
+        phone = _normalize_customer_phone(row.get("phone"))
+        area = str(row.get("area") or "").strip() or "Unknown"
+        if not name or not phone:
+            skipped += 1
+            continue
+        if phone in existing_phone_set:
+            skipped += 1
+            continue
+        customer = _build_customer(
+            cid=data["cid"],
+            name=name,
+            phone=phone,
+            area=area,
+            email=row.get("email", ""),
+            address=row.get("address", ""),
+            at=int(time.time() * 1000),
+            source="bulk_import",
+            import_batch_id=import_batch_id,
+        )
+        data["customers"].append(customer)
+        created.append(customer)
+        existing_phone_set.add(phone)
+        data["cid"] += 1
+
+    write_data(data)
+    return {
+        "ok": True,
+        "filename": filename,
+        "importBatchId": import_batch_id,
+        "totalParsed": len(contacts),
+        "imported": len(created),
+        "skipped": skipped,
+        "customers": created,
+    }
 
 
 @app.delete("/api/customers/{customer_id}")
@@ -1247,8 +1612,90 @@ async def update_settings(request: Request):
         elif profile["trackingTemplates"]:
             profile["couriers"] = _couriers_from_templates(profile["trackingTemplates"])
         data["shippingProfile"] = profile
+    if "marketingSettings" in body and isinstance(body["marketingSettings"], dict):
+        curr = copy.deepcopy(data.get("marketingSettings", {}))
+        incoming = body["marketingSettings"]
+        if "aiBaseUrl" in incoming:
+            curr["aiBaseUrl"] = str(incoming.get("aiBaseUrl") or "").strip() or DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+        if "aiModel" in incoming:
+            curr["aiModel"] = str(incoming.get("aiModel") or "").strip()
+        if "systemPrompt" in incoming:
+            curr["systemPrompt"] = str(incoming.get("systemPrompt") or "").strip()
+        if incoming.get("clearApiKey") is True:
+            curr["aiApiKey"] = ""
+        elif "aiApiKey" in incoming:
+            new_key = str(incoming.get("aiApiKey") or "").strip()
+            if new_key:
+                curr["aiApiKey"] = new_key
+        data["marketingSettings"] = curr
     write_data(data)
     return {"ok": True}
+
+
+@app.post("/api/marketing/draft")
+async def generate_marketing_draft(request: Request):
+    body = await request.json()
+    try:
+        customer_id = int(body.get("customerId") or 0)
+    except (TypeError, ValueError):
+        customer_id = 0
+    if customer_id <= 0:
+        raise HTTPException(status_code=400, detail="customerId is required")
+
+    campaign_brief = str(body.get("campaignBrief") or "").strip()
+    extra_instruction = str(body.get("extraInstruction") or "").strip()
+
+    data = migrate(read_data())
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    ms = data.get("marketingSettings", {})
+    base_url = str(ms.get("aiBaseUrl") or "").strip().rstrip("/")
+    if not base_url:
+        base_url = DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+    if not base_url.endswith("/v1"):
+        base_url = base_url + "/v1"
+    model = str(ms.get("aiModel") or "").strip()
+    api_key = str(ms.get("aiApiKey") or "").strip()
+    system_prompt = str(ms.get("systemPrompt") or "").strip() or DEFAULT_DATA["marketingSettings"]["systemPrompt"]
+    if not model:
+        raise HTTPException(status_code=400, detail="Set AI model in Settings → Marketing AI first.")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Set AI API key in Settings → Marketing AI first.")
+
+    customer_context = _build_customer_context(data, customer)
+    prompt_lines = [
+        "Draft one personalized WhatsApp marketing message for this customer.",
+        "Keep it under 90 words, plain text, and friendly.",
+        "Do not use markdown.",
+        "",
+        "Campaign Brief:",
+        campaign_brief or "General re-engagement campaign for coffee reorder.",
+        "",
+    ]
+    if extra_instruction:
+        prompt_lines.extend(["Extra Instruction:", extra_instruction, ""])
+    prompt_lines.extend(["Customer Context:", customer_context])
+    user_prompt = "\n".join(prompt_lines)
+
+    draft = _ai_chat_draft(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    phone = _to_whatsapp_phone(str(customer.get("phone") or ""))
+    if not phone:
+        raise HTTPException(status_code=400, detail="Customer phone is missing/invalid.")
+    wa_url = f"https://wa.me/{phone}?text={urlparse.quote(draft)}"
+    return {
+        "draft": draft,
+        "waUrl": wa_url,
+        "customerId": customer_id,
+        "customerName": customer.get("name", ""),
+    }
 
 
 # ── Entry point ────────────────────────────────────────────────────────────

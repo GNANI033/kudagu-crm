@@ -704,6 +704,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <button class="nb active" onclick="nav('dashboard')"><span class="nb-ic">◈</span><span>Dashboard</span></button>
     <button class="nb" onclick="nav('orders')"><span class="nb-ic">≡</span><span>Orders</span></button>
     <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
+    <button class="nb" onclick="nav('marketing')"><span class="nb-ic">✦</span><span>Marketing</span></button>
     <button class="nb" onclick="nav('inventory')"><span class="nb-ic">▦</span><span>Inventory</span></button>
     <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
     <div class="sb-sect">People</div>
@@ -912,11 +913,46 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     </div>
   </div>
 
+  <!-- MARKETING -->
+  <div class="view" id="view-marketing">
+    <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Draft personalized WhatsApp messages using AI</div></div></div>
+    <div class="card" style="max-width:900px">
+      <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+        <div class="fr">
+          <div class="fg">
+            <label>Customer <span class="req">*</span></label>
+            <select id="mkt-customer"></select>
+          </div>
+          <div class="fg">
+            <label>Quick Campaign Goal</label>
+            <input id="mkt-brief" type="text" placeholder="e.g. Weekend offer on their usual roast">
+          </div>
+        </div>
+        <div class="fg">
+          <label>Extra Instruction <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <textarea id="mkt-extra" rows="2" placeholder="e.g. Mention free shipping above ₹999"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-p" onclick="generateMarketingDraft()">Generate Draft</button>
+          <button class="btn btn-s" onclick="openMarketingWhatsApp()">Open WhatsApp</button>
+        </div>
+        <div class="fg">
+          <label>Draft Message</label>
+          <textarea id="mkt-output" rows="8" placeholder="Generated message appears here. You can edit before sending."></textarea>
+        </div>
+        <div id="mkt-meta" style="font-size:12px;color:var(--text-3)"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- CUSTOMERS -->
   <div class="view" id="view-customers">
     <div class="ph">
       <div><div class="ph-title">Customers</div><div class="ph-sub" id="cs-sub"></div></div>
-      <button class="btn btn-p btn-sm" onclick="openAddCustomerModal()">＋ Add</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-s btn-sm" onclick="openBulkImportModal()">Import Bulk</button>
+        <button class="btn btn-p btn-sm" onclick="openAddCustomerModal()">＋ Add</button>
+      </div>
     </div>
     <div class="cg" id="cg"></div>
   </div>
@@ -929,6 +965,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
         <button class="smenu-item active" onclick="sPanel('products')">Products</button>
         <button class="smenu-item" onclick="sPanel('new-product')">Add Product</button>
         <button class="smenu-item" onclick="sPanel('wa-messages')">WA Messages</button>
+        <button class="smenu-item" onclick="sPanel('marketing-ai')">Marketing AI</button>
         <button class="smenu-item" onclick="sPanel('shipping')">Shipping</button>
       </div>
       <div>
@@ -983,6 +1020,35 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             </div>
           </div>
           <div id="wa-prod-cards"></div>
+        </div>
+        <div class="settings-panel" id="sp-marketing-ai">
+          <div class="card">
+            <div class="ch"><div class="ct">Marketing AI Configuration</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fg">
+                <label>AI Base URL</label>
+                <input id="mkt-ai-base-url" type="text" placeholder="https://api.openai.com/v1">
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Use an OpenAI-compatible endpoint. Default is OpenAI.</div>
+              </div>
+              <div class="fg">
+                <label>Model <span class="req">*</span></label>
+                <input id="mkt-ai-model" type="text" placeholder="e.g. gpt-4o-mini">
+              </div>
+              <div class="fg">
+                <label>API Key</label>
+                <input id="mkt-ai-api-key" type="password" placeholder="Leave blank to keep existing key">
+                <div id="mkt-ai-key-note" style="font-size:11.5px;color:var(--text-3);margin-top:4px"></div>
+              </div>
+              <div class="fg">
+                <label>System Prompt</label>
+                <textarea id="mkt-ai-system-prompt" rows="6" placeholder="Controls tone and style for generated messages."></textarea>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-p" onclick="saveMarketingSettings()">Save Marketing AI Settings</button>
+                <button class="btn btn-danger" onclick="clearMarketingApiKey()">Clear Saved API Key</button>
+              </div>
+            </div>
+          </div>
         </div>
         <div class="settings-panel" id="sp-shipping">
           <div class="card">
@@ -1050,6 +1116,10 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <span>Alerts</span>
     <span class="bnav-badge" id="bnav-badge" style="display:none">0</span>
   </button>
+  <button class="bnav-item" id="bnav-marketing" onclick="nav('marketing')">
+    <span class="bnav-icon">✦</span>
+    <span>Mkt</span>
+  </button>
   <button class="bnav-item" id="bnav-inventory" onclick="nav('inventory')">
     <span class="bnav-icon">▦</span>
     <span>Stock</span>
@@ -1074,6 +1144,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260403-15"></script>
+<script src="/static/app.js?v=20260406-01"></script>
 </body>
 </html>

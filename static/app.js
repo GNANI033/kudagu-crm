@@ -64,6 +64,7 @@ let _lastActionEl = null;
 let _lastActionAt = 0;
 let _uiReqDepth = 0;
 let _uiLoadingEl = null;
+let _marketingLastWaUrl = '';
 
 function _isActionEl(el){
   if(!el) return false;
@@ -677,23 +678,24 @@ function shippingLabel(oid,action){
 function isMobile(){ return window.innerWidth < 600; }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
-// Sidebar nav: dashboard=0, orders=1, alerts=2, inventory=3, distribution=4, customers=5, settings=6
+// Sidebar nav: dashboard=0, orders=1, alerts=2, marketing=3, inventory=4, distribution=5, customers=6, settings=7
 function nav(p){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   // Desktop sidebar
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,orders:1,alerts:2,inventory:3,distribution:4,customers:5,settings:6};
+  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,inventory:4,distribution:5,customers:6,settings:7};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',inventory:'bnav-inventory',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',inventory:'bnav-inventory',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
   if(p==='dashboard') rDash();
   if(p==='orders')    rOrders();
   if(p==='alerts')    rAlerts();
+  if(p==='marketing') rMarketingView();
   if(p==='inventory') rInventory();
   if(p==='distribution') rDistribution();
   if(p==='customers') rCustomers();
@@ -705,13 +707,174 @@ function sPanel(id){
   g('sp-'+id).classList.add('active');
   document.querySelectorAll('.smenu-item').forEach(b=>b.classList.remove('active'));
   const items=document.querySelectorAll('.smenu-item');
-  const map={products:0,'new-product':1,'wa-messages':2,shipping:3};
+  const map={products:0,'new-product':1,'wa-messages':2,'marketing-ai':3,shipping:4};
   if(map[id]!==undefined) items[map[id]].classList.add('active');
   if(id==='wa-messages') rWaMessages();
+  if(id==='marketing-ai') rMarketingSettings();
   if(id==='shipping') rShippingSettings();
 }
 
+function marketingWaPhone(phone){
+  let d=String(phone||'').replace(/\D+/g,'');
+  if(d.length===10) d='91'+d;
+  return d;
+}
+function populateMarketingCustomers(){
+  const sel=g('mkt-customer');
+  if(!sel) return;
+  if(!Array.isArray(S?.customers) || !S.customers.length){
+    sel.innerHTML='<option value="">No customers available</option>';
+    return;
+  }
+  const opts=S.customers
+    .slice()
+    .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')))
+    .map(c=>`<option value="${c.id}">${esc(c.name)}${c.area?` (${esc(c.area)})`:''}</option>`)
+    .join('');
+  sel.innerHTML=opts;
+}
+function rMarketingView(){
+  populateMarketingCustomers();
+  if(g('mkt-meta')) g('mkt-meta').textContent='Generate an AI draft, edit if needed, then open WhatsApp for individual send.';
+}
+function marketingDraftPayload(){
+  const customerId=parseInt(g('mkt-customer')?.value||0)||0;
+  return {
+    customerId,
+    campaignBrief:(g('mkt-brief')?.value||'').trim(),
+    extraInstruction:(g('mkt-extra')?.value||'').trim(),
+  };
+}
+async function generateMarketingDraft(){
+  const payload=marketingDraftPayload();
+  if(!payload.customerId){ toast('Select a customer first','err'); return; }
+  try{
+    const res=await api.post('/api/marketing/draft',payload);
+    if(g('mkt-output')) g('mkt-output').value=String(res.draft||'');
+    _marketingLastWaUrl=String(res.waUrl||'');
+    if(g('mkt-meta')) g('mkt-meta').textContent=`Draft ready for ${res.customerName||'customer'}. You can edit and send individually on WhatsApp.`;
+    toast('Marketing draft generated','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+function openMarketingWhatsApp(){
+  const customerId=parseInt(g('mkt-customer')?.value||0)||0;
+  if(!customerId){ toast('Select a customer first','err'); return; }
+  const cust=(S.customers||[]).find(c=>Number(c.id)===customerId);
+  if(!cust){ toast('Customer not found','err'); return; }
+  const draft=(g('mkt-output')?.value||'').trim();
+  if(!draft){ toast('Draft message is empty','err'); return; }
+  const phone=marketingWaPhone(cust.phone);
+  if(!phone){ toast('Customer phone is invalid','err'); return; }
+  const wa=`https://wa.me/${phone}?text=${encodeURIComponent(draft)}`;
+  _marketingLastWaUrl=wa;
+  window.open(wa,'_blank');
+}
+function rMarketingSettings(){
+  const ms=S?.marketingSettings||{};
+  if(g('mkt-ai-base-url')) g('mkt-ai-base-url').value=ms.aiBaseUrl||'https://api.openai.com/v1';
+  if(g('mkt-ai-model')) g('mkt-ai-model').value=ms.aiModel||'';
+  if(g('mkt-ai-api-key')) g('mkt-ai-api-key').value='';
+  if(g('mkt-ai-system-prompt')) g('mkt-ai-system-prompt').value=ms.systemPrompt||'';
+  const note=g('mkt-ai-key-note');
+  if(note){
+    if(ms.hasApiKey){
+      const hint=String(ms.apiKeyPreview||'').trim();
+      note.textContent=hint
+        ? `API key is saved (${hint}). Input is intentionally cleared after save for security.`
+        : 'API key is already saved. Input is intentionally cleared after save for security.';
+    }else{
+      note.textContent='No API key saved yet.';
+    }
+  }
+}
+async function saveMarketingSettings(){
+  const aiBaseUrl=(g('mkt-ai-base-url')?.value||'').trim();
+  const aiModel=(g('mkt-ai-model')?.value||'').trim();
+  const aiApiKey=(g('mkt-ai-api-key')?.value||'').trim();
+  const systemPrompt=(g('mkt-ai-system-prompt')?.value||'').trim();
+  if(!aiModel){ toast('Model is required','err'); return; }
+  const payload={ marketingSettings:{ aiBaseUrl, aiModel, systemPrompt } };
+  if(aiApiKey) payload.marketingSettings.aiApiKey=aiApiKey;
+  try{
+    await api.put('/api/settings',payload);
+    S=await api.get('/api/data');
+    toast('Marketing AI settings saved','ok');
+    rMarketingSettings();
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+async function clearMarketingApiKey(){
+  try{
+    await api.put('/api/settings',{marketingSettings:{clearApiKey:true}});
+    S=await api.get('/api/data');
+    toast('Saved API key cleared','ok');
+    rMarketingSettings();
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+
 // ─── CUSTOMERS ───────────────────────────────────────────────────────────────
+
+function detectImportFormat(fileName){
+  const n=String(fileName||'').toLowerCase();
+  if(n.endsWith('.vcf')) return 'vcf';
+  if(n.endsWith('.xlsx')) return 'xlsx';
+  if(n.endsWith('.xlsm')) return 'xlsm';
+  if(n.endsWith('.csv')) return 'csv';
+  return '';
+}
+function bytesToBase64(bytes){
+  let bin='';
+  const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk){
+    const sub=bytes.subarray(i, i+chunk);
+    bin += String.fromCharCode.apply(null, sub);
+  }
+  return btoa(bin);
+}
+async function fileToBase64(file){
+  const ab=await file.arrayBuffer();
+  return bytesToBase64(new Uint8Array(ab));
+}
+function openBulkImportModal(){
+  openModal(`
+    <div class="modal-title">Bulk Import Customers</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
+      <div style="font-size:12.5px;color:var(--text-2)">Supported files: <strong>.xlsx</strong>, <strong>.xlsm</strong>, <strong>.csv</strong>, <strong>.vcf</strong></div>
+      <div class="fg"><label>File <span class="req">*</span></label><input id="bulk-file" type="file" accept=".xlsx,.xlsm,.csv,.vcf"></div>
+      <div style="font-size:12px;color:var(--text-3)">Excel/CSV expected columns: <code>Name</code>, <code>Phone</code>, optional <code>Area</code>, <code>Email</code>, <code>Address</code>.</div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-p" style="flex:1" onclick="submitBulkImport()">Import Customers</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`,'lg');
+}
+async function submitBulkImport(){
+  const inp=g('bulk-file');
+  const file=inp?.files?.[0];
+  if(!file){ toast('Choose a file to import','err'); return; }
+  const fmt=detectImportFormat(file.name);
+  if(!fmt){ toast('Unsupported file. Use .xlsx, .xlsm, .csv, or .vcf','err'); return; }
+  try{
+    const contentBase64=await fileToBase64(file);
+    const res=await api.post('/api/customers/import',{format:fmt,filename:file.name,contentBase64});
+    const imported=Array.isArray(res.customers)?res.customers:[];
+    if(imported.length){
+      S.customers.push(...imported);
+      const maxId=Math.max(0,...S.customers.map(c=>parseInt(c.id||0)||0));
+      S.cid=maxId+1;
+    }
+    closeModal();
+    rCustomers();
+    toast(`Imported ${res.imported||0}, skipped ${res.skipped||0}`,(res.imported||0)>0?'ok':'');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
 
 // "Add Customer" button on the Customers page opens a modal form
 function openAddCustomerModal(){
@@ -756,10 +919,16 @@ function rCustomers(){
   grid.innerHTML=S.customers.map(c=>{
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
+    const orderTag=oc>0?'Order recorded':'No order yet';
     return`<div class="cc">
       <div class="cc-top">
         <div class="cav">${ini}</div>
-        <div style="flex:1;min-width:0"><div class="cnm">${esc(c.name)}</div><div class="car">${esc(c.area)}</div></div>
+        <div style="flex:1;min-width:0">
+          <div class="cnm" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span>${esc(c.name)}</span>
+          </div>
+          <div class="car">${esc(c.area)}</div>
+        </div>
         <button class="c-menu-btn" onclick="openCustomerMenu(${c.id},this)" title="Options">···</button>
       </div>
       <div class="cm">
@@ -769,6 +938,7 @@ function rCustomers(){
       </div>
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
+        <span class="pill pn">${orderTag}</span>
         ${oc>=5?`<span class="pill pg">Smart alerts on</span>`:`<span class="pill pn">${oc}/5 for smart</span>`}
       </div>
     </div>`;
