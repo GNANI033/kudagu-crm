@@ -795,11 +795,24 @@ async function saveMarketingSettings(){
   const aiApiKey=(g('mkt-ai-api-key')?.value||'').trim();
   const systemPrompt=(g('mkt-ai-system-prompt')?.value||'').trim();
   if(!aiModel){ toast('Model is required','err'); return; }
-  const payload={ marketingSettings:{ aiBaseUrl, aiModel, systemPrompt } };
-  if(aiApiKey) payload.marketingSettings.aiApiKey=aiApiKey;
+  const marketingSettings={ aiBaseUrl, aiModel, systemPrompt };
+  if(aiApiKey) marketingSettings.aiApiKey=aiApiKey;
+  const payload={ marketingSettings };
   try{
     await api.put('/api/settings',payload);
     S=await api.get('/api/data');
+    const saved = S?.marketingSettings || {};
+    const persisted =
+      String(saved.aiBaseUrl||'').trim() === String(marketingSettings.aiBaseUrl||'').trim() &&
+      String(saved.aiModel||'').trim() === String(marketingSettings.aiModel||'').trim() &&
+      String(saved.systemPrompt||'').trim() === String(marketingSettings.systemPrompt||'').trim();
+    // Compatibility fallback: some deployments may ignore marketingSettings in /api/settings.
+    if(!persisted){
+      const merged = { ...(S||{}), marketingSettings: { ...(saved||{}), ...marketingSettings } };
+      if(aiApiKey) merged.marketingSettings.aiApiKey = aiApiKey;
+      await api.put('/api/data', merged);
+      S=await api.get('/api/data');
+    }
     toast('Marketing AI settings saved','ok');
     rMarketingSettings();
   }catch(e){
@@ -810,6 +823,11 @@ async function clearMarketingApiKey(){
   try{
     await api.put('/api/settings',{marketingSettings:{clearApiKey:true}});
     S=await api.get('/api/data');
+    if(S?.marketingSettings?.hasApiKey){
+      const merged={...(S||{}),marketingSettings:{...(S.marketingSettings||{}),aiApiKey:''}};
+      await api.put('/api/data',merged);
+      S=await api.get('/api/data');
+    }
     toast('Saved API key cleared','ok');
     rMarketingSettings();
   }catch(e){
