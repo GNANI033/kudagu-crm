@@ -27,6 +27,8 @@ import textwrap
 import re
 import base64
 import csv
+import socket
+import ipaddress
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -46,6 +48,8 @@ STATIC_DIR = BASE_DIR / "static"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
 SYNC_LOCK = threading.Lock()
+MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
+ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
 
 # ── Default initial data (used only when data.json doesn't exist yet) ──────
 DEFAULT_DATA: dict = {
@@ -82,6 +86,7 @@ DEFAULT_DATA: dict = {
         "aiBaseUrl": "https://api.openai.com/v1",
         "aiModel": "",
         "aiApiKey": "",
+        "brandName": "",
         "systemPrompt": (
             "You are a concise marketing assistant for a premium coffee brand in India. "
             "Write a warm, personalized WhatsApp message in plain text. Keep it short, "
@@ -139,6 +144,8 @@ def migrate(data: dict) -> dict:
         ms["aiModel"] = DEFAULT_DATA["marketingSettings"]["aiModel"]
     if "aiApiKey" not in ms or not isinstance(ms.get("aiApiKey"), str):
         ms["aiApiKey"] = DEFAULT_DATA["marketingSettings"]["aiApiKey"]
+    if "brandName" not in ms or not isinstance(ms.get("brandName"), str):
+        ms["brandName"] = DEFAULT_DATA["marketingSettings"]["brandName"]
     if "systemPrompt" not in ms or not isinstance(ms.get("systemPrompt"), str):
         ms["systemPrompt"] = DEFAULT_DATA["marketingSettings"]["systemPrompt"]
     if "trackingTemplates" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("trackingTemplates"), dict):
@@ -495,8 +502,60 @@ def _extract_message_text(payload: dict) -> str:
     return ""
 
 
+def _is_private_or_local_host(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower()
+    if not host:
+        return True
+    if host in ("localhost",):
+        return True
+
+    def _ip_is_private(raw_ip: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+            return (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            )
+        except ValueError:
+            return False
+
+    if _ip_is_private(host):
+        return True
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        # If hostname cannot be resolved now, do not block by default.
+        return False
+    for info in infos:
+        ip = info[4][0] if info and len(info) >= 5 and info[4] else ""
+        if ip and _ip_is_private(ip):
+            return True
+    return False
+
+
+def _sanitize_ai_base_url(raw_value: Any) -> str:
+    raw = str(raw_value or "").strip() or DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+    parsed = urlparse.urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="AI Base URL must be a valid http(s) URL.")
+    if not ALLOW_PRIVATE_AI_BASE_URL and _is_private_or_local_host(parsed.hostname or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="AI Base URL cannot target localhost/private network hosts.",
+        )
+    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+    if not clean.endswith("/v1"):
+        clean = clean + "/v1"
+    return clean
+
+
 def _ai_chat_draft(base_url: str, api_key: str, model: str, system_prompt: str, user_prompt: str) -> str:
-    endpoint = base_url.rstrip("/") + "/chat/completions"
+    endpoint = _sanitize_ai_base_url(base_url).rstrip("/") + "/chat/completions"
     body = {
         "model": model,
         "messages": [
@@ -519,7 +578,11 @@ def _ai_chat_draft(base_url: str, api_key: str, model: str, system_prompt: str, 
             payload = json.loads(resp.read().decode("utf-8"))
     except urlerror.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(status_code=502, detail=f"AI provider error ({exc.code}): {detail[:400]}") from exc
+        print(f"[CRM] AI provider HTTP error {exc.code}: {detail[:400]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI provider request failed with HTTP {exc.code}. Verify model, API key, and prompt.",
+        ) from exc
     except urlerror.URLError as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach AI provider: {exc}") from exc
     except Exception as exc:
@@ -528,6 +591,20 @@ def _ai_chat_draft(base_url: str, api_key: str, model: str, system_prompt: str, 
     if not text:
         raise HTTPException(status_code=502, detail="AI provider returned an empty response.")
     return text
+
+
+def _template_token_issues(template: str) -> list[str]:
+    txt = str(template or "")
+    issues: list[str] = []
+    # order_count is count of orders, never weight/pack quantity.
+    if re.search(r"\{\{\s*order_count\s*\}\}\s*(kg|g|grams?|packs?)", txt, flags=re.IGNORECASE):
+        issues.append("{{order_count}} used with weight/pack unit")
+    if re.search(r"(kg|g|grams?|packs?)\s*\{\{\s*order_count\s*\}\}", txt, flags=re.IGNORECASE):
+        issues.append("weight/pack unit used with {{order_count}}")
+    # last_order_date is historical date, never validity date.
+    if re.search(r"(valid|validity|expires?|expiry|until)\b[^\n]*\{\{\s*last_order_date\s*\}\}", txt, flags=re.IGNORECASE):
+        issues.append("{{last_order_date}} used as validity/expiry")
+    return issues
 
 
 def _normalize_composition(composition: Any) -> list[dict]:
@@ -1064,9 +1141,14 @@ async def import_customers(request: Request):
         raise HTTPException(status_code=400, detail="format and contentBase64 are required")
 
     try:
-        file_bytes = base64.b64decode(b64)
+        file_bytes = base64.b64decode(b64, validate=True)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid base64 file content")
+    if len(file_bytes) > MAX_IMPORT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Import file too large. Max allowed is {MAX_IMPORT_BYTES // (1024 * 1024)} MB.",
+        )
 
     if fmt == "vcf":
         contacts = _parse_vcf_contacts(file_bytes.decode("utf-8", errors="ignore"))
@@ -1616,9 +1698,11 @@ async def update_settings(request: Request):
         curr = copy.deepcopy(data.get("marketingSettings", {}))
         incoming = body["marketingSettings"]
         if "aiBaseUrl" in incoming:
-            curr["aiBaseUrl"] = str(incoming.get("aiBaseUrl") or "").strip() or DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+            curr["aiBaseUrl"] = _sanitize_ai_base_url(incoming.get("aiBaseUrl"))
         if "aiModel" in incoming:
             curr["aiModel"] = str(incoming.get("aiModel") or "").strip()
+        if "brandName" in incoming:
+            curr["brandName"] = str(incoming.get("brandName") or "").strip()
         if "systemPrompt" in incoming:
             curr["systemPrompt"] = str(incoming.get("systemPrompt") or "").strip()
         if incoming.get("clearApiKey") is True:
@@ -1651,11 +1735,7 @@ async def generate_marketing_draft(request: Request):
         raise HTTPException(status_code=404, detail="Customer not found")
 
     ms = data.get("marketingSettings", {})
-    base_url = str(ms.get("aiBaseUrl") or "").strip().rstrip("/")
-    if not base_url:
-        base_url = DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
-    if not base_url.endswith("/v1"):
-        base_url = base_url + "/v1"
+    base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
     model = str(ms.get("aiModel") or "").strip()
     api_key = str(ms.get("aiApiKey") or "").strip()
     system_prompt = str(ms.get("systemPrompt") or "").strip() or DEFAULT_DATA["marketingSettings"]["systemPrompt"]
@@ -1698,6 +1778,128 @@ async def generate_marketing_draft(request: Request):
     }
 
 
+@app.post("/api/marketing/template")
+async def generate_marketing_template(request: Request):
+    body = await request.json()
+    campaign_brief = str(body.get("campaignBrief") or "").strip()
+    extra_instruction = str(body.get("extraInstruction") or "").strip()
+    group_summary = str(body.get("groupSummary") or "").strip()
+    allowed_tokens = body.get("allowedTokens") or []
+    if not isinstance(allowed_tokens, list):
+        allowed_tokens = []
+    allowed_tokens = [str(t).strip() for t in allowed_tokens if str(t).strip()]
+    if not allowed_tokens:
+        allowed_tokens = [
+            "{{brand_name}}",
+            "{{customer_name}}",
+            "{{area}}",
+            "{{order_count}}",
+            "{{avg_order_value}}",
+            "{{last_order_date}}",
+            "{{last_product_name}}",
+            "{{last_variant}}",
+            "{{preferred_channel}}",
+        ]
+
+    data = migrate(read_data())
+    ms = data.get("marketingSettings", {})
+    base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
+    model = str(ms.get("aiModel") or "").strip()
+    api_key = str(ms.get("aiApiKey") or "").strip()
+    system_prompt = str(ms.get("systemPrompt") or "").strip() or DEFAULT_DATA["marketingSettings"]["systemPrompt"]
+    if not model:
+        raise HTTPException(status_code=400, detail="Set AI model in Settings → Marketing AI first.")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Set AI API key in Settings → Marketing AI first.")
+
+    token_line = " ".join(allowed_tokens)
+    token_meanings = {
+        "{{brand_name}}": "Your brand/business name from settings. Use when message signs off or references brand.",
+        "{{customer_name}}": "Customer full name. Use for greeting/personal tone.",
+        "{{area}}": "Customer locality/area.",
+        "{{order_count}}": "Total number of past orders (integer).",
+        "{{avg_order_value}}": "Average order value already formatted currency text (example: ₹420).",
+        "{{last_order_date}}": "Date of customer's last order. This is historical data, not campaign validity date.",
+        "{{last_product_name}}": "Name of last product ordered.",
+        "{{last_variant}}": "Variant/size of last order (example: 250g).",
+        "{{preferred_channel}}": "Most frequent purchase channel (retail/whatsapp/website).",
+    }
+    token_help_lines = []
+    for tok in allowed_tokens:
+        token_help_lines.append(f"- {tok}: {token_meanings.get(tok, 'Token placeholder from CRM data.')}")
+
+    prompt_lines = [
+        "Create exactly one reusable WhatsApp marketing template for a customer group.",
+        "Return template text only.",
+        "Do not personalize with real names. Use placeholders/tokens.",
+        "Keep under 90 words and plain text.",
+        "Use the minimum number of tokens needed. Default target: 1 to 3 tokens, not all.",
+        "Do not include token-heavy data-dump style lines.",
+        "Do not invent facts not present in tokens.",
+        "Do not convert historical fields into future promises unless campaign explicitly asks.",
+        "Specifically: never use {{last_order_date}} as offer expiry/valid-until date.",
+        "Do not claim guaranteed discounts/freebies unless campaign brief explicitly says so.",
+        "If brand name is needed in message/signoff, use {{brand_name}} token instead of generic placeholders.",
+        "Prefer simple structure: greeting + offer + short call-to-action.",
+        "Only use stats tokens ({{order_count}}, {{avg_order_value}}) when brief explicitly needs analytics-style personalization.",
+        "For most campaigns, prefer {{customer_name}} and optionally one contextual token like {{last_product_name}} or {{area}}.",
+        "",
+        "Campaign Brief:",
+        campaign_brief or "Re-engagement campaign for filtered customer group.",
+        "",
+        "Group Summary:",
+        group_summary or "-",
+        "",
+        "Allowed Tokens (use only if needed for campaign goal; do not force all):",
+        token_line,
+        "",
+        "Token Meanings:",
+        *token_help_lines,
+    ]
+    if extra_instruction:
+        prompt_lines.extend(["", "Extra Instruction:", extra_instruction])
+    user_prompt = "\n".join(prompt_lines)
+
+    template = _ai_chat_draft(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    issues = _template_token_issues(template)
+    if issues:
+        fix_prompt = "\n".join(
+            [
+                "Your previous template had token misuse.",
+                "Fix and return only corrected template text.",
+                "Do not change campaign intent.",
+                "Hard rules:",
+                "- {{order_count}} is number of orders; do not attach kg/g/pack units.",
+                "- {{last_order_date}} is historical date; do not use as expiry/valid-until.",
+                "- Keep token count minimal (1-3 unless absolutely needed).",
+                "",
+                "Previous template:",
+                template,
+            ]
+        )
+        template = _ai_chat_draft(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=fix_prompt,
+        )
+        issues = _template_token_issues(template)
+    used = [tok for tok in allowed_tokens if tok in template]
+    return {
+        "template": template,
+        "allowedTokens": allowed_tokens,
+        "usedTokens": used,
+        "issues": issues,
+    }
+
+
 # ── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     # Ensure data.json exists on startup
@@ -1707,5 +1909,6 @@ if __name__ == "__main__":
     else:
         print(f"[CRM] Using existing data.json at {DATA_FILE}")
 
-    print("[CRM] Starting server at http://0.0.0.0:8000")
-    uvicorn.run("app:app", host="0.0.0.0", port=8000, reload=False)
+    host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
+    print(f"[CRM] Starting server at http://{host}:8000")
+    uvicorn.run("app:app", host=host, port=8000, reload=False)

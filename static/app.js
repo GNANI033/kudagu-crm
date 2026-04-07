@@ -719,62 +719,454 @@ function marketingWaPhone(phone){
   if(d.length===10) d='91'+d;
   return d;
 }
-function populateMarketingCustomers(){
-  const sel=g('mkt-customer');
-  if(!sel) return;
-  if(!Array.isArray(S?.customers) || !S.customers.length){
-    sel.innerHTML='<option value="">No customers available</option>';
-    return;
+const MKT_RUNNER_KEY='kudagu_marketing_runner_v1';
+const MKT_GROUPS_KEY='kudagu_marketing_groups_v1';
+const MKT_ALLOWED_TOKENS=[
+  '{{brand_name}}','{{customer_name}}','{{area}}','{{order_count}}','{{avg_order_value}}',
+  '{{last_order_date}}','{{last_product_name}}','{{last_variant}}','{{preferred_channel}}',
+];
+let MKT_STATE={status:'idle',customerIds:[],currentIndex:0,total:0,delaySec:10,template:'',updatedAt:0};
+let MKT_GROUPS=[];
+let MKT_ACTIVE_GROUP_ID='';
+let _mktTimer=null;
+let _mktGroupMenuId='';
+
+function getCustomerOrders(cid){
+  return (S.orders||[]).filter(o=>Number(o.cid)===Number(cid)).sort((a,b)=>Number(a.at||0)-Number(b.at||0));
+}
+function avgOrderValueForCustomer(cid){
+  const orders=getCustomerOrders(cid);
+  if(!orders.length) return 0;
+  const sum=orders.reduce((s,o)=>s+(Number(orderRevenue(o))||0),0);
+  return sum/orders.length;
+}
+function avgGapDaysForCustomer(cid){
+  const orders=getCustomerOrders(cid);
+  if(orders.length<2) return Infinity;
+  let sum=0;
+  for(let i=1;i<orders.length;i++){
+    const d=Math.abs((Number(orders[i].at||0)-Number(orders[i-1].at||0))/(1000*60*60*24));
+    sum+=d;
   }
-  const opts=S.customers
-    .slice()
-    .sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')))
-    .map(c=>`<option value="${c.id}">${esc(c.name)}${c.area?` (${esc(c.area)})`:''}</option>`)
-    .join('');
-  sel.innerHTML=opts;
+  return sum/(orders.length-1);
 }
-function rMarketingView(){
-  populateMarketingCustomers();
-  if(g('mkt-meta')) g('mkt-meta').textContent='Generate an AI draft, edit if needed, then open WhatsApp for individual send.';
+function preferredChannelForCustomer(cid){
+  const orders=getCustomerOrders(cid);
+  if(!orders.length) return '';
+  const m={retail:0,whatsapp:0,website:0};
+  orders.forEach(o=>{ const ch=String(o.channel||'').toLowerCase(); if(m[ch]!==undefined) m[ch]+=1; });
+  return Object.entries(m).sort((a,b)=>b[1]-a[1])[0][0]||'';
 }
-function marketingDraftPayload(){
-  const customerId=parseInt(g('mkt-customer')?.value||0)||0;
+function buildMarketingMergeData(c){
+  const orders=getCustomerOrders(c.id);
+  const last=orders.length?orders[orders.length-1]:null;
+  const aov=avgOrderValueForCustomer(c.id);
+  const brandName=String(S?.marketingSettings?.brandName||S?.shippingProfile?.companyName||'Our Brand').trim()||'Our Brand';
   return {
-    customerId,
-    campaignBrief:(g('mkt-brief')?.value||'').trim(),
-    extraInstruction:(g('mkt-extra')?.value||'').trim(),
+    brand_name:brandName,
+    customer_name:String(c.name||''),
+    area:String(c.area||''),
+    order_count:String(orders.length),
+    avg_order_value:`₹${aov.toFixed(0)}`,
+    last_order_date:last?fd(last.at):'N/A',
+    last_product_name:last?String(last.prod||''):'N/A',
+    last_variant:last?(VL[last.variant]||last.variant):'N/A',
+    preferred_channel:preferredChannelForCustomer(c.id)||'N/A',
   };
 }
-async function generateMarketingDraft(){
-  const payload=marketingDraftPayload();
-  if(!payload.customerId){ toast('Select a customer first','err'); return; }
+function fillMarketingTemplate(tpl,data){
+  let out=String(tpl||'');
+  Object.keys(data||{}).forEach(k=>{
+    const v=String(data[k]??'');
+    const re=new RegExp(`\\{\\{\\s*${k}\\s*\\}\\}`,'ig');
+    out=out.replace(re,v);
+  });
+  return out;
+}
+function loadMarketingState(){
   try{
-    const res=await api.post('/api/marketing/draft',payload);
-    if(g('mkt-output')) g('mkt-output').value=String(res.draft||'');
-    _marketingLastWaUrl=String(res.waUrl||'');
-    if(g('mkt-meta')) g('mkt-meta').textContent=`Draft ready for ${res.customerName||'customer'}. You can edit and send individually on WhatsApp.`;
-    toast('Marketing draft generated','ok');
+    const raw=localStorage.getItem(MKT_RUNNER_KEY);
+    if(!raw) return;
+    const obj=JSON.parse(raw);
+    if(obj && typeof obj==='object') MKT_STATE={...MKT_STATE,...obj};
+  }catch(_){}
+}
+function saveMarketingState(){
+  MKT_STATE.updatedAt=Date.now();
+  localStorage.setItem(MKT_RUNNER_KEY,JSON.stringify(MKT_STATE));
+}
+function clearMarketingTimer(){
+  if(_mktTimer){ clearTimeout(_mktTimer); _mktTimer=null; }
+}
+function loadMarketingGroups(){
+  try{
+    const raw=localStorage.getItem(MKT_GROUPS_KEY);
+    if(!raw){ MKT_GROUPS=[]; return; }
+    const arr=JSON.parse(raw);
+    MKT_GROUPS=Array.isArray(arr)?arr:[];
+  }catch(_){ MKT_GROUPS=[]; }
+}
+function saveMarketingGroups(){
+  localStorage.setItem(MKT_GROUPS_KEY,JSON.stringify(MKT_GROUPS));
+}
+function captureCurrentMarketingFilters(){
+  return getMarketingFilters();
+}
+function setMarketingFilters(f){
+  if(g('mkt-f-has-orders')) g('mkt-f-has-orders').value=f?.hasOrders||'any';
+  if(g('mkt-f-area')) g('mkt-f-area').value=f?.area||'any';
+  if(g('mkt-f-channel')) g('mkt-f-channel').value=f?.channel||'any';
+  if(g('mkt-f-aov-mode')) g('mkt-f-aov-mode').value=f?.aovMode||'any';
+  if(g('mkt-f-aov-value')) g('mkt-f-aov-value').value=(f?.aovValue ?? '')===0 ? '' : String(f?.aovValue ?? '');
+  if(g('mkt-f-regular')) g('mkt-f-regular').value=f?.regular||'any';
+  if(g('mkt-f-reg-min-orders')) g('mkt-f-reg-min-orders').value=String(f?.regMinOrders||3);
+  if(g('mkt-f-reg-max-gap')) g('mkt-f-reg-max-gap').value=String(f?.regMaxGap||45);
+}
+function refreshMarketingGroupsUI(){
+  const wrap=g('mkt-group-buttons');
+  if(!wrap) return;
+  if(!MKT_GROUPS.length){
+    wrap.innerHTML='<span style="font-size:12px;color:var(--text-3)">No saved groups yet.</span>';
+    return;
+  }
+  wrap.innerHTML=MKT_GROUPS.map(gr=>{
+    const on=MKT_ACTIVE_GROUP_ID===gr.id;
+    const menuOpen=_mktGroupMenuId===gr.id;
+    return `<div style="position:relative;display:inline-flex;align-items:center;gap:4px;background:${on?'var(--surface-2)':'transparent'};border:1px solid var(--border);border-radius:999px;padding:2px">
+      <button class="btn btn-s btn-xs" style="border-radius:999px;min-height:30px;padding:6px 10px;${on?'background:var(--accent);color:#fff;':''}" onclick="applyMarketingGroup('${gr.id}')">${esc(gr.name)}</button>
+      <button class="btn btn-s btn-xs" style="border-radius:999px;min-height:30px;padding:6px 9px" title="Group options" onclick="toggleMarketingGroupMenu('${gr.id}',event)">⋯</button>
+      <div style="display:${menuOpen?'block':'none'};position:absolute;top:36px;right:0;z-index:30;background:var(--surface);border:1px solid var(--border);border-radius:8px;box-shadow:var(--sh);min-width:110px;padding:4px">
+        <button class="ctx-item" style="width:100%" onclick="openEditMarketingGroupModal('${gr.id}')">Edit</button>
+        <button class="ctx-item" style="width:100%;color:var(--red)" onclick="deleteMarketingGroup('${gr.id}')">Delete</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+function toggleMarketingGroupMenu(id, ev){
+  if(ev){ ev.preventDefault(); ev.stopPropagation(); }
+  _mktGroupMenuId = (_mktGroupMenuId===id) ? '' : id;
+  refreshMarketingGroupsUI();
+}
+document.addEventListener('click', ()=>{
+  if(!_mktGroupMenuId) return;
+  _mktGroupMenuId='';
+  refreshMarketingGroupsUI();
+});
+function openSaveMarketingGroupModal(){
+  openModal(`
+    <div class="modal-title">Save Group</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:16px">
+      <div class="fg">
+        <label>Group Name <span class="req">*</span></label>
+        <input id="mkt-group-name" type="text" placeholder="e.g. High AOV Regulars">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="submitSaveMarketingGroup()">Save Group</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`,'');
+}
+function openEditMarketingGroupModal(id){
+  const grp=MKT_GROUPS.find(x=>x.id===id);
+  if(!grp){ toast('Saved group not found','err'); return; }
+  _mktGroupMenuId='';
+  openModal(`
+    <div class="modal-title">Edit Group</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:16px">
+      <div class="fg">
+        <label>Group Name <span class="req">*</span></label>
+        <input id="mkt-group-edit-name" type="text" value="${esc(grp.name||'')}">
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="submitEditMarketingGroup('${id}')">Save Changes</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`,'');
+}
+function submitSaveMarketingGroup(){
+  const name=String(g('mkt-group-name')?.value||'').trim();
+  if(!name){ toast('Group name is required','err'); return; }
+  if(MKT_GROUPS.some(x=>String(x.name||'').toLowerCase()===name.toLowerCase())){
+    toast('Group name already exists','err'); return;
+  }
+  const id=`grp-${Date.now()}`;
+  MKT_GROUPS.push({id,name,filters:captureCurrentMarketingFilters(),createdAt:Date.now()});
+  MKT_ACTIVE_GROUP_ID=id;
+  saveMarketingGroups();
+  refreshMarketingGroupsUI();
+  closeModal();
+  toast('Group saved','ok');
+}
+function submitEditMarketingGroup(id){
+  const grp=MKT_GROUPS.find(x=>x.id===id);
+  if(!grp){ toast('Saved group not found','err'); return; }
+  const name=String(g('mkt-group-edit-name')?.value||'').trim();
+  if(!name){ toast('Group name is required','err'); return; }
+  if(MKT_GROUPS.some(x=>x.id!==id && String(x.name||'').toLowerCase()===name.toLowerCase())){
+    toast('Group name already exists','err'); return;
+  }
+  grp.name=name;
+  saveMarketingGroups();
+  refreshMarketingGroupsUI();
+  closeModal();
+  toast('Group updated','ok');
+}
+function applyMarketingGroup(id){
+  const grp=MKT_GROUPS.find(x=>x.id===id);
+  if(!grp){ toast('Saved group not found','err'); return; }
+  setMarketingFilters(grp.filters||{});
+  MKT_ACTIVE_GROUP_ID=id;
+  refreshMarketingGroupsUI();
+  refreshMarketingGroup();
+  toast(`Applied group: ${grp.name}`,'ok');
+}
+function deleteMarketingGroup(id){
+  const grp=MKT_GROUPS.find(x=>x.id===id);
+  if(!grp) return;
+  if(!confirm(`Delete saved group "${grp.name}"?`)) return;
+  MKT_GROUPS=MKT_GROUPS.filter(x=>x.id!==id);
+  _mktGroupMenuId='';
+  if(MKT_ACTIVE_GROUP_ID===id) MKT_ACTIVE_GROUP_ID='';
+  saveMarketingGroups();
+  refreshMarketingGroupsUI();
+  refreshMarketingGroup();
+  toast('Group deleted','ok');
+}
+function updateMarketingProgressUI(){
+  const total=Math.max(0,Number(MKT_STATE.total||0));
+  const done=Math.min(total,Math.max(0,Number(MKT_STATE.currentIndex||0)));
+  const pct=total?Math.round((done/total)*100):0;
+  if(g('mkt-progress-bar')) g('mkt-progress-bar').style.width=`${pct}%`;
+  if(g('mkt-progress-text')){
+    const st=String(MKT_STATE.status||'idle');
+    if(st==='idle') g('mkt-progress-text').textContent='No campaign running.';
+    else g('mkt-progress-text').textContent=`${st.toUpperCase()} · ${done}/${total} sent · ${pct}%`;
+  }
+  updateMarketingToggleButton();
+}
+function updateMarketingToggleButton(){
+  const btn=g('mkt-toggle-btn');
+  if(!btn) return;
+  const st=String(MKT_STATE.status||'idle');
+  if(st==='running'){
+    btn.textContent='Pause';
+  }else if(st==='paused'){
+    btn.textContent='Resume';
+  }else{
+    btn.textContent='Pause';
+  }
+}
+function toggleMarketingRunState(){
+  const st=String(MKT_STATE.status||'idle');
+  if(st==='running'){
+    pauseMarketingCampaign();
+    return;
+  }
+  if(st==='paused'){
+    resumeMarketingCampaign();
+    return;
+  }
+  toast('Start campaign first using Go','err');
+}
+function getMarketingFilters(){
+  return {
+    hasOrders:(g('mkt-f-has-orders')?.value||'any'),
+    area:(g('mkt-f-area')?.value||'any'),
+    channel:(g('mkt-f-channel')?.value||'any'),
+    aovMode:(g('mkt-f-aov-mode')?.value||'any'),
+    aovValue:parseFloat(g('mkt-f-aov-value')?.value||0)||0,
+    regular:(g('mkt-f-regular')?.value||'any'),
+    regMinOrders:Math.max(1,parseInt(g('mkt-f-reg-min-orders')?.value||3)||3),
+    regMaxGap:Math.max(1,parseFloat(g('mkt-f-reg-max-gap')?.value||45)||45),
+  };
+}
+function isRegularCustomerByRule(c,f){
+  const oc=getCustomerOrders(c.id).length;
+  if(oc < f.regMinOrders) return false;
+  return avgGapDaysForCustomer(c.id) <= f.regMaxGap;
+}
+function getMarketingGroupCustomers(){
+  const f=getMarketingFilters();
+  return (S.customers||[]).filter(c=>{
+    const orders=getCustomerOrders(c.id);
+    const hasOrders=orders.length>0;
+    if(f.hasOrders==='yes' && !hasOrders) return false;
+    if(f.hasOrders==='no' && hasOrders) return false;
+    if(f.area!=='any' && String(c.area||'')!==f.area) return false;
+    if(f.channel!=='any'){
+      const anyCh=orders.some(o=>String(o.channel||'').toLowerCase()===f.channel);
+      if(!anyCh) return false;
+    }
+    if(f.aovMode!=='any'){
+      const aov=avgOrderValueForCustomer(c.id);
+      if(f.aovMode==='above' && !(aov>f.aovValue)) return false;
+      if(f.aovMode==='below' && !(aov<f.aovValue)) return false;
+    }
+    if(f.regular!=='any'){
+      const reg=isRegularCustomerByRule(c,f);
+      if(f.regular==='yes' && !reg) return false;
+      if(f.regular==='no' && reg) return false;
+    }
+    return true;
+  });
+}
+function refreshMarketingAreas(){
+  const el=g('mkt-f-area');
+  if(!el) return;
+  const cur=el.value||'any';
+  const areas=Array.from(new Set((S.customers||[]).map(c=>String(c.area||'').trim()).filter(Boolean))).sort();
+  el.innerHTML=['<option value="any">All areas</option>',...areas.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`)].join('');
+  if(areas.includes(cur)) el.value=cur; else el.value='any';
+}
+function buildMarketingGroupSummary(customers){
+  const f=getMarketingFilters();
+  const avgAov=customers.length?customers.reduce((s,c)=>s+avgOrderValueForCustomer(c.id),0)/customers.length:0;
+  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
+}
+function refreshMarketingGroup(){
+  const customers=getMarketingGroupCustomers();
+  if(g('mkt-group-summary')) g('mkt-group-summary').textContent=buildMarketingGroupSummary(customers);
+  if(g('mkt-group-sample')){
+    const sample=customers.slice(0,5).map(c=>`${c.name} (${c.area||'-'})`).join(', ');
+    g('mkt-group-sample').textContent=sample?`Sample: ${sample}${customers.length>5?' ...':''}`:'No customers match current filters.';
+  }
+  previewMarketingTemplate();
+}
+function rMarketingView(){
+  refreshMarketingAreas();
+  loadMarketingGroups();
+  refreshMarketingGroupsUI();
+  loadMarketingState();
+  if(MKT_STATE.status==='running'){
+    MKT_STATE.status='paused';
+    saveMarketingState();
+    if(g('mkt-meta')) g('mkt-meta').textContent='Campaign restored in paused mode. Click Resume to continue.';
+  }
+  refreshMarketingGroup();
+  updateMarketingProgressUI();
+}
+function previewMarketingTemplate(){
+  const customers=getMarketingGroupCustomers();
+  const tpl=(g('mkt-template')?.value||'').trim();
+  if(!g('mkt-preview')) return;
+  if(!tpl){ g('mkt-preview').innerHTML='Template preview will appear here.'; return; }
+  if(!customers.length){ g('mkt-preview').innerHTML='No customers in selected group.'; return; }
+  const merged=fillMarketingTemplate(tpl,buildMarketingMergeData(customers[0]));
+  g('mkt-preview').innerHTML=esc(merged).replace(/\n/g,'<br>');
+}
+async function generateMarketingTemplate(){
+  const customers=getMarketingGroupCustomers();
+  if(!customers.length){ toast('No customers match current filters','err'); return; }
+  const campaignBrief=(g('mkt-brief')?.value||'').trim();
+  if(!campaignBrief){ toast('Enter campaign goal','err'); return; }
+  try{
+    const res=await api.post('/api/marketing/template',{
+      campaignBrief,
+      extraInstruction:(g('mkt-extra')?.value||'').trim(),
+      groupSummary:buildMarketingGroupSummary(customers),
+      allowedTokens:MKT_ALLOWED_TOKENS,
+    });
+    const tpl=String(res.template||'').trim();
+    if(g('mkt-template')) g('mkt-template').value=tpl;
+    previewMarketingTemplate();
+    if(Array.isArray(res.issues) && res.issues.length){
+      toast(`Template warning: ${res.issues.join(', ')}`,'err');
+    }
+    toast('Template generated','ok');
   }catch(e){
     toast('Error: '+e.message,'err');
   }
 }
-function openMarketingWhatsApp(){
-  const customerId=parseInt(g('mkt-customer')?.value||0)||0;
-  if(!customerId){ toast('Select a customer first','err'); return; }
-  const cust=(S.customers||[]).find(c=>Number(c.id)===customerId);
-  if(!cust){ toast('Customer not found','err'); return; }
-  const draft=(g('mkt-output')?.value||'').trim();
-  if(!draft){ toast('Draft message is empty','err'); return; }
-  const phone=marketingWaPhone(cust.phone);
-  if(!phone){ toast('Customer phone is invalid','err'); return; }
-  const wa=`https://wa.me/${phone}?text=${encodeURIComponent(draft)}`;
-  _marketingLastWaUrl=wa;
+function openMarketingChatForCustomer(c, templateText){
+  const phone=marketingWaPhone(c.phone);
+  if(!phone) return false;
+  const msg=fillMarketingTemplate(templateText,buildMarketingMergeData(c));
+  const wa=`https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
   window.open(wa,'_blank');
+  _marketingLastWaUrl=wa;
+  return true;
+}
+function marketingRunnerStep(){
+  clearMarketingTimer();
+  if(MKT_STATE.status!=='running') return;
+  const ids=MKT_STATE.customerIds||[];
+  if(MKT_STATE.currentIndex>=ids.length){
+    MKT_STATE.status='completed';
+    saveMarketingState();
+    updateMarketingProgressUI();
+    if(g('mkt-meta')) g('mkt-meta').textContent='Campaign completed.';
+    return;
+  }
+  const cid=ids[MKT_STATE.currentIndex];
+  const cust=(S.customers||[]).find(c=>Number(c.id)===Number(cid));
+  if(cust) openMarketingChatForCustomer(cust, MKT_STATE.template||'');
+  MKT_STATE.currentIndex += 1;
+  saveMarketingState();
+  updateMarketingProgressUI();
+  if(MKT_STATE.currentIndex>=ids.length){
+    MKT_STATE.status='completed';
+    saveMarketingState();
+    updateMarketingProgressUI();
+    if(g('mkt-meta')) g('mkt-meta').textContent='Campaign completed.';
+    return;
+  }
+  const waitMs=Math.max(3000,(Number(MKT_STATE.delaySec)||10)*1000);
+  _mktTimer=setTimeout(marketingRunnerStep,waitMs);
+}
+function startMarketingCampaign(){
+  const customers=getMarketingGroupCustomers();
+  if(!customers.length){ toast('No customers in this group','err'); return; }
+  const templateText=(g('mkt-template')?.value||'').trim();
+  if(!templateText){ toast('Generate or enter template first','err'); return; }
+  const delaySec=Math.max(3,parseInt(g('mkt-delay-sec')?.value||10)||10);
+  MKT_STATE={
+    status:'running',
+    customerIds:customers.map(c=>c.id),
+    currentIndex:0,
+    total:customers.length,
+    delaySec,
+    template:templateText,
+    updatedAt:Date.now(),
+  };
+  saveMarketingState();
+  updateMarketingProgressUI();
+  if(g('mkt-meta')) g('mkt-meta').textContent='Campaign started. WhatsApp chats will open sequentially.';
+  marketingRunnerStep();
+}
+function pauseMarketingCampaign(){
+  if(MKT_STATE.status!=='running') return;
+  MKT_STATE.status='paused';
+  saveMarketingState();
+  clearMarketingTimer();
+  updateMarketingProgressUI();
+  if(g('mkt-meta')) g('mkt-meta').textContent='Campaign paused.';
+}
+function resumeMarketingCampaign(){
+  if(!['paused','running'].includes(String(MKT_STATE.status||''))) return;
+  if(MKT_STATE.currentIndex>=Number(MKT_STATE.total||0)){
+    MKT_STATE.status='completed';
+    saveMarketingState();
+    updateMarketingProgressUI();
+    return;
+  }
+  MKT_STATE.status='running';
+  saveMarketingState();
+  updateMarketingProgressUI();
+  if(g('mkt-meta')) g('mkt-meta').textContent='Campaign resumed.';
+  marketingRunnerStep();
+}
+function resetMarketingCampaign(){
+  clearMarketingTimer();
+  MKT_STATE={status:'idle',customerIds:[],currentIndex:0,total:0,delaySec:10,template:'',updatedAt:Date.now()};
+  localStorage.removeItem(MKT_RUNNER_KEY);
+  updateMarketingProgressUI();
+  if(g('mkt-meta')) g('mkt-meta').textContent='Campaign reset.';
 }
 function rMarketingSettings(){
   const ms=S?.marketingSettings||{};
   if(g('mkt-ai-base-url')) g('mkt-ai-base-url').value=ms.aiBaseUrl||'https://api.openai.com/v1';
   if(g('mkt-ai-model')) g('mkt-ai-model').value=ms.aiModel||'';
+  if(g('mkt-ai-brand-name')) g('mkt-ai-brand-name').value=ms.brandName||'';
   if(g('mkt-ai-api-key')) g('mkt-ai-api-key').value='';
   if(g('mkt-ai-system-prompt')) g('mkt-ai-system-prompt').value=ms.systemPrompt||'';
   const note=g('mkt-ai-key-note');
@@ -792,10 +1184,11 @@ function rMarketingSettings(){
 async function saveMarketingSettings(){
   const aiBaseUrl=(g('mkt-ai-base-url')?.value||'').trim();
   const aiModel=(g('mkt-ai-model')?.value||'').trim();
+  const brandName=(g('mkt-ai-brand-name')?.value||'').trim();
   const aiApiKey=(g('mkt-ai-api-key')?.value||'').trim();
   const systemPrompt=(g('mkt-ai-system-prompt')?.value||'').trim();
   if(!aiModel){ toast('Model is required','err'); return; }
-  const marketingSettings={ aiBaseUrl, aiModel, systemPrompt };
+  const marketingSettings={ aiBaseUrl, aiModel, brandName, systemPrompt };
   if(aiApiKey) marketingSettings.aiApiKey=aiApiKey;
   const payload={ marketingSettings };
   try{
@@ -1042,7 +1435,7 @@ function cs_search(){
   const q=g('cs').value.trim().toLowerCase(),dd=g('cs-dd');
   const hits=S.customers.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q)||c.area.toLowerCase().includes(q)).slice(0,8);
   if(!hits.length){dd.classList.remove('open');return;}
-  dd.innerHTML=hits.map(c=>{const oc=S.orders.filter(o=>o.cid===c.id).length;return`<div class="ddi" onclick="pickC(${c.id})"><div><div class="ddi-n">${c.name}</div><div class="ddi-m">${c.phone} · ${c.area}</div></div><span class="ddi-a">${oc} order${oc!==1?'s':''}</span></div>`;}).join('');
+  dd.innerHTML=hits.map(c=>{const oc=S.orders.filter(o=>o.cid===c.id).length;return`<div class="ddi" onclick="pickC(${c.id})"><div><div class="ddi-n">${esc(c.name)}</div><div class="ddi-m">${esc(c.phone)} · ${esc(c.area)}</div></div><span class="ddi-a">${oc} order${oc!==1?'s':''}</span></div>`;}).join('');
   dd.classList.add('open');
 }
 function pickC(id){
@@ -1050,7 +1443,7 @@ function pickC(id){
   const ini=selC.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
   const oc=S.orders.filter(o=>o.cid===id).length;
   const el=g('sel-c'); el.style.display='block';
-  el.innerHTML=`<div class="sc-box"><div style="display:flex;align-items:center;gap:10px"><div class="sc-av">${ini}</div><div><div class="sc-n">${selC.name}</div><div class="sc-m">${selC.area} · ${oc} previous order${oc!==1?'s':''}</div></div></div><button class="btn btn-g btn-xs" onclick="clearC()">✕</button></div>`;
+  el.innerHTML=`<div class="sc-box"><div style="display:flex;align-items:center;gap:10px"><div class="sc-av">${esc(ini)}</div><div><div class="sc-n">${esc(selC.name)}</div><div class="sc-m">${esc(selC.area)} · ${oc} previous order${oc!==1?'s':''}</div></div></div><button class="btn btn-g btn-xs" onclick="clearC()">✕</button></div>`;
   refreshSum();
 }
 function clearC(){ selC=null;g('cs').value='';g('sel-c').style.display='none';refreshSum(); }
@@ -1109,11 +1502,11 @@ function refreshSum(){
   }
   const statusNote=saleDelivered?`<div class="sr"><span class="sk">Status</span><span class="sval"><span class="status-badge st-completed">Completed</span></span></div>`:'';
   g('sum-body').innerHTML=`
-    <div class="sr"><span class="sk">Customer</span><span class="sval">${selC.name}</span></div>
-    <div class="sr"><span class="sk">Product</span><span class="sval">${prod.name}</span></div>
-    <div class="sr"><span class="sk">Size</span><span class="sval">${VL[selV]||selV}</span></div>
+    <div class="sr"><span class="sk">Customer</span><span class="sval">${esc(selC.name)}</span></div>
+    <div class="sr"><span class="sk">Product</span><span class="sval">${esc(prod.name)}</span></div>
+    <div class="sr"><span class="sk">Size</span><span class="sval">${esc(VL[selV]||selV)}</span></div>
     <div class="sr"><span class="sk">Qty</span><span class="sval">${qty} pack${qty>1?'s':''}</span></div>
-    <div class="sr"><span class="sk">Channel</span><span class="sval">${CHANNEL_MAP[selCh]?.label||selCh}</span></div>
+    <div class="sr"><span class="sk">Channel</span><span class="sval">${esc(CHANNEL_MAP[selCh]?.label||selCh)}</span></div>
     ${statusNote}
     <hr class="sdiv">
     <div class="sr"><span class="sk">Alert if no re-order within</span><span class="sval">${ad} days</span></div>
@@ -2033,8 +2426,10 @@ function rAlerts(){
       let pills=ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`;
       if(a.mode==='smart')pills+=` <span class="pill pg">Smart · avg ${a.avg}d</span>`;
       else pills+=` <span class="pill pn">${a.n}/5 orders</span>`;
-      const desc=a.mode==='smart'?`Based on ${a.n} orders — avg every ${a.avg} days. Last: ${a.last.prod} (${VL[a.last.variant]||a.last.variant})`:`Last: ${a.last.prod} ${VL[a.last.variant]||a.last.variant} ×${a.last.qty} on ${fd(a.last.at)}`;
-      return`<div class="ai ${cls}"><div class="adot ${cls}"></div><div class="ab"><div class="an">${a.cust.name} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${a.cust.area}</span></div><div class="ad">${desc}</div><div class="at2">${pills}</div></div><div class="aa" style="display:flex;gap:8px;flex-wrap:wrap"><a href="${wa}" target="_blank" class="btn btn-follow-up btn-sm">${WA_ICON} Follow Up</a><button class="btn btn-s btn-sm" onclick="openCloseAlertModal(${a.cust.id},${a.last.id})">Add Note & Close</button></div></div>`;
+      const desc=a.mode==='smart'
+        ? `Based on ${a.n} orders — avg every ${a.avg} days. Last: ${esc(a.last.prod)} (${esc(VL[a.last.variant]||a.last.variant)})`
+        : `Last: ${esc(a.last.prod)} ${esc(VL[a.last.variant]||a.last.variant)} ×${a.last.qty} on ${fd(a.last.at)}`;
+      return`<div class="ai ${cls}"><div class="adot ${cls}"></div><div class="ab"><div class="an">${esc(a.cust.name)} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${esc(a.cust.area)}</span></div><div class="ad">${desc}</div><div class="at2">${pills}</div></div><div class="aa" style="display:flex;gap:8px;flex-wrap:wrap"><a href="${wa}" target="_blank" class="btn btn-follow-up btn-sm">${WA_ICON} Follow Up</a><button class="btn btn-s btn-sm" onclick="openCloseAlertModal(${a.cust.id},${a.last.id})">Add Note & Close</button></div></div>`;
     }).join('');
   }
 
@@ -2046,7 +2441,7 @@ function openCloseAlertModal(cid,orderId){
   const custName=String(cust?.name||'Customer');
   openModal(`
     <div class="modal-title">Close Follow-up Alert</div>
-    <div style="font-size:12.5px;color:var(--text-3);margin-top:6px">Customer: <strong>${custName||'Customer'}</strong></div>
+    <div style="font-size:12.5px;color:var(--text-3);margin-top:6px">Customer: <strong>${esc(custName||'Customer')}</strong></div>
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
       <div class="fg">
         <label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
@@ -2196,6 +2591,80 @@ function calcInventoryUsageFromOrders(){
   return { moved, left, connected:inventoryConnected };
 }
 
+const DASH_INV_ANALYTICS_KEY='kudagu_dash_inv_pid_v1';
+let DASH_INV_ANALYTICS_PID='';
+function loadDashInventoryPid(){
+  try{
+    DASH_INV_ANALYTICS_PID=String(localStorage.getItem(DASH_INV_ANALYTICS_KEY)||'').trim();
+  }catch(_){ DASH_INV_ANALYTICS_PID=''; }
+}
+function saveDashInventoryPid(pid){
+  DASH_INV_ANALYTICS_PID=String(pid||'').trim();
+  try{ localStorage.setItem(DASH_INV_ANALYTICS_KEY,DASH_INV_ANALYTICS_PID); }catch(_){}
+}
+function defaultDashInventoryPid(){
+  const items=Array.isArray(inventorySnapshot)?inventorySnapshot:[];
+  if(!items.length) return '';
+  if(DASH_INV_ANALYTICS_PID && items.some(p=>String(p.id)===String(DASH_INV_ANALYTICS_PID))) return DASH_INV_ANALYTICS_PID;
+  const coffee=items.find(p=>/coffee/i.test(String(p.name||'')));
+  return String((coffee||items[0]).id||'');
+}
+function inventoryMovementForProduct(order, inventoryProductId){
+  const prod=(S.products||[]).find(p=>p.id===order.prodId);
+  const comp=(prod&&Array.isArray(prod.composition))?prod.composition:[];
+  if(!comp.length) return 0;
+  const row=comp.find(c=>String(c.inventoryProductId||'')===String(inventoryProductId||''));
+  if(!row) return 0;
+  const pct=parseFloat(row.percentage||0)||0;
+  if(pct<=0) return 0;
+  const pack=variantToGrams(order.variant);
+  const qty=parseFloat(order.qty||0)||0;
+  if(pack<=0||qty<=0) return 0;
+  return pack*qty*(pct/100);
+}
+function calcInventoryAnalyticsForProduct(inventoryProductId){
+  const pid=String(inventoryProductId||'').trim();
+  const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===pid) || null;
+  const stockGrams=Number(item?.stockGrams||0)||0;
+  const now=Date.now();
+  const completed=(S.orders||[]).filter(o=>String(o.status||'')==='completed');
+  let moved30=0,moved90=0,movedAll=0,firstAt=0,lastAt=0;
+  completed.forEach(o=>{
+    const grams=inventoryMovementForProduct(o,pid);
+    if(grams<=0) return;
+    const at=Number(o.at||0)||0;
+    movedAll += grams;
+    if(!firstAt || (at>0 && at<firstAt)) firstAt=at;
+    if(at>lastAt) lastAt=at;
+    if(at>=now-(30*86400000)) moved30 += grams;
+    if(at>=now-(90*86400000)) moved90 += grams;
+  });
+
+  // Best-fit monthly estimate: prefer recent 30-day actual, fallback to 90-day slope, then all-time slope.
+  let monthly=0;
+  let basis='No movement data yet';
+  if(moved30>0){
+    monthly=moved30;
+    basis='Based on last 30 days';
+  }else if(moved90>0){
+    monthly=moved90/3;
+    basis='Based on last 90 days';
+  }else if(movedAll>0 && firstAt>0 && lastAt>=firstAt){
+    const spanDays=Math.max(30,(lastAt-firstAt)/86400000);
+    monthly=movedAll/(spanDays/30);
+    basis='Based on historical average';
+  }
+
+  const monthsLeft=(monthly>0 && stockGrams>0)?(stockGrams/monthly):null;
+  const daysLeft=monthsLeft==null?null:Math.round(monthsLeft*30);
+  const runoutDate=daysLeft==null?null:new Date(now+daysLeft*86400000);
+  return { item, stockGrams, monthly, basis, daysLeft, runoutDate };
+}
+function setDashInventoryProduct(pid){
+  saveDashInventoryPid(pid);
+  rDash();
+}
+
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 function rDash(){
   const alerts=getAlerts();
@@ -2204,6 +2673,21 @@ function rDash(){
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const f=calcFin();
   const inv=calcInventoryUsageFromOrders();
+  if(!DASH_INV_ANALYTICS_PID) loadDashInventoryPid();
+  const selectedPid=defaultDashInventoryPid();
+  if(selectedPid && selectedPid!==DASH_INV_ANALYTICS_PID) saveDashInventoryPid(selectedPid);
+  const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid);
+  const invOpts=(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
+  const monthlyTxt=invAnalytics.monthly>0?fGrams(invAnalytics.monthly)+'/month':'—';
+  const basisShort = invAnalytics.basis
+    .replace('Based on last 30 days','30d basis')
+    .replace('Based on last 90 days','90d basis')
+    .replace('Based on historical average','History basis');
+  const runoutTxt=invAnalytics.daysLeft==null
+    ? 'Runout: n/a'
+    : invAnalytics.daysLeft<=0
+      ? 'Runout: now'
+      : `Runout ~${invAnalytics.daysLeft}d (${invAnalytics.runoutDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})})`;
   const hasData=S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
   const completedOrders=S.orders.filter(isCompleted);
   const completedCount=completedOrders.length;
@@ -2219,7 +2703,7 @@ function rDash(){
   const repeatCustomers=Object.values(orderCountByCid).filter(n=>n>=2).length;
   const retentionPct=orderedCustomers>0?(repeatCustomers/orderedCustomers)*100:null;
 
-  // Row 1: Revenue + Profit | MoM + YoY
+  // Row 1: Revenue + Profit | MoM + Inventory analytics
   g('sg').innerHTML=`
     <div class="sbox ${!hasData?'accent-top':f.profAll>=0?'green-top':'red-top'}">
       <div class="sbox-inner">
@@ -2235,17 +2719,22 @@ function rDash(){
         </div>
       </div>
     </div>
-    <div class="sbox ${f.mom==null&&f.yoy==null?'accent-top':(f.mom<0||f.yoy<0)?'red-top':'green-top'}">
+    <div class="sbox ${f.mom==null?'accent-top':(f.mom<0)?'red-top':'green-top'}">
       <div class="sbox-inner">
-        <div class="sbox-half">
+        <div class="sbox-half" style="flex:0.8">
           <div class="sl">MoM Change</div>
           <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
           <div class="sn ${pCls(f.mom)}">${f.mom==null?'Not enough data':'This month: '+fC(f.revM)}</div>
         </div>
-        <div class="sbox-half">
-          <div class="sl">YoY Change</div>
-          <div class="sv ${f.yoy==null?'':f.yoy>=0?'green':'red'}">${f.yoy==null?'—':fPct(f.yoy)+pArr(f.yoy)}</div>
-          <div class="sn ${pCls(f.yoy)}">${f.yoy==null?'Not enough data':'vs last year'}</div>
+        <div class="sbox-half" style="flex:1.2">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div class="sl">Inventory Analytics</div>
+            <select onchange="setDashInventoryProduct(this.value)" style="max-width:170px;padding:5px 8px;font-size:12px">
+              ${invOpts||'<option value="">No stock data</option>'}
+            </select>
+          </div>
+          <div class="sv">${monthlyTxt}</div>
+          <div class="sn" style="white-space:normal;line-height:1.3">${basisShort} · ${runoutTxt}</div>
         </div>
       </div>
     </div>`;
@@ -2292,11 +2781,11 @@ function rDash(){
     const nameLabel=isDistributorOrder(o)?'Distributor Channel':o.cname;
     const stCls=STATUS_CLS[o.status||'pending'];
     const stLbl=STATUS_LABEL[o.status]||o.status;
-    const stSelect=`<select class="inline-status-sel ${stCls}" onchange="dashQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
+    const stSelect=`<select class="inline-status-sel ${stCls}" onchange="dashQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${esc(s.id)}" ${o.status===s.id?'selected':''}>${esc(s.label)}</option>`).join('')}</select>`;
     return`<div class="dash-order-row">
       <div class="dash-order-info">
         <div class="dor-name">${esc(nameLabel)}</div>
-        <div class="dor-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} · <span class="ch-badge ch-badge--${o.channel||'retail'}" style="padding:1px 6px;font-size:10.5px">${CHANNEL_MAP[o.channel||'retail']?.label||o.channel}</span></div>
+        <div class="dor-prod">${esc(o.prod)} · ${esc(VL[o.variant]||o.variant)} · <span class="ch-badge ch-badge--${esc(o.channel||'retail')}" style="padding:1px 6px;font-size:10.5px">${esc(CHANNEL_MAP[o.channel||'retail']?.label||o.channel)}</span></div>
       </div>
       <div class="dash-order-meta">
         ${isCompleted(o)&&rev>0?`<span style="font-size:12px;font-weight:700;color:var(--green)">₹${rev.toFixed(0)}</span>`:`<span style="font-size:11.5px;color:var(--text-3)">${fd(o.at)}</span>`}
@@ -2318,7 +2807,7 @@ function rDash(){
     if(item.type==='reorder'){
       const a=item.data;
       const ov=a.dl<=0,wa=buildWaUrl(a);
-      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${a.mode==='smart'?'sm':ov?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${a.cust.name} <span class="pill pn" style="margin-left:6px">Re-order</span></div><div style="font-size:11.5px;color:var(--text-3)">${a.last.prod} · ${VL[a.last.variant]||a.last.variant}</div><div style="margin-top:5px">${ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`}</div></div><a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs" style="flex-shrink:0">${WA_ICON} Remind</a></div>`;
+      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${a.mode==='smart'?'sm':ov?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(a.cust.name)} <span class="pill pn" style="margin-left:6px">Re-order</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(a.last.prod)} · ${esc(VL[a.last.variant]||a.last.variant)}</div><div style="margin-top:5px">${ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`}</div></div><a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs" style="flex-shrink:0">${WA_ICON} Remind</a></div>`;
     }
     if(item.type==='stock'){
       const s=item.data;
@@ -2373,14 +2862,14 @@ function buildProdCard(p){
   const compOk=(p.composition||[]).length>0 && Math.abs(compTotal-100)<=0.01;
   const st=p.sizes.map((sz,i)=>`<button class="size-tab ${i===0?'active':''}" onclick="switchSizeTab('${p.id}','${sz}')" id="tab-${p.id}-${sz}">${VL[sz]||sz}</button>`).join('');
   const sp=p.sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
-  const comp=(p.composition||[]).map(c=>`${c.inventoryProductName||c.inventoryProductId} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
+  const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
   const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
-  return`<div class="prod-card" id="pcard-${p.id}"><div class="prod-card-header" onclick="toggleProdCard('${p.id}')"><div><div class="prod-card-title">${p.name}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${sub}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${p.id}">▼</span><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${p.id}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${p.id}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${p.id}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${p.id}')">＋ Add Ingredient</button><div id="pc-comp-hint-${p.id}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${p.id}')">Save Composition</button></div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${p.id}">${sp}</div></div></div>`;
+  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
 }
 function inventoryProductOptions(selected=''){
   const base='<option value="">Select inventory product…</option>';
   const list=inventorySnapshot.length
-    ? inventorySnapshot.map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join('')
+    ? inventorySnapshot.map(p=>`<option value="${esc(p.id)}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join('')
     : '<option value="">Inventory app not connected</option>';
   return base+list;
 }
@@ -2528,7 +3017,21 @@ async function delProduct(pid){ if(!confirm('Delete this product?'))return;try{a
 function getWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(prod&&prod.waTpl&&prod.waTpl.trim())return prod.waTpl;return(S.waDefaultTpl&&S.waDefaultTpl.trim())?S.waDefaultTpl:DEFAULT_WA_TPL; }
 function applyWaTokens(tpl,d){ return tpl.replace(/\{\{customer_name\}\}/g,d.customer_name||'').replace(/\{\{last_order_date\}\}/g,d.last_order_date||'').replace(/\{\{product_name\}\}/g,d.product_name||'').replace(/\{\{variant\}\}/g,d.variant||'').replace(/\{\{qty\}\}/g,d.qty||''); }
 function buildWaUrl(alert){ const tpl=getWaTpl(alert.last.prodId);const msg=applyWaTokens(tpl,{customer_name:alert.cust.name,last_order_date:fd(alert.last.at),product_name:alert.last.prod,variant:VL[alert.last.variant]||alert.last.variant,qty:String(alert.last.qty)});return`https://wa.me/91${alert.cust.phone}?text=${encodeURIComponent(msg)}`; }
-function rWaMessages(){ const de=g('wa-tpl-default');if(de)de.value=S.waDefaultTpl||DEFAULT_WA_TPL;previewWa('default');const c=g('wa-prod-cards');if(!c)return;c.innerHTML=S.products.map(p=>{const tpl=p.waTpl||'';const tokens=['{{customer_name}}','{{last_order_date}}','{{product_name}}','{{variant}}','{{qty}}'];const chips=tokens.map(t=>`<span class="token-chip" onclick="insertToken('wa-tpl-${p.id}','${t}','${p.id}')">${t}</span>`).join('');return`<div class="wa-card"><div class="wa-card-header"><div><div class="wa-card-title">${p.name}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${tpl?'Custom template set':'Using default template'}</div></div>${tpl?`<button class="btn btn-danger btn-xs" onclick="clearProdWaTpl('${p.id}')">Reset</button>`:`<span class="pill pn" style="font-size:11px">Default</span>`}</div><div class="wa-card-body"><div class="fg"><label>Message <span style="color:var(--text-3);font-weight:400">(blank = use default)</span></label><textarea id="wa-tpl-${p.id}" rows="3" oninput="previewWa('${p.id}')" placeholder="Leave blank to use the default template…">${tpl}</textarea></div><div class="token-chips">${chips}</div><div style="font-size:11px;color:var(--text-3);margin-top:6px;font-style:italic">Preview:</div><div class="wa-preview" id="wa-prev-${p.id}"></div><div style="margin-top:12px"><button class="btn btn-p btn-sm" onclick="saveWaTpl('${p.id}')">Save for ${p.name}</button></div></div></div>`;}).join('');S.products.forEach(p=>previewWa(p.id)); }
+function rWaMessages(){
+  const de=g('wa-tpl-default');
+  if(de) de.value=S.waDefaultTpl||DEFAULT_WA_TPL;
+  previewWa('default');
+  const c=g('wa-prod-cards');
+  if(!c) return;
+  c.innerHTML=S.products.map(p=>{
+    const pid=String(p.id||'');
+    const tpl=p.waTpl||'';
+    const tokens=['{{customer_name}}','{{last_order_date}}','{{product_name}}','{{variant}}','{{qty}}'];
+    const chips=tokens.map(t=>`<span class="token-chip" onclick="insertToken('wa-tpl-${esc(pid)}','${t}','${esc(pid)}')">${t}</span>`).join('');
+    return `<div class="wa-card"><div class="wa-card-header"><div><div class="wa-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${tpl?'Custom template set':'Using default template'}</div></div>${tpl?`<button class="btn btn-danger btn-xs" onclick="clearProdWaTpl('${esc(pid)}')">Reset</button>`:`<span class="pill pn" style="font-size:11px">Default</span>`}</div><div class="wa-card-body"><div class="fg"><label>Message <span style="color:var(--text-3);font-weight:400">(blank = use default)</span></label><textarea id="wa-tpl-${esc(pid)}" rows="3" oninput="previewWa('${esc(pid)}')" placeholder="Leave blank to use the default template…">${esc(tpl)}</textarea></div><div class="token-chips">${chips}</div><div style="font-size:11px;color:var(--text-3);margin-top:6px;font-style:italic">Preview:</div><div class="wa-preview" id="wa-prev-${esc(pid)}"></div><div style="margin-top:12px"><button class="btn btn-p btn-sm" onclick="saveWaTpl('${esc(pid)}')">Save for ${esc(p.name)}</button></div></div></div>`;
+  }).join('');
+  S.products.forEach(p=>previewWa(p.id));
+}
 function insertToken(taId,token,pk){ const el=g(taId);if(!el)return;const s=el.selectionStart,e=el.selectionEnd;el.value=el.value.slice(0,s)+token+el.value.slice(e);el.selectionStart=el.selectionEnd=s+token.length;el.focus();previewWa(pk); }
 function insertShippingToken(token){
   const el=g('ship-wa-template');
@@ -2539,7 +3042,7 @@ function insertShippingToken(token){
   el.selectionStart=el.selectionEnd=s+token.length;
   el.focus();
 }
-function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;pr.innerHTML=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Product'),variant:'250g',qty:'1'}).replace(/\n/g,'<br>'); }
+function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;const merged=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Product'),variant:'250g',qty:'1'});pr.innerHTML=esc(merged).replace(/\n/g,'<br>'); }
 async function saveWaTpl(key){ if(key==='default'){const el=g('wa-tpl-default');if(!el)return;S.waDefaultTpl=el.value.trim();try{await api.put('/api/settings',{waDefaultTpl:S.waDefaultTpl});toast('Default template saved','ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}}else{const prod=S.products.find(p=>p.id===key);if(!prod)return;const el=g(`wa-tpl-${key}`);if(!el)return;prod.waTpl=el.value.trim();try{await api.put(`/api/products/${key}`,{waTpl:prod.waTpl});toast(`Template saved for ${prod.name}`,'ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}} }
 async function clearProdWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(!prod)return;prod.waTpl='';try{await api.put(`/api/products/${pid}`,{waTpl:''});toast('Reset to default');rWaMessages();}catch(e){toast('Error: '+e.message,'err');} }
 
@@ -2671,7 +3174,7 @@ async function saveShippingSettings(){
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 function g(id){ return document.getElementById(id); }
-function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
 function dateToISO(ts){ const d=new Date(ts);return`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
 function openNativePicker(id){
   const el=g(id);
@@ -2682,7 +3185,7 @@ function openNativePicker(id){
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 async function init(){
   try{ S=await api.get('/api/data'); }
-  catch(err){ g('toasts').innerHTML=`<div class="toast err">Cannot reach server: ${err.message}</div>`; return; }
+  catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   // Poll inventory stock levels (silently fails if inventory app is not running)
   await pollStockAlerts();

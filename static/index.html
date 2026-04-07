@@ -448,6 +448,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .smenu-item:hover { background: var(--surface-2); color: var(--text); }
 .smenu-item.active { background: var(--accent); color: #fff; }
 .settings-panel { display: none; } .settings-panel.active { display: block; }
+.mkt-filter-grid { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:10px 12px; }
+.mkt-rule-note { font-size:11.5px;color:var(--text-3);margin-top:-4px; }
 .prod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 16px; overflow: hidden; box-shadow: var(--sh-sm); }
 .prod-card-header { padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; min-height: 52px; }
 .prod-card-header:hover { background: var(--surface-2); }
@@ -514,6 +516,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   .two { grid-template-columns: 1fr; }
   .fr3 { grid-template-columns: 1fr 1fr; }
   .settings-layout { grid-template-columns: 1fr; }
+  .mkt-filter-grid { grid-template-columns: repeat(2,minmax(170px,1fr)); }
   .tbl th:nth-child(8), .tbl td:nth-child(8),
   .tbl th:nth-child(9), .tbl td:nth-child(9) { display: none; }
 }
@@ -650,6 +653,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
   /* Settings: single col */
   .settings-layout { grid-template-columns: 1fr; }
+  .mkt-filter-grid { grid-template-columns: 1fr; }
   .settings-menu { display: grid; grid-template-columns: 1fr; gap: 6px; overflow: visible; padding: 8px; }
   .smenu-item { flex-shrink: 1; width: 100%; justify-content: flex-start; }
 
@@ -915,31 +919,116 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
   <!-- MARKETING -->
   <div class="view" id="view-marketing">
-    <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Draft personalized WhatsApp messages using AI</div></div></div>
-    <div class="card" style="max-width:900px">
+    <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Group campaigns with AI template + semi-automated WhatsApp flow</div></div></div>
+    <div class="card" style="max-width:1050px">
       <div class="cb" style="display:flex;flex-direction:column;gap:14px">
-        <div class="fr">
+        <div class="sl-label">Group Filters</div>
+        <div class="mkt-filter-grid">
           <div class="fg">
-            <label>Customer <span class="req">*</span></label>
-            <select id="mkt-customer"></select>
+            <label>Ordered</label>
+            <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="yes">Has orders</option>
+              <option value="no">No orders yet</option>
+            </select>
           </div>
           <div class="fg">
-            <label>Quick Campaign Goal</label>
-            <input id="mkt-brief" type="text" placeholder="e.g. Weekend offer on their usual roast">
+            <label>Area</label>
+            <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
+          </div>
+          <div class="fg">
+            <label>Order Type</label>
+            <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="retail">Retail</option>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="website">Website</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Avg Order Value</label>
+            <div style="display:flex;gap:8px">
+              <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="above">Above</option>
+                <option value="below">Below</option>
+              </select>
+              <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
+            </div>
+          </div>
+          <div class="fg">
+            <label>Regular Customer</label>
+            <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="yes">Regular only</option>
+              <option value="no">Not regular</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Regular Rule</label>
+            <div style="display:flex;gap:8px">
+              <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
+              <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
+            </div>
           </div>
         </div>
+        <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
+        <div class="fr">
         <div class="fg">
-          <label>Extra Instruction <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
-          <textarea id="mkt-extra" rows="2" placeholder="e.g. Mention free shipping above ₹999"></textarea>
+          <label>Saved Groups <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <div id="mkt-groups-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
+            <div id="mkt-group-buttons" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
+          </div>
+        </div>
+        </div>
+
+        <div class="card" style="padding:12px;border:1px solid var(--border)">
+          <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
+          <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
+        </div>
+
+        <div class="sl-label">Campaign Input</div>
+        <div class="fg">
+          <label>Campaign Goal</label>
+          <input id="mkt-brief" type="text" placeholder="e.g. Bring back regular customers with reorder coupon">
+        </div>
+        <div class="fg">
+          <label>Extra AI Instruction <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <textarea id="mkt-extra" rows="2" placeholder="e.g. Keep tone warm, no emojis, mention COD available"></textarea>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="btn btn-p" onclick="generateMarketingDraft()">Generate Draft</button>
-          <button class="btn btn-s" onclick="openMarketingWhatsApp()">Open WhatsApp</button>
+          <button class="btn btn-p" onclick="generateMarketingTemplate()">Generate Template</button>
+        </div>
+
+        <div class="fg">
+          <label>AI Template (tokens as needed)</label>
+          <textarea id="mkt-template" rows="8" placeholder="Hi {{customer_name}}, ..." oninput="previewMarketingTemplate()"></textarea>
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Available tokens: <code>{{brand_name}}</code> <code>{{customer_name}}</code> <code>{{area}}</code> <code>{{order_count}}</code> <code>{{avg_order_value}}</code> <code>{{last_order_date}}</code> <code>{{last_product_name}}</code> <code>{{last_variant}}</code> <code>{{preferred_channel}}</code></div>
         </div>
         <div class="fg">
-          <label>Draft Message</label>
-          <textarea id="mkt-output" rows="8" placeholder="Generated message appears here. You can edit before sending."></textarea>
+          <label>Preview</label>
+          <div id="mkt-preview" class="wa-preview"></div>
         </div>
+
+        <div class="sl-label">Campaign Runner</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="fg" style="max-width:130px;min-width:110px;margin:0">
+            <label>Delay (sec)</label>
+            <input id="mkt-delay-sec" type="number" min="3" value="10">
+          </div>
+          <button class="btn btn-p" style="min-width:90px" onclick="startMarketingCampaign()">Go</button>
+          <button id="mkt-toggle-btn" class="btn btn-s" style="min-width:96px;padding:10px 12px" onclick="toggleMarketingRunState()" title="Pause/Resume">Pause</button>
+          <button class="btn btn-danger" style="min-width:96px;padding:10px 12px" onclick="resetMarketingCampaign()" title="Reset">Reset</button>
+        </div>
+
+        <div>
+          <div style="height:10px;background:var(--surface-3);border-radius:999px;overflow:hidden;border:1px solid var(--border)">
+            <div id="mkt-progress-bar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+          </div>
+          <div id="mkt-progress-text" style="font-size:12px;color:var(--text-3);margin-top:6px">No campaign running.</div>
+        </div>
+
         <div id="mkt-meta" style="font-size:12px;color:var(--text-3)"></div>
       </div>
     </div>
@@ -1033,6 +1122,11 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
               <div class="fg">
                 <label>Model <span class="req">*</span></label>
                 <input id="mkt-ai-model" type="text" placeholder="e.g. gpt-4o-mini">
+              </div>
+              <div class="fg">
+                <label>Brand Name</label>
+                <input id="mkt-ai-brand-name" type="text" placeholder="e.g. Kudagu Kaapi">
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for <code>{{brand_name}}</code> token in templates.</div>
               </div>
               <div class="fg">
                 <label>API Key</label>
@@ -1144,6 +1238,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260406-01"></script>
+<script src="/static/app.js?v=20260407-11"></script>
 </body>
 </html>
