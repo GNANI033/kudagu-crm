@@ -2853,7 +2853,7 @@ function rDash(){
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px">
             <div class="sv" style="margin-top:0">${fGrams(invMoved.moved)}</div>
-            <button class="btn btn-s btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="height:28px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap">Sync</button>
+            <button class="btn btn-s btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="height:28px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;background:var(--surface)">Sync</button>
           </div>
           <div class="sn">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
         </div>
