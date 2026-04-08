@@ -2627,42 +2627,69 @@ function calcInventoryAnalyticsForProduct(inventoryProductId){
   const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===pid) || null;
   const stockGrams=Number(item?.stockGrams||0)||0;
   const now=Date.now();
+  const dayMs=86400000;
   const completed=(S.orders||[]).filter(o=>String(o.status||'')==='completed');
-  let moved30=0,moved90=0,movedAll=0,firstAt=0,lastAt=0;
+  const dayBuckets=new Map();
+  let used30=0, firstAt=0;
   completed.forEach(o=>{
     const grams=inventoryMovementForProduct(o,pid);
     if(grams<=0) return;
     const at=Number(o.at||0)||0;
-    movedAll += grams;
-    if(!firstAt || (at>0 && at<firstAt)) firstAt=at;
-    if(at>lastAt) lastAt=at;
-    if(at>=now-(30*86400000)) moved30 += grams;
-    if(at>=now-(90*86400000)) moved90 += grams;
+    if(at<=0) return;
+    if(!firstAt || at<firstAt) firstAt=at;
+    const dayStart=new Date(new Date(at).getFullYear(), new Date(at).getMonth(), new Date(at).getDate()).getTime();
+    dayBuckets.set(dayStart, (dayBuckets.get(dayStart)||0) + grams);
   });
 
-  // Best-fit monthly estimate: prefer recent 30-day actual, fallback to 90-day slope, then all-time slope.
-  let monthly=0;
-  let basis='No movement data yet';
-  if(moved30>0){
-    monthly=moved30;
-    basis='Based on last 30 days';
-  }else if(moved90>0){
-    monthly=moved90/3;
-    basis='Based on last 90 days';
-  }else if(movedAll>0 && firstAt>0 && lastAt>=firstAt){
-    const spanDays=Math.max(30,(lastAt-firstAt)/86400000);
-    monthly=movedAll/(spanDays/30);
-    basis='Based on historical average';
+  const todayStart=new Date(new Date(now).getFullYear(), new Date(now).getMonth(), new Date(now).getDate()).getTime();
+  for(let i=29;i>=0;i--){
+    const day=todayStart-(i*dayMs);
+    used30 += dayBuckets.get(day)||0;
   }
 
-  const monthsLeft=(monthly>0 && stockGrams>0)?(stockGrams/monthly):null;
-  const daysLeft=monthsLeft==null?null:Math.round(monthsLeft*30);
+  const dailyAvg30=used30/30;
+  const monthly=dailyAvg30*30;
+  const activeDays30=Array.from(dayBuckets.entries()).filter(([day,total])=>day>=todayStart-(29*dayMs) && total>0).length;
+  const historyDays=firstAt>0 ? Math.max(1, Math.floor((todayStart-firstAt)/dayMs)+1) : 0;
+  const coverageDays=Math.min(30, historyDays||0);
+  const basis=coverageDays>0 ? `30d moving avg (${coverageDays}/30 days history)` : '30d moving avg (no usage yet)';
+  const daysLeft=(dailyAvg30>0 && stockGrams>0)?Math.floor(stockGrams/dailyAvg30):null;
   const runoutDate=daysLeft==null?null:new Date(now+daysLeft*86400000);
-  return { item, stockGrams, monthly, basis, daysLeft, runoutDate };
+  let confidenceLabel='Low';
+  let confidenceClass='pn';
+  if(coverageDays>=30 && activeDays30>=8){
+    confidenceLabel='High';
+    confidenceClass='pg';
+  }else if(coverageDays>=14 && activeDays30>=4){
+    confidenceLabel='Medium';
+    confidenceClass='pa';
+  }else if(coverageDays===0 || used30<=0){
+    confidenceLabel='Low';
+    confidenceClass='pn';
+  }
+  return { item, stockGrams, monthly, dailyAvg30, used30, activeDays30, coverageDays, basis, daysLeft, runoutDate, confidenceLabel, confidenceClass };
 }
 function setDashInventoryProduct(pid){
   saveDashInventoryPid(pid);
   rDash();
+}
+function showInventoryAnalyticsInfo(){
+  openModal(`
+    <div class="modal-title">Analytics Card Logic</div>
+    <div style="margin-top:10px;color:var(--text-2);font-size:13px;line-height:1.45">
+      <div><strong>30d Moving Average</strong></div>
+      <div style="margin-top:6px">Monthly usage = total usage in last 30 days (shown as kg/month).</div>
+      <div style="margin-top:4px">Runout = current stock / average daily usage in those 30 days.</div>
+      <div style="margin-top:10px"><strong>Confidence</strong></div>
+      <div style="margin-top:6px">High: at least 30 days history and 8+ active usage days.</div>
+      <div>Medium: at least 14 days history and 4+ active usage days.</div>
+      <div>Low: insufficient recent history/usage.</div>
+      <div style="margin-top:10px">Usage is computed from completed orders and product composition mapping.</div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <button class="btn btn-p" onclick="closeModal()">OK</button>
+    </div>
+  `);
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
@@ -2678,16 +2705,16 @@ function rDash(){
   if(selectedPid && selectedPid!==DASH_INV_ANALYTICS_PID) saveDashInventoryPid(selectedPid);
   const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid);
   const invOpts=(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
-  const monthlyTxt=invAnalytics.monthly>0?fGrams(invAnalytics.monthly)+'/month':'—';
-  const basisShort = invAnalytics.basis
-    .replace('Based on last 30 days','30d basis')
-    .replace('Based on last 90 days','90d basis')
-    .replace('Based on historical average','History basis');
+  const monthlyTxt=invAnalytics.monthly>0?fGrams(invAnalytics.monthly)+'/month':'0 g/month';
+  const basisShort = invAnalytics.coverageDays>0
+    ? '30d MA'
+    : '30d MA · no usage yet';
   const runoutTxt=invAnalytics.daysLeft==null
     ? 'Runout: n/a'
     : invAnalytics.daysLeft<=0
       ? 'Runout: now'
-      : `Runout ~${invAnalytics.daysLeft}d (${invAnalytics.runoutDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})})`;
+      : `Runout ~${invAnalytics.daysLeft}d · ${invAnalytics.runoutDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}`;
+  const confidencePill=`<span class="pill ${invAnalytics.confidenceClass}" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:600;padding:0 6px;height:20px;line-height:1;white-space:nowrap;margin-right:8px">${invAnalytics.confidenceLabel}<button class="btn btn-g btn-xs" type="button" onclick="showInventoryAnalyticsInfo()" title="How this works" style="min-width:12px;height:12px;padding:0 3px;border-radius:999px;line-height:1;font-size:9px">i</button></span>`;
   const hasData=S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
   const completedOrders=S.orders.filter(isCompleted);
   const completedCount=completedOrders.length;
@@ -2728,13 +2755,16 @@ function rDash(){
         </div>
         <div class="sbox-half" style="flex:1.2">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <div class="sl">Inventory Analytics</div>
-            <select onchange="setDashInventoryProduct(this.value)" style="max-width:170px;padding:5px 8px;font-size:12px">
+            <div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;flex:1 1 auto">
+              <div class="sl">Analytics</div>
+              ${confidencePill}
+            </div>
+            <select onchange="setDashInventoryProduct(this.value)" style="width:108px;max-width:108px;padding:4px 22px 4px 8px;font-size:12px;line-height:1.1;flex:0 0 auto">
               ${invOpts||'<option value="">No stock data</option>'}
             </select>
           </div>
           <div class="sv">${monthlyTxt}</div>
-          <div class="sn" style="white-space:normal;line-height:1.3">${basisShort} · ${runoutTxt}</div>
+          <div class="sn" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2">${basisShort} · ${runoutTxt}</div>
         </div>
       </div>
     </div>`;
