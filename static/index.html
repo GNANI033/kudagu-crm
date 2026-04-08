@@ -709,7 +709,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <button class="nb" onclick="nav('orders')"><span class="nb-ic">≡</span><span>Orders</span></button>
     <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
     <button class="nb" onclick="nav('marketing')"><span class="nb-ic">✦</span><span>Marketing</span></button>
-    <button class="nb" onclick="nav('inventory')"><span class="nb-ic">▦</span><span>Inventory</span></button>
     <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
     <div class="sb-sect">People</div>
     <button class="nb" onclick="nav('customers')"><span class="nb-ic">◉</span><span>Customers</span></button>
@@ -834,27 +833,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   <div class="view" id="view-alerts">
     <div class="ph"><div><div class="ph-title">Re-order Alerts</div><div class="ph-sub">Customers due for a follow-up</div></div></div>
     <div id="al-body"></div>
-  </div>
-
-  <!-- INVENTORY -->
-  <div class="view" id="view-inventory">
-    <div class="ph">
-      <div>
-        <div class="ph-title">Inventory</div>
-        <div class="ph-sub" id="inv-sub"></div>
-      </div>
-      <div class="inv-actions">
-        <div class="inv-actions-row">
-          <button class="btn btn-p btn-sm" id="inv-sync-btn" onclick="syncAndRefreshInventory()">Sync & Refresh</button>
-        </div>
-        <div class="ph-sub" id="inv-updated" style="margin-top:6px"></div>
-      </div>
-    </div>
-    <div class="stats-merged" id="inv-stats"></div>
-    <div class="card">
-      <div class="ch"><div class="ct">Stock Levels</div></div>
-      <div class="cb" id="inv-body"></div>
-    </div>
   </div>
 
   <!-- DISTRIBUTION -->
@@ -1213,10 +1191,6 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   <button class="bnav-item" id="bnav-marketing" onclick="nav('marketing')">
     <span class="bnav-icon">✦</span>
     <span>Mkt</span>
-  </button>
-  <button class="bnav-item" id="bnav-inventory" onclick="nav('inventory')">
-    <span class="bnav-icon">▦</span>
-    <span>Stock</span>
   </button>
   <button class="bnav-item" id="bnav-distribution" onclick="nav('distribution')">
     <span class="bnav-icon">◫</span>

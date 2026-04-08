@@ -678,17 +678,17 @@ function shippingLabel(oid,action){
 function isMobile(){ return window.innerWidth < 600; }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
-// Sidebar nav: dashboard=0, orders=1, alerts=2, marketing=3, inventory=4, distribution=5, customers=6, settings=7
+// Sidebar nav: dashboard=0, orders=1, alerts=2, marketing=3, distribution=4, customers=5, settings=6
 function nav(p){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   // Desktop sidebar
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,inventory:4,distribution:5,customers:6,settings:7};
+  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,distribution:4,customers:5,settings:6};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',inventory:'bnav-inventory',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
@@ -696,7 +696,6 @@ function nav(p){
   if(p==='orders')    rOrders();
   if(p==='alerts')    rAlerts();
   if(p==='marketing') rMarketingView();
-  if(p==='inventory') rInventory();
   if(p==='distribution') rDistribution();
   if(p==='customers') rCustomers();
   if(p==='sales')     { populateProdSelect(); setDefaultDate(); }
@@ -2386,7 +2385,7 @@ function rAlerts(){
           </div>
         </div>
         <div class="aa">
-          <button class="btn btn-s btn-sm" onclick="nav('inventory')">View Inventory →</button>
+          <button class="btn btn-s btn-sm" onclick="nav('dashboard')">View Dashboard →</button>
         </div>
       </div>`;
     }).join('');
@@ -2518,15 +2517,26 @@ async function refreshInventoryView(){
   toast('Inventory refreshed','ok');
 }
 function setInventorySyncBtnLoading(on){
-  const btn=g('inv-sync-btn'); if(!btn) return;
-  if(on){
-    btn.disabled=true;
-    btn.dataset.prev=btn.innerHTML;
-    btn.innerHTML=`<span class="btn-spin"></span> Syncing...`;
-  }else{
-    btn.disabled=false;
-    btn.innerHTML=btn.dataset.prev||'Sync & Refresh';
-  }
+  const ids=['inv-sync-btn','dash-inv-sync-btn'];
+      ids.forEach(id=>{
+    const btn=g(id); if(!btn) return;
+    if(on){
+      btn.disabled=true;
+      btn.dataset.prev=btn.innerHTML;
+      if(id==='dash-inv-sync-btn'){
+        btn.innerHTML=`<span class="btn-spin"></span> Syncing`;
+      }else{
+        btn.innerHTML=`<span class="btn-spin"></span> Syncing...`;
+      }
+    }else{
+      btn.disabled=false;
+      if(id==='dash-inv-sync-btn'){
+        btn.innerHTML=btn.dataset.prev||'Sync';
+      }else{
+        btn.innerHTML=btn.dataset.prev||'Sync & Refresh';
+      }
+    }
+  });
 }
 async function syncCompletedOrdersToInventory(){
   try{
@@ -2590,9 +2600,35 @@ function calcInventoryUsageFromOrders(){
   const left=(inventorySnapshot||[]).reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
   return { moved, left, connected:inventoryConnected };
 }
+function calcInventoryUsageFromOrdersForProduct(inventoryProductId){
+  const targetPid=String(inventoryProductId||'').trim();
+  if(!targetPid) return calcInventoryUsageFromOrders();
+  let moved=0;
+  (S.orders||[]).forEach(o=>{
+    if(o.status!=='completed') return;
+    const prod=(S.products||[]).find(p=>p.id===o.prodId);
+    const comp=(prod&&Array.isArray(prod.composition))?prod.composition:[];
+    if(!comp.length) return;
+    const pack=variantToGrams(o.variant);
+    const qty=parseFloat(o.qty||0)||0;
+    if(pack<=0||qty<=0) return;
+    const total=pack*qty;
+    comp.forEach(c=>{
+      if(String(c.inventoryProductId||'')!==targetPid) return;
+      const pct=parseFloat(c.percentage||0)||0;
+      if(pct>0) moved += total*(pct/100);
+    });
+  });
+  const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===targetPid);
+  const left=parseFloat(item?.stockGrams||0)||0;
+  return { moved, left, connected:inventoryConnected };
+}
 
 const DASH_INV_ANALYTICS_KEY='kudagu_dash_inv_pid_v1';
 let DASH_INV_ANALYTICS_PID='';
+const DASH_INV_MOVED_KEY='kudagu_dash_moved_pid_v1';
+let DASH_INV_MOVED_PID='';
+let DASH_INV_MOVED_LOADED=false;
 function loadDashInventoryPid(){
   try{
     DASH_INV_ANALYTICS_PID=String(localStorage.getItem(DASH_INV_ANALYTICS_KEY)||'').trim();
@@ -2608,6 +2644,24 @@ function defaultDashInventoryPid(){
   if(DASH_INV_ANALYTICS_PID && items.some(p=>String(p.id)===String(DASH_INV_ANALYTICS_PID))) return DASH_INV_ANALYTICS_PID;
   const coffee=items.find(p=>/coffee/i.test(String(p.name||'')));
   return String((coffee||items[0]).id||'');
+}
+function loadDashInventoryMovedPid(){
+  if(DASH_INV_MOVED_LOADED) return;
+  DASH_INV_MOVED_LOADED=true;
+  try{
+    DASH_INV_MOVED_PID=String(localStorage.getItem(DASH_INV_MOVED_KEY)||'').trim();
+  }catch(_){ DASH_INV_MOVED_PID=''; }
+}
+function saveDashInventoryMovedPid(pid){
+  DASH_INV_MOVED_PID=String(pid||'').trim();
+  try{ localStorage.setItem(DASH_INV_MOVED_KEY,DASH_INV_MOVED_PID); }catch(_){}
+}
+function defaultDashInventoryMovedPid(){
+  const items=Array.isArray(inventorySnapshot)?inventorySnapshot:[];
+  if(!items.length) return '';
+  if(!DASH_INV_MOVED_PID) return '';
+  if(items.some(p=>String(p.id)===String(DASH_INV_MOVED_PID))) return DASH_INV_MOVED_PID;
+  return '';
 }
 function inventoryMovementForProduct(order, inventoryProductId){
   const prod=(S.products||[]).find(p=>p.id===order.prodId);
@@ -2673,6 +2727,10 @@ function setDashInventoryProduct(pid){
   saveDashInventoryPid(pid);
   rDash();
 }
+function setDashInventoryMovedProduct(pid){
+  saveDashInventoryMovedPid(pid);
+  rDash();
+}
 function showInventoryAnalyticsInfo(){
   openModal(`
     <div class="modal-title">Analytics Card Logic</div>
@@ -2701,10 +2759,18 @@ function rDash(){
   const f=calcFin();
   const inv=calcInventoryUsageFromOrders();
   if(!DASH_INV_ANALYTICS_PID) loadDashInventoryPid();
+  loadDashInventoryMovedPid();
   const selectedPid=defaultDashInventoryPid();
+  const selectedMovedPid=defaultDashInventoryMovedPid();
   if(selectedPid && selectedPid!==DASH_INV_ANALYTICS_PID) saveDashInventoryPid(selectedPid);
+  if(selectedMovedPid!==DASH_INV_MOVED_PID) saveDashInventoryMovedPid(selectedMovedPid);
   const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid);
   const invOpts=(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
+  const invMoved=calcInventoryUsageFromOrdersForProduct(selectedMovedPid);
+  const invMovedOpts=[
+    `<option value="" ${!selectedMovedPid?'selected':''}>Total</option>`,
+    ...(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedMovedPid)?'selected':''}>${esc(p.name||p.id)}</option>`)
+  ].join('');
   const monthlyTxt=invAnalytics.monthly>0?fGrams(invAnalytics.monthly)+'/month':'0 g/month';
   const basisShort = invAnalytics.coverageDays>0
     ? '30d MA'
@@ -2773,15 +2839,23 @@ function rDash(){
   g('sg2').innerHTML=`
     <div class="sbox accent-top">
       <div class="sbox-inner">
-        <div class="sbox-half">
+        <div class="sbox-half" style="flex:0.8">
           <div class="sl">Avg Order Value</div>
           <div class="sv">${hasData&&completedCount>0?fC(f.revAll/completedCount):'—'}</div>
           <div class="sn">${hasData?'Per completed order':'—'}</div>
         </div>
-        <div class="sbox-half">
-          <div class="sl">Inventory Moved</div>
-          <div class="sv">${fGrams(inv.moved)}</div>
-          <div class="sn">${inv.connected?`Inventory left: ${fGrams(inv.left)}`:'Inventory app offline'}</div>
+        <div class="sbox-half" style="flex:1.2">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
+            <div class="sl">Inventory Moved</div>
+            <select onchange="setDashInventoryMovedProduct(this.value)" style="width:108px;max-width:108px;padding:4px 22px 4px 8px;font-size:12px;line-height:1.1;flex:0 0 auto">
+              ${invMovedOpts||'<option value="">Total</option>'}
+            </select>
+          </div>
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px">
+            <div class="sv" style="margin-top:0">${fGrams(invMoved.moved)}</div>
+            <button class="btn btn-s btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="height:28px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap">Sync</button>
+          </div>
+          <div class="sn">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
         </div>
       </div>
     </div>
@@ -2842,7 +2916,7 @@ function rDash(){
     if(item.type==='stock'){
       const s=item.data;
       const isCrit=(Number(s.stockGrams)||0)<=Number(s.lowStockThreshold||0)*0.5;
-      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${isCrit?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(s.name)} <span class="pill pn" style="margin-left:6px">Stock</span></div><div style="font-size:11.5px;color:var(--text-3)">${fGrams(Number(s.stockGrams)||0)} left · threshold ${fGrams(Number(s.lowStockThreshold)||0)}</div><div style="margin-top:5px">${isCrit?`<span class="pill pr">Critical stock</span>`:`<span class="pill pa">Low stock</span>`}</div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('inventory')">View</button></div>`;
+      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${isCrit?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(s.name)} <span class="pill pn" style="margin-left:6px">Stock</span></div><div style="font-size:11.5px;color:var(--text-3)">${fGrams(Number(s.stockGrams)||0)} left · threshold ${fGrams(Number(s.lowStockThreshold)||0)}</div><div style="margin-top:5px">${isCrit?`<span class="pill pr">Critical stock</span>`:`<span class="pill pa">Low stock</span>`}</div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('dashboard')">View</button></div>`;
     }
     const d=item.data;
     return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Product')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
