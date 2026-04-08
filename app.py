@@ -1909,6 +1909,6 @@ if __name__ == "__main__":
     else:
         print(f"[CRM] Using existing data.json at {DATA_FILE}")
 
-    host = os.environ.get("HOST", "127.0.0.1").strip() or "127.0.0.1"
+    host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
     print(f"[CRM] Starting server at http://{host}:8000")
     uvicorn.run("app:app", host=host, port=8000, reload=False)
