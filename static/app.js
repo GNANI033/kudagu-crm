@@ -2814,12 +2814,12 @@ function rDash(){
     </div>
     <div class="sbox ${f.mom==null?'accent-top':(f.mom<0)?'red-top':'green-top'}">
       <div class="sbox-inner">
-        <div class="sbox-half" style="flex:0.8">
+        <div class="sbox-half" style="flex:0.7">
           <div class="sl">MoM Change</div>
           <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
           <div class="sn ${pCls(f.mom)}">${f.mom==null?'Not enough data':'This month: '+fC(f.revM)}</div>
         </div>
-        <div class="sbox-half" style="flex:1.2">
+        <div class="sbox-half" style="flex:1.3">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
             <div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;flex:1 1 auto">
               <div class="sl">Analytics</div>
@@ -2839,12 +2839,12 @@ function rDash(){
   g('sg2').innerHTML=`
     <div class="sbox accent-top">
       <div class="sbox-inner">
-        <div class="sbox-half" style="flex:0.8">
+        <div class="sbox-half" style="flex:0.7;padding:16px 20px 12px">
           <div class="sl">Avg Order Value</div>
           <div class="sv">${hasData&&completedCount>0?fC(f.revAll/completedCount):'—'}</div>
-          <div class="sn">${hasData?'Per completed order':'—'}</div>
+          <div class="sn" style="font-size:13px;line-height:1.35">${hasData?'Per completed order':'—'}</div>
         </div>
-        <div class="sbox-half" style="flex:1.2">
+        <div class="sbox-half" style="flex:1.3;padding:16px 20px 12px">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
             <div class="sl">Inventory Moved</div>
             <select onchange="setDashInventoryMovedProduct(this.value)" style="width:108px;max-width:108px;padding:4px 22px 4px 8px;font-size:12px;line-height:1.1;flex:0 0 auto">
@@ -2855,24 +2855,24 @@ function rDash(){
             <div class="sv" style="margin-top:0">${fGrams(invMoved.moved)}</div>
             <button class="btn btn-s btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="height:28px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;background:var(--surface)">Sync</button>
           </div>
-          <div class="sn">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
+          <div class="sn" style="font-size:13px;line-height:1.35">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
         </div>
       </div>
     </div>
     <div class="sbox ${allOpsAlerts?'red-top':'accent-top'}">
       <div class="sbox-inner">
-        <div class="sbox-half">
+        <div class="sbox-half" style="padding:16px 20px 12px">
           <div class="sl">Customers</div>
           <div class="sv">${totalCustomers}</div>
-          <div class="sn">
+          <div class="sn" style="font-size:13px;line-height:1.35">
             ${totalCustomers>0?`${ordersPerCustomer.toFixed(2)} orders/customer`:'No customers yet'}
             ${retentionPct==null?'':' · '+retentionPct.toFixed(0)+'% retention'}
           </div>
         </div>
-        <div class="sbox-half">
+        <div class="sbox-half" style="padding:16px 20px 12px">
           <div class="sl">Alerts</div>
           <div class="sv ${allOpsAlerts?'red':''}">${allOpsAlerts}</div>
-          <div class="sn">${allOpsAlerts?'Need attention':'All on track'}</div>
+          <div class="sn" style="font-size:13px;line-height:1.35">${allOpsAlerts?'Need attention':'All on track'}</div>
         </div>
       </div>
     </div>`;
