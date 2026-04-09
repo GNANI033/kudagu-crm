@@ -844,14 +844,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
       </div>
     </div>
     <div class="stats-merged" style="margin-bottom:14px">
-      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Active Batches</div><div class="sv" id="dist-total-active">0</div></div><div class="sbox-half"><div class="sl">Completed</div><div class="sv green" id="dist-total-completed">0</div></div></div></div>
-      <div class="sbox"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Total Qty</div><div class="sv" id="dist-total-qty">0</div><div class="sn">Across all distributor batches</div></div></div></div>
+      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Active Batches</div><div class="sv" id="dist-total-active">0</div><div class="sn" id="dist-active-meta">0 distributors · 0 pcs on hold</div></div><div class="sbox-half"><div class="sl">Completed</div><div class="sv green" id="dist-total-completed">0</div><div class="sn" id="dist-completed-meta">₹0 collected · 0 pcs closed</div></div></div></div>
+      <div class="sbox">
+        <div class="sbox-inner">
+          <div class="sbox-half">
+            <div class="sl">Qty On Hold</div>
+            <div class="sv" id="dist-total-qty">0</div>
+            <div class="sn">Currently on hold with all distributors</div>
+          </div>
+          <div class="sbox-half">
+            <div class="sl">On-Hold Stock Worth</div>
+            <div class="sv" id="dist-hold-worth">₹0</div>
+            <div class="sn">Retail value of active distributor stock</div>
+          </div>
+        </div>
+      </div>
     </div>
     <div class="card">
       <div class="ch"><div class="ct">Create Distributor Batch</div></div>
       <div class="cb" style="display:flex;flex-direction:column;gap:14px">
         <div class="fr">
-          <div class="fg"><label>Distributor Name <span class="req">*</span></label><input type="text" id="dist-name" placeholder="e.g. Kumar Agencies"></div>
+          <div class="fg">
+            <label>Distributor Name <span class="req">*</span></label>
+            <select id="dist-name" onchange="onDistNameSelectChange()">
+              <option value="">Select distributor…</option>
+            </select>
+            <input type="text" id="dist-name-custom" placeholder="e.g. Kumar Agencies" style="display:none;margin-top:8px">
+          </div>
           <div class="fg"><label>Quantity (pcs) <span class="req">*</span></label><input type="number" id="dist-qty" min="1" value="1"></div>
         </div>
         <div class="fg">

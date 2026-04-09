@@ -244,6 +244,69 @@ function batchCommissionTotal(b){
 function commissionModeLabel(mode){
   return mode==='batch'?'Whole batch':'Per pcs';
 }
+function getSavedDistributorNames(){
+  const fromSettings = Array.isArray(S?.distributionChannels) ? S.distributionChannels : [];
+  const fromBatches = (S?.distributorBatches||[]).map(b=>String(b?.distributorName||'').trim());
+  const merged = [...fromSettings, ...fromBatches];
+  const seen = new Set();
+  return merged
+    .map(name=>name.replace(/\s+/g,' ').trim())
+    .filter(Boolean)
+    .filter((name)=>{
+      const key = name.toLowerCase();
+      if(seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+function distributorOptionsHtml(selected=''){
+  const names=getSavedDistributorNames();
+  const opts=['<option value="">Select distributor…</option>'];
+  names.forEach((name)=>opts.push(`<option value="${esc(name)}" ${name===selected?'selected':''}>${esc(name)}</option>`));
+  opts.push(`<option value="__new__" ${selected==='__new__'?'selected':''}>+ Add new distributor…</option>`);
+  return opts.join('');
+}
+function renderDistributorSuggestions(){
+  const sel = g('dist-name');
+  if(!sel) return;
+  const cur = sel.value || '';
+  const names = getSavedDistributorNames();
+  const selected = names.some(n=>n===cur) ? cur : (cur && cur!=='__new__' ? '__new__' : cur);
+  sel.innerHTML = distributorOptionsHtml(selected||'');
+  const custom=g('dist-name-custom');
+  if(custom){
+    const show=sel.value==='__new__';
+    custom.style.display=show?'block':'none';
+    if(!show) custom.value='';
+  }
+}
+function onDistNameSelectChange(){
+  const sel=g('dist-name');
+  const custom=g('dist-name-custom');
+  if(!sel||!custom) return;
+  const show=sel.value==='__new__';
+  custom.style.display=show?'block':'none';
+  if(show) setTimeout(()=>custom.focus(),0);
+}
+function getDistNameValue(prefix='dist'){
+  const sel=g(`${prefix}-name`);
+  const custom=g(`${prefix}-name-custom`);
+  if(!sel){
+    return String(g(`${prefix}-name`)?.value||'').trim();
+  }
+  if(sel.value==='__new__'){
+    return String(custom?.value||'').trim();
+  }
+  return String(sel.value||'').trim();
+}
+function rememberDistributorName(name){
+  const cleaned = String(name||'').replace(/\s+/g,' ').trim();
+  if(!cleaned) return;
+  S.distributionChannels = Array.isArray(S.distributionChannels) ? S.distributionChannels : [];
+  S.distributionChannels.push(cleaned);
+  S.distributionChannels = getSavedDistributorNames();
+  renderDistributorSuggestions();
+}
 
 // ─── TOAST ───────────────────────────────────────────────────────────────────
 function toast(msg,type=''){ const el=document.createElement('div'); el.className=`toast ${type}`; el.textContent=msg; g('toasts').appendChild(el); setTimeout(()=>{el.style.opacity='0';el.style.transition='opacity .3s';setTimeout(()=>el.remove(),300);},2800); }
@@ -1946,7 +2009,7 @@ function onDistProductChange(){
   sel.innerHTML=pid?distVariantOptions(pid):'<option value="">Select size…</option>';
 }
 async function createDistributorBatch(){
-  const distributorName=(g('dist-name')?.value||'').trim();
+  const distributorName=getDistNameValue('dist');
   const prodId=(g('dist-prod')?.value||'').trim();
   const variant=(g('dist-variant')?.value||'').trim();
   const qty=parseInt(g('dist-qty')?.value||0)||0;
@@ -1967,7 +2030,10 @@ async function createDistributorBatch(){
     const batch=await api.post('/api/distribution/batches',{distributorName,prodId,variant,qty,commission,commissionMode,notes,at});
     S.distributorBatches=S.distributorBatches||[];
     S.distributorBatches.unshift(batch);
-    g('dist-name').value='';
+    rememberDistributorName(distributorName);
+    if(g('dist-name')) g('dist-name').value='';
+    if(g('dist-name-custom')) g('dist-name-custom').value='';
+    onDistNameSelectChange();
     g('dist-prod').value='';
     g('dist-variant').innerHTML='<option value="">Select size…</option>';
     g('dist-qty').value='1';
@@ -2065,13 +2131,19 @@ function openEditDistributorBatch(batchId){
     toast('Completed batch cannot be edited','err');
     return;
   }
+  const savedNames=getSavedDistributorNames();
+  const existingName=String(b.distributorName||'').trim();
+  const useCustom=existingName && !savedNames.some(n=>n===existingName);
   openModal(`
     <div class="modal-title">Edit Distributor Batch</div>
     <div style="font-size:12px;color:var(--text-3);margin-top:6px">Batch #${b.id}</div>
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
       <div class="fg">
         <label>Distributor Name <span class="req">*</span></label>
-        <input id="edit-dist-name" type="text" value="${esc(b.distributorName||'')}" placeholder="e.g. Coorg Wholesale">
+        <select id="edit-dist-name" onchange="onEditDistNameSelectChange()">
+          ${distributorOptionsHtml(useCustom?'__new__':existingName)}
+        </select>
+        <input id="edit-dist-name-custom" type="text" value="${useCustom?esc(existingName):''}" placeholder="e.g. Coorg Wholesale" style="display:${useCustom?'block':'none'};margin-top:8px">
       </div>
       <div class="fr">
         <div class="fg">
@@ -2114,8 +2186,16 @@ function openEditDistributorBatch(batchId){
     </div>
   `,'lg');
 }
+function onEditDistNameSelectChange(){
+  const sel=g('edit-dist-name');
+  const custom=g('edit-dist-name-custom');
+  if(!sel||!custom) return;
+  const show=sel.value==='__new__';
+  custom.style.display=show?'block':'none';
+  if(show) setTimeout(()=>custom.focus(),0);
+}
 async function submitEditDistributorBatch(batchId){
-  const distributorName=(g('edit-dist-name')?.value||'').trim();
+  const distributorName=getDistNameValue('edit-dist');
   const prodId=(g('edit-dist-prod')?.value||'').trim();
   const variant=(g('edit-dist-variant')?.value||'').trim();
   const qty=parseInt(g('edit-dist-qty')?.value||0)||0;
@@ -2128,6 +2208,7 @@ async function submitEditDistributorBatch(batchId){
   try{
     const updated=await api.put(`/api/distribution/batches/${batchId}`,{distributorName,prodId,variant,qty,commission,commissionMode,notes});
     S.distributorBatches=(S.distributorBatches||[]).map(b=>b.id===batchId?updated:b);
+    rememberDistributorName(distributorName);
     closeModal();
     rDistribution();
     rAlerts();
@@ -2252,6 +2333,7 @@ function distributionMobileCard(b){
 }
 function rDistribution(){
   const list=(S.distributorBatches||[]);
+  renderDistributorSuggestions();
   const prodSel=g('dist-prod');
   if(prodSel){
     const cur=prodSel.value||'';
@@ -2271,12 +2353,24 @@ function rDistribution(){
 
   const active=list.filter(b=>b.status==='active');
   const done=list.filter(b=>b.status==='completed');
+  const activeQty=active.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0);
+  const activeHoldWorth=active.reduce((s,b)=>{
+    const qty=parseInt(b.qty||0)||0;
+    const unitPrice=getSalePrice(b.prodId,b.variant,'retail');
+    return s + (qty*unitPrice);
+  },0);
+  const doneQty=done.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0);
+  const activeDistCount=new Set(active.map(b=>String(b.distributorName||'').trim().toLowerCase()).filter(Boolean)).size;
+  const completedCollected=done.reduce((s,b)=>s+(parseFloat(b.amountCollected||0)||0),0);
   if(g('dist-sub')){
     g('dist-sub').textContent=`${list.length} batches · ${active.length} active · ${done.length} completed`;
   }
   if(g('dist-total-active')) g('dist-total-active').textContent=String(active.length);
   if(g('dist-total-completed')) g('dist-total-completed').textContent=String(done.length);
-  if(g('dist-total-qty')) g('dist-total-qty').textContent=String(list.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0));
+  if(g('dist-total-qty')) g('dist-total-qty').textContent=String(activeQty);
+  if(g('dist-hold-worth')) g('dist-hold-worth').textContent=fC(activeHoldWorth);
+  if(g('dist-active-meta')) g('dist-active-meta').textContent=`${activeDistCount} distributors · ${activeQty} pcs on hold`;
+  if(g('dist-completed-meta')) g('dist-completed-meta').textContent=`${fC(completedCollected)} collected · ${doneQty} pcs closed`;
 
   const host=g('dist-body');
   if(!host) return;
@@ -3291,6 +3385,7 @@ async function init(){
   try{ S=await api.get('/api/data'); }
   catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
+  if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
   // Poll inventory stock levels (silently fails if inventory app is not running)
   await pollStockAlerts();
   // Re-poll every 5 minutes

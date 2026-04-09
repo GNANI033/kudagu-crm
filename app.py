@@ -56,6 +56,7 @@ DEFAULT_DATA: dict = {
     "customers": [],
     "orders": [],
     "distributorBatches": [],
+    "distributionChannels": [],
     "closedFollowUps": [],
     "cid": 1,
     "oid": 1,
@@ -241,6 +242,12 @@ def migrate(data: dict) -> dict:
         if "orderId" not in b:
             b["orderId"] = None
 
+    if "distributionChannels" not in data or not isinstance(data.get("distributionChannels"), list):
+        data["distributionChannels"] = []
+    seeded_channels = list(data.get("distributionChannels", []))
+    seeded_channels.extend([b.get("distributorName", "") for b in data["distributorBatches"]])
+    data["distributionChannels"] = _normalize_distribution_channels(seeded_channels)
+
     cleaned_closed: list[dict] = []
     for row in data.get("closedFollowUps", []):
         if not isinstance(row, dict):
@@ -273,6 +280,29 @@ def migrate(data: dict) -> dict:
 
 def _normalize_commission_mode(raw: Any) -> str:
     return "batch" if str(raw or "").strip().lower() == "batch" else "per_pcs"
+
+
+def _normalize_distribution_channels(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        name = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _add_distribution_channel(data: dict, channel_name: Any) -> None:
+    existing = list(data.get("distributionChannels", []))
+    existing.append(channel_name)
+    data["distributionChannels"] = _normalize_distribution_channels(existing)
 
 
 def _normalize_customer_source(value: Any) -> str:
@@ -1315,6 +1345,7 @@ async def add_distribution_batch(request: Request):
     if not batch["distributorName"]:
         raise HTTPException(status_code=400, detail="Distributor name is required")
 
+    _add_distribution_channel(data, batch["distributorName"])
     data["distributorBatches"].insert(0, batch)
     data["dbid"] += 1
     write_data(data)
@@ -1365,6 +1396,7 @@ async def update_distribution_batch(batch_id: int, request: Request):
     if not str(batch.get("distributorName", "")).strip():
         raise HTTPException(status_code=400, detail="Distributor name is required")
 
+    _add_distribution_channel(data, batch.get("distributorName", ""))
     write_data(data)
     return batch
 
