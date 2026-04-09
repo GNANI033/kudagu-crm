@@ -1364,6 +1364,7 @@ function openAddCustomerModal(){
         <div class="fg"><label>Email <span style="color:var(--text-3);font-weight:400">(optional)</span></label><input id="fe" type="email" placeholder="ravi@email.com"></div>
       </div>
       <div class="fg"><label>Address <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="fx" rows="2" placeholder="Full delivery address…"></textarea></div>
+      <div class="fg"><label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="fnotes" rows="2" placeholder="Any customer-specific notes…"></textarea></div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn btn-p" style="flex:1" onclick="saveC()">Save Customer</button>
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
@@ -1376,7 +1377,7 @@ async function saveC(){
   if(!name||!phone||!area){toast('Name, phone & area required','err');return;}
   if(!/^\d{10}$/.test(phone)){toast('Phone must be 10 digits','err');return;}
   try{
-    const c=await api.post('/api/customers',{name,phone,area,email:g('fe').value.trim(),address:g('fx').value.trim(),at:Date.now()});
+    const c=await api.post('/api/customers',{name,phone,area,email:g('fe').value.trim(),address:g('fx').value.trim(),notes:g('fnotes').value.trim(),at:Date.now()});
     S.customers.push(c); S.cid=c.id+1;
     closeModal();
     toast(name+' added','ok'); rCustomers();
@@ -1426,6 +1427,7 @@ function rCustomers(){
         <div class="cmr"><span class="cmi">↗</span>${esc(c.phone)}</div>
         ${c.email?`<div class="cmr"><span class="cmi">@</span>${esc(c.email)}</div>`:''}
         ${c.address?`<div class="cmr" style="font-size:11.5px"><span class="cmi">⌂</span>${esc(c.address)}</div>`:''}
+        ${c.notes?`<div class="cmr" style="font-size:11.5px"><span class="cmi">✎</span>${esc(c.notes)}</div>`:''}
       </div>
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
@@ -1462,6 +1464,7 @@ function openEditCustomer(cid){
         <div class="fg"><label>Email</label><input id="ec-email" type="email" value="${esc(c.email||'')}"></div>
       </div>
       <div class="fg"><label>Address</label><textarea id="ec-address" rows="2">${esc(c.address||'')}</textarea></div>
+      <div class="fg"><label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="ec-notes" rows="2">${esc(c.notes||'')}</textarea></div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn btn-p" style="flex:1" onclick="submitEditCustomer(${cid})">Save Changes</button>
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
@@ -1476,7 +1479,7 @@ async function submitEditCustomer(cid){
   if(!name||!phone||!area){toast('Name, phone & area required','err');return;}
   if(!/^\d{10}$/.test(phone)){toast('Phone must be 10 digits','err');return;}
   try{
-    const updated=await api.put(`/api/customers/${cid}`,{name,phone,area,email:g('ec-email').value.trim(),address:g('ec-address').value.trim()});
+    const updated=await api.put(`/api/customers/${cid}`,{name,phone,area,email:g('ec-email').value.trim(),address:g('ec-address').value.trim(),notes:g('ec-notes').value.trim()});
     const idx=S.customers.findIndex(c=>c.id===cid); if(idx>=0) S.customers[idx]=updated;
     S.orders.forEach(o=>{if(o.cid===cid){o.cname=name;o.cphone=phone;o.carea=area;}});
     closeModal(); toast(name+' updated','ok'); rCustomers();

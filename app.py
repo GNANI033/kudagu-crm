@@ -273,6 +273,8 @@ def migrate(data: dict) -> dict:
         c["source"] = _normalize_customer_source(c.get("source"))
         if "importBatchId" not in c:
             c["importBatchId"] = ""
+        if "notes" not in c:
+            c["notes"] = ""
         c["phone"] = _normalize_customer_phone(c.get("phone"))
 
     return data
@@ -324,6 +326,7 @@ def _build_customer(
     area: str,
     email: str = "",
     address: str = "",
+    notes: str = "",
     at: Any = None,
     source: str = "manual",
     import_batch_id: str = "",
@@ -335,6 +338,7 @@ def _build_customer(
         "area": str(area or "").strip(),
         "email": str(email or "").strip(),
         "address": str(address or "").strip(),
+        "notes": str(notes or "").strip(),
         "at": at,
         "source": _normalize_customer_source(source),
         "importBatchId": str(import_batch_id or "").strip(),
@@ -1126,6 +1130,7 @@ async def add_customer(request: Request):
         area=body["area"],
         email=body.get("email", ""),
         address=body.get("address", ""),
+        notes=body.get("notes", ""),
         at=body.get("at"),
         source=body.get("source", "manual"),
         import_batch_id=body.get("importBatchId", ""),
@@ -1144,7 +1149,7 @@ async def update_customer(customer_id: int, request: Request):
     idx = next((i for i, c in enumerate(data["customers"]) if c["id"] == customer_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Customer not found")
-    for key in ("name", "phone", "area", "email", "address"):
+    for key in ("name", "phone", "area", "email", "address", "notes"):
         if key in body:
             if key == "phone":
                 data["customers"][idx][key] = _normalize_customer_phone(body[key])
