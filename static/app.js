@@ -1093,6 +1093,7 @@ function refreshMarketingGroup(){
     g('mkt-group-sample').textContent=sample?`Sample: ${sample}${customers.length>5?' ...':''}`:'No customers match current filters.';
   }
   previewMarketingTemplate();
+  if(g('cg')) rCustomers();
 }
 function rMarketingView(){
   refreshMarketingAreas();
@@ -1384,12 +1385,29 @@ async function saveC(){
 
 function rCustomers(){
   const grid=g('cg');
-  g('cs-sub').textContent=S.customers.length+' customer'+(S.customers.length!==1?'s':'')+' registered';
-  if(!S.customers.length){
+  if(!MKT_GROUPS.length) loadMarketingGroups();
+  refreshMarketingAreas();
+  const totalCustomers=(S.customers||[]).length;
+  const customers=getMarketingGroupCustomers();
+  if(g('mkt-group-summary')) g('mkt-group-summary').textContent=buildMarketingGroupSummary(customers);
+  if(g('mkt-group-sample')){
+    const sample=customers.slice(0,5).map(c=>`${c.name} (${c.area||'-'})`).join(', ');
+    g('mkt-group-sample').textContent=sample?`Sample: ${sample}${customers.length>5?' ...':''}`:'No customers match current filters.';
+  }
+  const activeGroup=MKT_GROUPS.find(x=>x.id===MKT_ACTIVE_GROUP_ID);
+  if(g('cs-sub')){
+    const suffix=activeGroup ? ` · group: ${activeGroup.name}` : '';
+    g('cs-sub').textContent=`${customers.length} of ${totalCustomers} customer${totalCustomers!==1?'s':''}${suffix}`;
+  }
+  if(!totalCustomers){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customers yet</div><div class="es">Add your first customer to get started</div></div>`;
     return;
   }
-  grid.innerHTML=S.customers.map(c=>{
+  if(!customers.length){
+    grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customers in this filter</div><div class="es">Adjust group filters in this page or apply another saved group from Marketing.</div></div>`;
+    return;
+  }
+  grid.innerHTML=customers.map(c=>{
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const orderTag=oc>0?'Order recorded':'No order yet';
@@ -2612,23 +2630,14 @@ async function refreshInventoryView(){
 }
 function setInventorySyncBtnLoading(on){
   const ids=['inv-sync-btn','dash-inv-sync-btn'];
-      ids.forEach(id=>{
+  ids.forEach(id=>{
     const btn=g(id); if(!btn) return;
     if(on){
       btn.disabled=true;
-      btn.dataset.prev=btn.innerHTML;
-      if(id==='dash-inv-sync-btn'){
-        btn.innerHTML=`<span class="btn-spin"></span> Syncing`;
-      }else{
-        btn.innerHTML=`<span class="btn-spin"></span> Syncing...`;
-      }
+      btn.classList.add('is-loading');
     }else{
       btn.disabled=false;
-      if(id==='dash-inv-sync-btn'){
-        btn.innerHTML=btn.dataset.prev||'Sync';
-      }else{
-        btn.innerHTML=btn.dataset.prev||'Sync & Refresh';
-      }
+      btn.classList.remove('is-loading');
     }
   });
 }
@@ -2939,15 +2948,17 @@ function rDash(){
           <div class="sn" style="font-size:13px;line-height:1.35">${hasData?'Per completed order':'—'}</div>
         </div>
         <div class="sbox-half" style="flex:1.3;padding:16px 20px 12px">
-          <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
-            <div class="sl">Inventory Moved</div>
-            <select onchange="setDashInventoryMovedProduct(this.value)" style="width:108px;max-width:108px;padding:4px 22px 4px 8px;font-size:12px;line-height:1.1;flex:0 0 auto">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+            <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1 1 auto">
+              <div class="sl" style="white-space:normal;line-height:1.1">Inventory Moved</div>
+              <button class="btn btn-g btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="width:24px;height:24px;min-height:24px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;box-shadow:none;color:var(--text-3);font-size:16px;line-height:1;flex:0 0 auto;margin-top:-2px"><span>⟳</span></button>
+            </div>
+            <select onchange="setDashInventoryMovedProduct(this.value)" style="width:88px;max-width:88px;padding:4px 22px 4px 8px;font-size:12px;line-height:1.1;flex:0 0 auto">
               ${invMovedOpts||'<option value="">Total</option>'}
             </select>
           </div>
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px">
             <div class="sv" style="margin-top:0">${fGrams(invMoved.moved)}</div>
-            <button class="btn btn-s btn-xs" id="dash-inv-sync-btn" onclick="syncAndRefreshInventory()" title="Sync & Refresh Inventory" aria-label="Sync and refresh inventory" style="height:28px;padding:0 10px;display:inline-flex;align-items:center;justify-content:center;white-space:nowrap;background:var(--surface)">Sync</button>
           </div>
           <div class="sn" style="font-size:13px;line-height:1.35">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
         </div>

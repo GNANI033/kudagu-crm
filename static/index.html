@@ -207,6 +207,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   animation: spin .75s linear infinite;
 }
 .btn-p.is-loading::after { border-color: rgba(255,255,255,.95); border-right-color: transparent; }
+#dash-inv-sync-btn.is-loading::after { border-color: var(--text-3); border-right-color: transparent; }
 .btn-spin {
   width: 12px;
   height: 12px;
@@ -919,70 +920,14 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
     <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Group campaigns with AI template + semi-automated WhatsApp flow</div></div></div>
     <div class="card" style="max-width:1050px">
       <div class="cb" style="display:flex;flex-direction:column;gap:14px">
-        <div class="sl-label">Group Filters</div>
-        <div class="mkt-filter-grid">
-          <div class="fg">
-            <label>Ordered</label>
-            <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="yes">Has orders</option>
-              <option value="no">No orders yet</option>
-            </select>
-          </div>
-          <div class="fg">
-            <label>Area</label>
-            <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
-          </div>
-          <div class="fg">
-            <label>Order Type</label>
-            <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="retail">Retail</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="website">Website</option>
-            </select>
-          </div>
-          <div class="fg">
-            <label>Avg Order Value</label>
-            <div style="display:flex;gap:8px">
-              <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
-                <option value="any">Any</option>
-                <option value="above">Above</option>
-                <option value="below">Below</option>
-              </select>
-              <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
-            </div>
-          </div>
-          <div class="fg">
-            <label>Regular Customer</label>
-            <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="yes">Regular only</option>
-              <option value="no">Not regular</option>
-            </select>
-          </div>
-          <div class="fg">
-            <label>Regular Rule</label>
-            <div style="display:flex;gap:8px">
-              <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
-              <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
-            </div>
-          </div>
-        </div>
-        <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
+        <div class="sl-label">Saved Groups</div>
         <div class="fr">
         <div class="fg">
-          <label>Saved Groups <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <label>Groups from Customers <span style="color:var(--text-3);font-weight:400">(filters live in People → Customers)</span></label>
           <div id="mkt-groups-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-            <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
             <div id="mkt-group-buttons" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
           </div>
         </div>
-        </div>
-
-        <div class="card" style="padding:12px;border:1px solid var(--border)">
-          <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
-          <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
         </div>
 
         <div class="sl-label">Campaign Input</div>
@@ -1038,6 +983,68 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
       <div style="display:flex;gap:8px;flex-wrap:wrap">
         <button class="btn btn-s btn-sm" onclick="openBulkImportModal()">Import Bulk</button>
         <button class="btn btn-p btn-sm" onclick="openAddCustomerModal()">＋ Add</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="cb" style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div class="sl-label" style="margin-bottom:0;flex:1">Group Filters</div>
+          <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
+        </div>
+        <div class="mkt-filter-grid">
+          <div class="fg">
+            <label>Ordered</label>
+            <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="yes">Has orders</option>
+              <option value="no">No orders yet</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Area</label>
+            <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
+          </div>
+          <div class="fg">
+            <label>Order Type</label>
+            <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="retail">Retail</option>
+              <option value="whatsapp">WhatsApp</option>
+              <option value="website">Website</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Avg Order Value</label>
+            <div style="display:flex;gap:8px">
+              <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="above">Above</option>
+                <option value="below">Below</option>
+              </select>
+              <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
+            </div>
+          </div>
+          <div class="fg">
+            <label>Regular Customer</label>
+            <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
+              <option value="any">Any</option>
+              <option value="yes">Regular only</option>
+              <option value="no">Not regular</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Regular Rule</label>
+            <div style="display:flex;gap:8px">
+              <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
+              <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
+            </div>
+          </div>
+        </div>
+        <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
+        <div class="card" style="padding:12px;border:1px solid var(--border)">
+          <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
+          <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
+        </div>
       </div>
     </div>
     <div class="cg" id="cg"></div>
