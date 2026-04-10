@@ -1,5 +1,14 @@
 data.json
 *.sqlite3
 *.sqlite3-*
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.db3
+*.db3-*
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal
 __pycache__/
 inventory/__pycache__/
