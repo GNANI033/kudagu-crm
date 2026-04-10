@@ -60,6 +60,13 @@ const WA_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentCo
 
 // ─── STATE ───────────────────────────────────────────────────────────────────
 let S = null;
+let FULL_DATA_READY = false;
+let FULL_DATA_PROMISE = null;
+let DASH_BOOTSTRAP_METRICS = null;
+let ORDER_PAGES = { active: 1, completed: 1 };
+let CUSTOMER_PAGE = 1;
+const ORDERS_PAGE_SIZE = 40;
+const CUSTOMERS_PAGE_SIZE = 24;
 let _lastActionEl = null;
 let _lastActionAt = 0;
 let _uiReqDepth = 0;
@@ -196,6 +203,9 @@ function yRange(off=0){ const y=new Date().getFullYear()+off; return{s:new Date(
 function sumRev(os){ return os.filter(isCompleted).reduce((s,o)=>s+orderRevenue(o),0); }
 function sumProf(os){ return os.filter(isCompleted).reduce((s,o)=>{const p=orderProfit(o);return s+(p??0);},0); }
 function calcFin(){
+  if(!FULL_DATA_READY && DASH_BOOTSTRAP_METRICS){
+    return DASH_BOOTSTRAP_METRICS;
+  }
   const cm=mRange(0),pm=mRange(-1),cy=yRange(0),py=yRange(-1);
   const oM=S.orders.filter(o=>o.at>=cm.s&&o.at<cm.e);
   const oPM=S.orders.filter(o=>o.at>=pm.s&&o.at<pm.e);
@@ -378,6 +388,73 @@ function renderDistributorSuggestions(){
     custom.style.display=show?'block':'none';
     if(!show) custom.value='';
   }
+}
+async function getJSONWithTimeout(path, timeoutMs=1500){
+  const ctrl = new AbortController();
+  const t = setTimeout(()=>ctrl.abort(), timeoutMs);
+  try{
+    const r = await fetch(path,{ signal: ctrl.signal });
+    if(!r.ok) throw new Error(`GET ${path} → ${r.status}`);
+    return r.json();
+  }catch(e){
+    if(e.name==='AbortError') throw new Error(`GET ${path} timed out`);
+    throw e;
+  }finally{
+    clearTimeout(t);
+  }
+}
+function emptyState(){
+  return {
+    customers: [],
+    orders: [],
+    products: [],
+    distributorBatches: [],
+    distributionChannels: [],
+    closedFollowUps: [],
+    cid: 1,
+    oid: 1,
+    dbid: 1,
+    pid: 1,
+    waDefaultTpl: DEFAULT_WA_TPL,
+    shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
+    marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' },
+  };
+}
+function activeViewId(){
+  const v=document.querySelector('.view.active');
+  const id=String(v?.id||'');
+  return id.startsWith('view-') ? id.slice(5) : 'dashboard';
+}
+async function fetchFullData(){
+  S = await api.get('/api/data');
+  FULL_DATA_READY = true;
+  DASH_BOOTSTRAP_METRICS = null;
+  return S;
+}
+function ensureFullDataLoaded(){
+  if(FULL_DATA_READY) return Promise.resolve(S);
+  if(!FULL_DATA_PROMISE){
+    FULL_DATA_PROMISE = fetchFullData().finally(()=>{ FULL_DATA_PROMISE = null; });
+  }
+  return FULL_DATA_PROMISE;
+}
+function rerenderActiveView(){
+  const p=activeViewId();
+  if(p==='dashboard') rDash();
+  if(p==='orders') rOrders();
+  if(p==='alerts') rAlerts();
+  if(p==='marketing') rMarketingView();
+  if(p==='distribution') rDistribution();
+  if(p==='customers') rCustomers();
+  if(p==='settings'){ sPanel('products'); rSettings(); }
+}
+function pagerMarkup(page,totalPages,onClick){
+  if(totalPages<=1) return '';
+  return `<div style="display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:10px 0 2px">
+    <button class="btn btn-s btn-xs" ${page<=1?'disabled':''} onclick="${onClick}(${page-1})">Prev</button>
+    <span style="font-size:12px;color:var(--text-3)">Page ${page} / ${totalPages}</span>
+    <button class="btn btn-s btn-xs" ${page>=totalPages?'disabled':''} onclick="${onClick}(${page+1})">Next</button>
+  </div>`;
 }
 function onDistNameSelectChange(){
   const sel=g('dist-name');
@@ -1081,6 +1158,7 @@ function applyMarketingGroup(id){
   if(!grp){ toast('Saved group not found','err'); return; }
   setMarketingFilters(grp.filters||{});
   MKT_ACTIVE_GROUP_ID=id;
+  CUSTOMER_PAGE=1;
   refreshMarketingGroupsUI();
   refreshMarketingGroup();
   toast(`Applied group: ${grp.name}`,'ok');
@@ -1214,6 +1292,7 @@ function toggleCustomerFiltersPanel(){
 }
 function handleCustomerNameSearch(value){
   CUSTOMER_NAME_SEARCH=String(value||'').trim().toLowerCase();
+  CUSTOMER_PAGE=1;
   rCustomers();
 }
 function rMarketingView(){
@@ -1377,7 +1456,7 @@ async function saveMarketingSettings(){
   const payload={ marketingSettings };
   try{
     await api.put('/api/settings',payload);
-    S=await api.get('/api/data');
+    await fetchFullData();
     const saved = S?.marketingSettings || {};
     const persisted =
       String(saved.aiBaseUrl||'').trim() === String(marketingSettings.aiBaseUrl||'').trim() &&
@@ -1388,7 +1467,7 @@ async function saveMarketingSettings(){
       const merged = { ...(S||{}), marketingSettings: { ...(saved||{}), ...marketingSettings } };
       if(aiApiKey) merged.marketingSettings.aiApiKey = aiApiKey;
       await api.put('/api/data', merged);
-      S=await api.get('/api/data');
+      await fetchFullData();
     }
     toast('Marketing AI settings saved','ok');
     rMarketingSettings();
@@ -1399,11 +1478,11 @@ async function saveMarketingSettings(){
 async function clearMarketingApiKey(){
   try{
     await api.put('/api/settings',{marketingSettings:{clearApiKey:true}});
-    S=await api.get('/api/data');
+    await fetchFullData();
     if(S?.marketingSettings?.hasApiKey){
       const merged={...(S||{}),marketingSettings:{...(S.marketingSettings||{}),aiApiKey:''}};
       await api.put('/api/data',merged);
-      S=await api.get('/api/data');
+      await fetchFullData();
     }
     toast('Saved API key cleared','ok');
     rMarketingSettings();
@@ -1615,7 +1694,11 @@ function rCustomers(){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customer found</div><div class="es">Try a different name in search.</div></div>`;
     return;
   }
-  grid.innerHTML=filteredCustomers.map(c=>{
+  const totalPages=Math.max(1,Math.ceil(filteredCustomers.length/CUSTOMERS_PAGE_SIZE));
+  CUSTOMER_PAGE=Math.min(Math.max(1,CUSTOMER_PAGE),totalPages);
+  const start=(CUSTOMER_PAGE-1)*CUSTOMERS_PAGE_SIZE;
+  const pageCustomers=filteredCustomers.slice(start,start+CUSTOMERS_PAGE_SIZE);
+  const cards=pageCustomers.map(c=>{
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const orderTag=oc>0?'Order recorded':'No order yet';
@@ -1643,6 +1726,15 @@ function rCustomers(){
       </div>
     </div>`;
   }).join('');
+  const pager=totalPages>1
+    ? `<div style="grid-column:1/-1">${pagerMarkup(CUSTOMER_PAGE,totalPages,'setCustomerPage')}</div>`
+    : '';
+  grid.innerHTML=cards+pager;
+}
+
+function setCustomerPage(page){
+  CUSTOMER_PAGE=Math.max(1,parseInt(page||1,10)||1);
+  rCustomers();
 }
 
 // 3-dot context menu for customer card
@@ -1836,12 +1928,17 @@ function rOrders(){
   g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed';
   const body=g('ob');
   if(!S.orders.length){body.innerHTML=`<div class="empty"><div class="ei">📋</div><div class="et">No orders yet</div><div class="es">Record your first sale</div></div>`;return;}
-  body.innerHTML=buildOrderTable(active,'Active Orders',false)+buildOrderTable(done,'Completed Orders',true);
+  body.innerHTML=buildOrderTable(active,'Active Orders',false,'active')+buildOrderTable(done,'Completed Orders',true,'completed');
 }
 
-function buildOrderTable(orders,title,collapsible){
+function buildOrderTable(orders,title,collapsible,bucket){
   if(!orders.length) return collapsible?'':`<div style="padding:18px 16px;color:var(--text-3);font-size:13px">No ${title.toLowerCase()} yet</div>`;
   const id='ot-'+title.replace(/\s/g,'-').toLowerCase();
+  const totalPages=Math.max(1,Math.ceil(orders.length/ORDERS_PAGE_SIZE));
+  const currPage=Math.min(Math.max(1,ORDER_PAGES[bucket]||1),totalPages);
+  ORDER_PAGES[bucket]=currPage;
+  const start=(currPage-1)*ORDERS_PAGE_SIZE;
+  const pageOrders=orders.slice(start,start+ORDERS_PAGE_SIZE);
   const header=`<div class="orders-section-header ${collapsible?'collapsible':''}" onclick="${collapsible?`toggleSection('${id}')`:''}" id="${id}-hdr">
     <span class="orders-section-title">${title}</span>
     <span class="orders-section-count">${orders.length}</span>
@@ -1850,11 +1947,17 @@ function buildOrderTable(orders,title,collapsible){
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
     <thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
-    <tbody>${orders.map(o=>orderRow(o)).join('')}</tbody>
+    <tbody>${pageOrders.map(o=>orderRow(o)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
-  const mobileCards=`<div class="order-card-list">${orders.map(o=>orderMobileCard(o)).join('')}</div>`;
-  return `${header}<div id="${id}">${desktopTable}${mobileCards}</div>`;
+  const mobileCards=`<div class="order-card-list">${pageOrders.map(o=>orderMobileCard(o)).join('')}</div>`;
+  const pager=totalPages>1?pagerMarkup(currPage,totalPages,`setOrderPage.bind(null,'${bucket}')`):'';
+  return `${header}<div id="${id}">${desktopTable}${mobileCards}${pager}</div>`;
+}
+
+function setOrderPage(bucket,page){
+  ORDER_PAGES[bucket]=Math.max(1,parseInt(page||1,10)||1);
+  rOrders();
 }
 
 function orderRow(o){
@@ -2622,7 +2725,7 @@ let inventoryConnected = false;
 
 async function pollStockAlerts(){
   try{
-    const data = await fetch('/api/inventory/stock').then(r=>r.ok?r.json():[]);
+    const data = await getJSONWithTimeout('/api/inventory/stock', 4000);
     inventorySnapshot = Array.isArray(data)?data:[];
     inventoryConnected = true;
     inventorySnapshotAt = Date.now();
@@ -2633,11 +2736,14 @@ async function pollStockAlerts(){
     }
     updBadge(); // recount badge including stock alerts
   }catch(e){
-    // Inventory app not running — silently degrade, no stock alerts shown
-    inventoryConnected = false;
-    stockAlerts = [];
-    inventorySnapshot = [];
-    inventorySnapshotAt = null;
+    // Avoid false "offline" due to transient timeout/network hiccups.
+    // Only mark offline if we have never connected successfully.
+    if(!inventorySnapshotAt){
+      inventoryConnected = false;
+      stockAlerts = [];
+      inventorySnapshot = [];
+      inventorySnapshotAt = null;
+    }
   }
 }
 
@@ -2854,7 +2960,7 @@ function setInventorySyncBtnLoading(on){
 async function syncCompletedOrdersToInventory(){
   try{
     const res=await postJSONWithTimeout('/api/inventory/sync-completed-orders',{},45000);
-    S=await api.get('/api/data');
+    await fetchFullData();
     await pollStockAlerts();
     rInventory(); rDash(); rOrders(); rAlerts(); updBadge();
     toast(`Synced ${res.syncedNow} completed order(s) to inventory`,'ok');
@@ -2866,7 +2972,7 @@ async function syncAndRefreshInventory(){
   setInventorySyncBtnLoading(true);
   try{
     const res=await postJSONWithTimeout('/api/inventory/sync-completed-orders',{},45000);
-    S=await api.get('/api/data');
+    await fetchFullData();
     await pollStockAlerts();
     rInventory(); rDash(); rOrders(); rAlerts(); updBadge();
     const n=(res.reconciledNow ?? res.syncedNow ?? 0);
@@ -3094,12 +3200,13 @@ function rDash(){
       ? 'Runout: now'
       : `Runout ~${invAnalytics.daysLeft}d · ${invAnalytics.runoutDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}`;
   const confidencePill=`<span class="pill ${invAnalytics.confidenceClass}" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:600;padding:0 6px;height:20px;line-height:1;white-space:nowrap;margin-right:8px">${invAnalytics.confidenceLabel}<button class="btn btn-g btn-xs" type="button" onclick="showInventoryAnalyticsInfo()" title="How this works" style="min-width:12px;height:12px;padding:0 3px;border-radius:999px;line-height:1;font-size:9px">i</button></span>`;
-  const hasData=S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
+  const hasBoot=!FULL_DATA_READY && !!DASH_BOOTSTRAP_METRICS;
+  const hasData=hasBoot ? ((Number(f.revAll)||0)>0 || (Number(f.revM)||0)>0) : S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
   const completedOrders=S.orders.filter(isCompleted);
-  const completedCount=completedOrders.length;
-  const totalCustomers=S.customers.length;
-  const totalOrders=S.orders.length;
-  const ordersPerCustomer=totalCustomers>0?(totalOrders/totalCustomers):0;
+  const completedCount=hasBoot ? (Number(f.completedOrders)||0) : completedOrders.length;
+  const totalCustomers=hasBoot ? (Number(f.totalCustomers)||0) : S.customers.length;
+  const totalOrders=hasBoot ? (Number(f.totalOrders)||0) : S.orders.length;
+  const ordersPerCustomer=hasBoot ? (Number(f.ordersPerCustomer)||0) : (totalCustomers>0?(totalOrders/totalCustomers):0);
   const orderCountByCid={};
   (S.orders||[]).forEach(o=>{
     if(!o||!o.cid||o.cid<=0) return;
@@ -3107,7 +3214,7 @@ function rDash(){
   });
   const orderedCustomers=Object.keys(orderCountByCid).length;
   const repeatCustomers=Object.values(orderCountByCid).filter(n=>n>=2).length;
-  const retentionPct=orderedCustomers>0?(repeatCustomers/orderedCustomers)*100:null;
+  const retentionPct=hasBoot ? f.retentionPct : (orderedCustomers>0?(repeatCustomers/orderedCustomers)*100:null);
 
   // Row 1: Revenue + Profit | MoM + Inventory analytics
   g('sg').innerHTML=`
@@ -3609,15 +3716,33 @@ function openNativePicker(id){
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 async function init(){
-  try{ S=await api.get('/api/data'); }
-  catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
+  try{
+    const boot=await api.get('/api/bootstrap');
+    S=boot?.state||emptyState();
+    DASH_BOOTSTRAP_METRICS=boot?.dashboardMetrics||null;
+    FULL_DATA_READY=false;
+  }catch(_){
+    S=emptyState();
+  }
+  if(!S){
+    try{ await fetchFullData(); }
+    catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
+  }
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
-  // Poll inventory stock levels (silently fails if inventory app is not running)
-  await pollStockAlerts();
-  // Re-poll every 5 minutes
-  setInterval(pollStockAlerts, 5 * 60 * 1000);
   setCustomerFiltersExpanded(false);
   updBadge(); rDash(); populateProdSelect(); setDefaultDate(); resetCompositionBuilder(); refreshVariantBuilderUI();
+  ensureFullDataLoaded().then(()=>{
+    if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
+    if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
+    rerenderActiveView();
+    updBadge();
+  }).catch((err)=>{
+    toast('Full data load failed: '+(err?.message||'Unknown error'),'err');
+  });
+  // Poll inventory stock levels in background (do not block initial dashboard render)
+  pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
+  // Re-poll every 5 minutes
+  setInterval(pollStockAlerts, 5 * 60 * 1000);
 }
 window.addEventListener('DOMContentLoaded',init);

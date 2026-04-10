@@ -2,7 +2,7 @@
 Kudagu Kaapi CRM — app.py
 FastAPI + uvicorn backend.
 
-All data is stored in data.json (same directory as this file).
+All data is stored in SQLite (data.sqlite3), with one-time import from data.json.
 The frontend (index.html, app.js) is served as static files from ./static/.
 
 Run:
@@ -29,6 +29,8 @@ import base64
 import csv
 import socket
 import ipaddress
+import sqlite3
+from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -43,15 +45,22 @@ from fastapi.staticfiles import StaticFiles
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
-DATA_FILE  = BASE_DIR / "data.json"
+DB_FILE = BASE_DIR / "data.sqlite3"
+LEGACY_DATA_FILE = BASE_DIR / "data.json"
+STATE_KEY = "root"
 STATIC_DIR = BASE_DIR / "static"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
 SYNC_LOCK = threading.Lock()
 MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
+DATA_LOCK = threading.RLock()
+DATA_CACHE: dict | None = None
+SCHEMA_VERSION = 1
+DASHBOARD_CACHE_LOCK = threading.RLock()
+DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 
-# ── Default initial data (used only when data.json doesn't exist yet) ──────
+# ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
 DEFAULT_DATA: dict = {
     "customers": [],
     "orders": [],
@@ -105,20 +114,156 @@ DEFAULT_DATA: dict = {
 }
 
 # ── Data helpers ────────────────────────────────────────────────────────────
+def _connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _json_serialize(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _load_state_from_db(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute("SELECT section, value FROM app_state_sections").fetchall()
+    data: dict = {}
+    for section, payload in rows:
+        data[section] = json.loads(payload)
+    return data
+
+
+def _save_state_to_db(conn: sqlite3.Connection, old_data: dict, new_data: dict) -> None:
+    now = int(time.time())
+    old_keys = set(old_data.keys())
+    new_keys = set(new_data.keys())
+
+    for section in old_keys - new_keys:
+        conn.execute("DELETE FROM app_state_sections WHERE section = ?", (section,))
+
+    for section in new_keys:
+        new_payload = _json_serialize(new_data[section])
+        if section in old_data and _json_serialize(old_data[section]) == new_payload:
+            continue
+        conn.execute(
+            """
+            INSERT INTO app_state_sections (section, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(section) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (section, new_payload, now),
+        )
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_meta (key, value)
+        VALUES ('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(version),),
+    )
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM app_meta WHERE key = 'schema_version'").fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _init_storage() -> None:
+    global DATA_CACHE
+    with DATA_LOCK:
+        with _connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_state_sections (
+                    section TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_state_sections_updated_at ON app_state_sections(updated_at)"
+            )
+
+            section_count = conn.execute("SELECT COUNT(1) FROM app_state_sections").fetchone()[0]
+            if section_count == 0:
+                seed_data: dict | None = None
+                legacy_row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='app_state'"
+                ).fetchone()
+                if legacy_row:
+                    row = conn.execute(
+                        "SELECT value FROM app_state WHERE key = ?",
+                        (STATE_KEY,),
+                    ).fetchone()
+                    if row:
+                        seed_data = json.loads(row[0])
+                if seed_data is None and LEGACY_DATA_FILE.exists():
+                    with open(LEGACY_DATA_FILE, "r", encoding="utf-8") as f:
+                        seed_data = json.load(f)
+                if seed_data is None:
+                    seed_data = copy.deepcopy(DEFAULT_DATA)
+                seed_data = migrate(seed_data)
+                _save_state_to_db(conn, {}, seed_data)
+                _set_schema_version(conn, SCHEMA_VERSION)
+                DATA_CACHE = copy.deepcopy(seed_data)
+                return
+
+            db_state = _load_state_from_db(conn)
+            schema_version = _get_schema_version(conn)
+            if schema_version < SCHEMA_VERSION:
+                migrated = migrate(copy.deepcopy(db_state))
+                _save_state_to_db(conn, db_state, migrated)
+                _set_schema_version(conn, SCHEMA_VERSION)
+                DATA_CACHE = copy.deepcopy(migrated)
+            elif DATA_CACHE is None:
+                DATA_CACHE = copy.deepcopy(db_state)
+
+
 def read_data() -> dict:
-    """Read data.json; create it from defaults if it doesn't exist."""
-    if not DATA_FILE.exists():
-        write_data(copy.deepcopy(DEFAULT_DATA))
-    with open(DATA_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Read app data from SQLite with an in-memory read cache."""
+    global DATA_CACHE
+    _init_storage()
+    with DATA_LOCK:
+        if DATA_CACHE is None:
+            with _connect_db() as conn:
+                DATA_CACHE = _load_state_from_db(conn)
+        return copy.deepcopy(DATA_CACHE)
 
 
 def write_data(data: dict) -> None:
-    """Atomically write data.json (write to .tmp then rename)."""
-    tmp = DATA_FILE.with_suffix(".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    tmp.replace(DATA_FILE)
+    """Persist app data, writing only changed top-level sections."""
+    global DATA_CACHE
+    _init_storage()
+    migrated = migrate(copy.deepcopy(data))
+    with DATA_LOCK:
+        current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else {}
+        with _connect_db() as conn:
+            _save_state_to_db(conn, current, migrated)
+            _set_schema_version(conn, SCHEMA_VERSION)
+        DATA_CACHE = migrated
+    with DASHBOARD_CACHE_LOCK:
+        DASHBOARD_METRICS_CACHE["expires_at"] = 0.0
+        DASHBOARD_METRICS_CACHE["payload"] = None
 
 
 def migrate(data: dict) -> dict:
@@ -469,6 +614,166 @@ def _client_safe_data(data: dict) -> dict:
         ms["apiKeyPreview"] = ("*" * max(0, len(raw_key) - 4)) + raw_key[-4:] if raw_key else ""
         ms["aiApiKey"] = ""
     return safe
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_is_completed(order: dict) -> bool:
+    return str(order.get("status") or "").strip().lower() == "completed"
+
+
+def _payment_gateway_commission_pct(data: dict) -> float:
+    pct = _safe_float((data.get("shippingProfile") or {}).get("paymentGatewayCommissionPct"))
+    return pct if pct >= 0 else 3.0
+
+
+def _sale_price_for_order(products_by_id: dict, order: dict) -> float:
+    product = products_by_id.get(order.get("prodId")) or {}
+    pricing = product.get("pricing") or {}
+    row = pricing.get(order.get("variant")) or {}
+    sale_prices = row.get("salePrices") or {}
+    channel = str(order.get("channel") or "retail")
+    val = _safe_float(sale_prices.get(channel))
+    if val > 0:
+        return val
+    return _safe_float(sale_prices.get("retail"))
+
+
+def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
+    product = products_by_id.get(order.get("prodId")) or {}
+    pricing = product.get("pricing") or {}
+    row = pricing.get(order.get("variant")) or {}
+    expenses = row.get("expenses") or []
+    return sum(_safe_float(e.get("cost")) for e in expenses if isinstance(e, dict))
+
+
+def _order_revenue(products_by_id: dict, order: dict) -> float:
+    realized = _safe_float(order.get("realizedRevenue"))
+    if realized >= 0:
+        return realized
+    unit = _sale_price_for_order(products_by_id, order)
+    qty = _safe_float(order.get("qty")) or 1.0
+    return unit * qty
+
+
+def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> float | None:
+    unit = _sale_price_for_order(products_by_id, order)
+    if unit <= 0:
+        return None
+    qty = _safe_float(order.get("qty")) or 1.0
+    revenue = unit * qty
+    gross = (unit - _total_cost_for_order(products_by_id, order)) * qty
+    discount = _safe_float(order.get("discount"))
+    manual_comm = _safe_float(order.get("commission"))
+    gateway_comm = 0.0
+    if str(order.get("channel") or "").strip().lower() == "website":
+        gateway_comm = revenue * (gateway_pct / 100.0)
+    return gross - discount - manual_comm - gateway_comm
+
+
+def _month_range(now_ts: float, month_offset: int = 0) -> tuple[float, float]:
+    now = time.localtime(now_ts)
+    year = now.tm_year
+    month = now.tm_mon + month_offset
+    while month <= 0:
+        year -= 1
+        month += 12
+    while month > 12:
+        year += 1
+        month -= 12
+    start = time.mktime((year, month, 1, 0, 0, 0, 0, 0, -1))
+    if month == 12:
+        next_start = time.mktime((year + 1, 1, 1, 0, 0, 0, 0, 0, -1))
+    else:
+        next_start = time.mktime((year, month + 1, 1, 0, 0, 0, 0, 0, -1))
+    return start * 1000.0, next_start * 1000.0
+
+
+def _compute_dashboard_metrics(data: dict) -> dict:
+    orders = data.get("orders", []) or []
+    customers = data.get("customers", []) or []
+    products_by_id = {p.get("id"): p for p in (data.get("products", []) or []) if isinstance(p, dict)}
+    gateway_pct = _payment_gateway_commission_pct(data)
+    now_ms = time.time() * 1000.0
+    day_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)) * 1000.0
+    cm_s, cm_e = _month_range(time.time(), 0)
+    pm_s, pm_e = _month_range(time.time(), -1)
+
+    def rev_sum(seq: list[dict]) -> float:
+        return sum(_order_revenue(products_by_id, o) for o in seq if _order_is_completed(o))
+
+    def profit_sum(seq: list[dict]) -> float:
+        total = 0.0
+        for o in seq:
+            if not _order_is_completed(o):
+                continue
+            p = _order_profit(products_by_id, o, gateway_pct)
+            total += p if p is not None else 0.0
+        return total
+
+    cur_month = [o for o in orders if cm_s <= _safe_float(o.get("at")) < cm_e]
+    prev_month = [o for o in orders if pm_s <= _safe_float(o.get("at")) < pm_e]
+    completed_orders = [o for o in orders if _order_is_completed(o)]
+
+    rev_all = rev_sum(orders)
+    rev_m = rev_sum(cur_month)
+    rev_pm = rev_sum(prev_month)
+    prof_all = profit_sum(orders)
+    prof_m = profit_sum(cur_month)
+    mom = ((rev_m - rev_pm) / rev_pm * 100.0) if rev_pm > 0 else None
+
+    active_count = sum(
+        1
+        for o in orders
+        if (not _order_is_completed(o)) and str(o.get("status") or "") not in ("cancelled", "returned")
+    )
+    completed_today = sum(1 for o in completed_orders if _safe_float(o.get("at")) >= day_start)
+    total_customers = len(customers)
+    total_orders = len(orders)
+    completed_count = len(completed_orders)
+    orders_per_customer = (total_orders / total_customers) if total_customers > 0 else 0.0
+    counts_by_customer: dict[int, int] = {}
+    for o in orders:
+        cid = int(_safe_float(o.get("cid")))
+        if cid > 0:
+            counts_by_customer[cid] = counts_by_customer.get(cid, 0) + 1
+    ordered_customers = len(counts_by_customer)
+    repeat_customers = sum(1 for n in counts_by_customer.values() if n >= 2)
+    retention_pct = (repeat_customers / ordered_customers * 100.0) if ordered_customers > 0 else None
+
+    return {
+        "revAll": rev_all,
+        "profAll": prof_all,
+        "revM": rev_m,
+        "profM": prof_m,
+        "activeCount": active_count,
+        "completedToday": completed_today,
+        "mom": mom,
+        "yoy": None,
+        "totalCustomers": total_customers,
+        "totalOrders": total_orders,
+        "completedOrders": completed_count,
+        "ordersPerCustomer": orders_per_customer,
+        "retentionPct": retention_pct,
+        "generatedAt": int(now_ms),
+    }
+
+
+def _get_cached_dashboard_metrics(data: dict, ttl_seconds: int = 60) -> dict:
+    now = time.time()
+    with DASHBOARD_CACHE_LOCK:
+        if DASHBOARD_METRICS_CACHE["payload"] is not None and now < float(DASHBOARD_METRICS_CACHE["expires_at"]):
+            return copy.deepcopy(DASHBOARD_METRICS_CACHE["payload"])
+    metrics = _compute_dashboard_metrics(data)
+    with DASHBOARD_CACHE_LOCK:
+        DASHBOARD_METRICS_CACHE["payload"] = metrics
+        DASHBOARD_METRICS_CACHE["expires_at"] = now + max(1, ttl_seconds)
+    return copy.deepcopy(metrics)
 
 
 def _digits_only(value: str) -> str:
@@ -1083,7 +1388,13 @@ def _reconcile_order_inventory(data: dict, order_idx: int, prev_order: dict | No
 
 
 # ── FastAPI app ─────────────────────────────────────────────────────────────
-app = FastAPI(title="Kudagu Kaapi CRM", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _init_storage()
+    yield
+
+
+app = FastAPI(title="Kudagu Kaapi CRM", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 # Serve static files (index.html, app.js) from ./static/
 if not STATIC_DIR.exists():
@@ -1104,15 +1415,44 @@ async def serve_index():
 # ── Data — full read/write ─────────────────────────────────────────────────
 @app.get("/api/data")
 async def get_data():
-    """Return the full data.json contents."""
+    """Return the full persisted app data."""
     data = read_data()
-    data = migrate(data)
     return JSONResponse(content=_client_safe_data(data))
+
+
+@app.get("/api/bootstrap")
+async def get_bootstrap():
+    """
+    Return a lightweight bootstrap payload for faster first paint.
+    Full data should be loaded by calling /api/data after initial render.
+    """
+    data = read_data()
+    bootstrap_state = {
+        "customers": [],
+        "orders": [],
+        "distributorBatches": [],
+        "closedFollowUps": [],
+        "products": data.get("products", []),
+        "distributionChannels": data.get("distributionChannels", []),
+        "cid": data.get("cid", 1),
+        "oid": data.get("oid", 1),
+        "dbid": data.get("dbid", 1),
+        "pid": data.get("pid", 1),
+        "waDefaultTpl": data.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
+        "shippingProfile": data.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
+        "marketingSettings": data.get("marketingSettings", copy.deepcopy(DEFAULT_DATA["marketingSettings"])),
+    }
+    return JSONResponse(
+        {
+            "state": _client_safe_data(bootstrap_state),
+            "dashboardMetrics": _get_cached_dashboard_metrics(data, ttl_seconds=60),
+        }
+    )
 
 
 @app.put("/api/data")
 async def put_data(request: Request):
-    """Replace the entire data.json with the request body.
+    """Replace the entire persisted app data with the request body.
     Used by the frontend for bulk save (e.g. after settings changes)."""
     try:
         body = await request.json()
@@ -1131,7 +1471,7 @@ async def add_customer(request: Request):
     required = ("name", "phone", "area")
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
-    data = migrate(read_data())
+    data = read_data()
     customer = _build_customer(
         cid=data["cid"],
         name=body["name"],
@@ -1154,7 +1494,7 @@ async def add_customer(request: Request):
 async def update_customer(customer_id: int, request: Request):
     """Update an existing customer's details."""
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     idx = next((i for i, c in enumerate(data["customers"]) if c["id"] == customer_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -1203,7 +1543,7 @@ async def import_customers(request: Request):
     else:
         raise HTTPException(status_code=400, detail="Unsupported import format. Use .vcf, .xlsx, .xlsm, or .csv")
 
-    data = migrate(read_data())
+    data = read_data()
     existing_phone_set = {_normalize_customer_phone(c.get("phone")) for c in data.get("customers", [])}
     import_batch_id = f"imp-{int(time.time() * 1000)}"
     created: list[dict] = []
@@ -1248,7 +1588,7 @@ async def import_customers(request: Request):
 
 @app.delete("/api/customers/{customer_id}")
 async def delete_customer(customer_id: int):
-    data = migrate(read_data())
+    data = read_data()
     before = len(data["customers"])
     data["customers"] = [c for c in data["customers"] if c["id"] != customer_id]
     if len(data["customers"]) == before:
@@ -1264,7 +1604,7 @@ async def add_order(request: Request):
     required = ("cid", "cname", "cphone", "carea", "prod", "prodId", "variant", "qty", "channel", "at")
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
-    data = migrate(read_data())
+    data = read_data()
     channel = body["channel"]
     default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
     order = {
@@ -1300,7 +1640,7 @@ async def add_order(request: Request):
 async def update_order(order_id: int, request: Request):
     """Update mutable fields on an order: status, discount, commission."""
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     idx = next((i for i, o in enumerate(data["orders"]) if o["id"] == order_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -1320,7 +1660,7 @@ async def add_distribution_batch(request: Request):
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
 
-    data = migrate(read_data())
+    data = read_data()
     product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
     if product is None:
         raise HTTPException(status_code=400, detail="Product not found")
@@ -1369,7 +1709,7 @@ async def add_distribution_batch(request: Request):
 @app.put("/api/distribution/batches/{batch_id}")
 async def update_distribution_batch(batch_id: int, request: Request):
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -1441,7 +1781,7 @@ def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
 
 @app.delete("/api/distribution/batches/{batch_id}")
 async def delete_distribution_batch(batch_id: int):
-    data = migrate(read_data())
+    data = read_data()
     res = _delete_distribution_batch_from_data(data, batch_id)
     write_data(data)
     return res
@@ -1449,7 +1789,7 @@ async def delete_distribution_batch(batch_id: int):
 
 @app.post("/api/distribution/batches/{batch_id}/delete")
 async def delete_distribution_batch_via_post(batch_id: int):
-    data = migrate(read_data())
+    data = read_data()
     res = _delete_distribution_batch_from_data(data, batch_id)
     write_data(data)
     return res
@@ -1458,7 +1798,7 @@ async def delete_distribution_batch_via_post(batch_id: int):
 @app.post("/api/distribution/batches/{batch_id}/complete")
 async def complete_distribution_batch(batch_id: int, request: Request):
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -1538,7 +1878,7 @@ async def close_followup_alert(request: Request):
     note = str(body.get("note", "") or "").strip()
     closed_at = int(body.get("at") or int(time.time() * 1000))
 
-    data = migrate(read_data())
+    data = read_data()
     data["closedFollowUps"] = [
         r
         for r in data.get("closedFollowUps", [])
@@ -1558,7 +1898,7 @@ async def close_followup_alert(request: Request):
 
 @app.get("/api/orders/{order_id}/shipping-label.pdf")
 async def shipping_label_pdf(order_id: int):
-    data = migrate(read_data())
+    data = read_data()
     order = next((o for o in data["orders"] if o.get("id") == order_id), None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -1591,7 +1931,7 @@ async def sync_completed_orders():
     if not SYNC_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Inventory sync already in progress")
     try:
-        data = migrate(read_data())
+        data = read_data()
         completed_total = sum(1 for o in data["orders"] if o.get("status") == "completed")
         movements = _build_crm_movements_from_completed_orders(data)
         try:
@@ -1635,7 +1975,7 @@ async def inventory_stock():
 
 @app.delete("/api/orders/{order_id}")
 async def delete_order(order_id: int):
-    data = migrate(read_data())
+    data = read_data()
     order = next((o for o in data["orders"] if o["id"] == order_id), None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
@@ -1655,7 +1995,7 @@ async def add_product(request: Request):
         raise HTTPException(status_code=400, detail="Product name required")
     if not body.get("sizes"):
         raise HTTPException(status_code=400, detail="At least one variant required")
-    data = migrate(read_data())
+    data = read_data()
     product = {
         "id":      "p" + str(data["pid"]),
         "name":    body["name"],
@@ -1674,7 +2014,7 @@ async def add_product(request: Request):
 async def update_product(product_id: str, request: Request):
     """Update a product (pricing, waTpl, sizes, name)."""
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     idx = next((i for i, p in enumerate(data["products"]) if p["id"] == product_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -1690,7 +2030,7 @@ async def update_product(product_id: str, request: Request):
 
 @app.delete("/api/products/{product_id}")
 async def delete_product(product_id: str):
-    data = migrate(read_data())
+    data = read_data()
     before = len(data["products"])
     data["products"] = [p for p in data["products"] if p["id"] != product_id]
     if len(data["products"]) == before:
@@ -1703,7 +2043,7 @@ async def delete_product(product_id: str):
 @app.put("/api/settings")
 async def update_settings(request: Request):
     body = await request.json()
-    data = migrate(read_data())
+    data = read_data()
     if "waDefaultTpl" in body:
         data["waDefaultTpl"] = body["waDefaultTpl"]
     if "shippingProfile" in body and isinstance(body["shippingProfile"], dict):
@@ -1775,7 +2115,7 @@ async def generate_marketing_draft(request: Request):
     campaign_brief = str(body.get("campaignBrief") or "").strip()
     extra_instruction = str(body.get("extraInstruction") or "").strip()
 
-    data = migrate(read_data())
+    data = read_data()
     customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -1847,7 +2187,7 @@ async def generate_marketing_template(request: Request):
             "{{preferred_channel}}",
         ]
 
-    data = migrate(read_data())
+    data = read_data()
     ms = data.get("marketingSettings", {})
     base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
     model = str(ms.get("aiModel") or "").strip()
@@ -1948,13 +2288,12 @@ async def generate_marketing_template(request: Request):
 
 # ── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    # Ensure data.json exists on startup
-    if not DATA_FILE.exists():
-        write_data(copy.deepcopy(DEFAULT_DATA))
-        print(f"[CRM] Created fresh data.json at {DATA_FILE}")
-    else:
-        print(f"[CRM] Using existing data.json at {DATA_FILE}")
+    _init_storage()
+    print(f"[CRM] Using SQLite storage at {DB_FILE}")
+    if LEGACY_DATA_FILE.exists():
+        print(f"[CRM] Legacy JSON available for fallback/backup at {LEGACY_DATA_FILE}")
 
     host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
     print(f"[CRM] Starting server at http://{host}:8000")
     uvicorn.run("app:app", host=host, port=8000, reload=False)
+
