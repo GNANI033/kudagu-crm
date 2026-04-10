@@ -790,6 +790,7 @@ const MKT_ALLOWED_TOKENS=[
 let MKT_STATE={status:'idle',customerIds:[],currentIndex:0,total:0,delaySec:10,template:'',updatedAt:0};
 let MKT_GROUPS=[];
 let MKT_ACTIVE_GROUP_ID='';
+let CUSTOMER_NAME_SEARCH='';
 let _mktTimer=null;
 let _mktGroupMenuId='';
 
@@ -1095,6 +1096,10 @@ function refreshMarketingGroup(){
   previewMarketingTemplate();
   if(g('cg')) rCustomers();
 }
+function handleCustomerNameSearch(value){
+  CUSTOMER_NAME_SEARCH=String(value||'').trim().toLowerCase();
+  rCustomers();
+}
 function rMarketingView(){
   refreshMarketingAreas();
   loadMarketingGroups();
@@ -1384,12 +1389,93 @@ async function saveC(){
   }catch(e){toast('Error: '+e.message,'err');}
 }
 
+function openCustomerAnalytics(cid){
+  const c=S.customers.find(x=>x.id===cid);
+  if(!c) return;
+  const orders=getCustomerOrders(cid);
+  const completed=orders.filter(isCompleted);
+  const totalOrders=orders.length;
+  const completedOrders=completed.length;
+  const totalRevenue=completed.reduce((s,o)=>s+(Number(orderRevenue(o))||0),0);
+  const totalProfit=completed.reduce((s,o)=>s+((orderProfit(o)??0)),0);
+  const avgOrderValue=completedOrders ? (totalRevenue/completedOrders) : 0;
+  const avgGapDays=avgGapDaysForCustomer(cid);
+  const reorderText=Number.isFinite(avgGapDays) ? `${avgGapDays.toFixed(1)} days` : 'Not enough data';
+  const firstOrder=orders[0] || null;
+  const lastOrder=orders[orders.length-1] || null;
+  const ch=preferredChannelForCustomer(cid);
+  const chLabel=ch ? (CHANNEL_MAP[ch]?.label || ch) : 'N/A';
+  const byProd={};
+  orders.forEach(o=>{
+    const key=String(o.prod||'Unknown product').trim() || 'Unknown product';
+    byProd[key]=(byProd[key]||0)+1;
+  });
+  const topProduct=Object.entries(byProd).sort((a,b)=>b[1]-a[1])[0];
+  const topProductLabel=topProduct ? `${topProduct[0]} (${topProduct[1]} order${topProduct[1]!==1?'s':''})` : 'N/A';
+
+  openModal(`
+    <div class="modal-title">Customer Analytics</div>
+    <div style="margin-top:4px;color:var(--text-2);font-size:12.5px">${esc(c.name)} · ${esc(c.area||'')}</div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px">
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Avg Order Value</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700;color:var(--text);margin-top:2px">${fC(avgOrderValue)}</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Reorder Frequency</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700;color:var(--text);margin-top:2px">${esc(reorderText)}</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Total Revenue</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700;color:var(--text);margin-top:2px">${fC(totalRevenue)}</div>
+      </div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px">
+        <div style="font-size:11px;color:var(--text-3)">Total Profit</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700;color:var(--text);margin-top:2px">${fC(totalProfit)}</div>
+      </div>
+    </div>
+
+    <div style="margin-top:10px;border:1px solid var(--border);border-radius:10px;overflow:hidden">
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--text-3)">Orders (All / Completed)</span>
+        <strong>${totalOrders} / ${completedOrders}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--text-3)">Preferred Channel</span>
+        <strong>${esc(chLabel)}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--text-3)">Top Product</span>
+        <strong style="text-align:right">${esc(topProductLabel)}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--text-3)">First Order</span>
+        <strong>${firstOrder?fd(firstOrder.at):'N/A'}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;font-size:12px">
+        <span style="color:var(--text-3)">Last Order</span>
+        <strong>${lastOrder?fd(lastOrder.at):'N/A'}</strong>
+      </div>
+    </div>
+
+    <div style="display:flex;justify-content:flex-end;margin-top:10px">
+      <button class="btn btn-s" onclick="closeModal()">Close</button>
+    </div>
+  `,'lg');
+  const box=g('modal-box');
+  if(box) box.classList.add('modal-no-scroll');
+}
+
 function rCustomers(){
   const grid=g('cg');
   if(!MKT_GROUPS.length) loadMarketingGroups();
   refreshMarketingAreas();
   const totalCustomers=(S.customers||[]).length;
   const customers=getMarketingGroupCustomers();
+  const filteredCustomers=!CUSTOMER_NAME_SEARCH
+    ? customers
+    : customers.filter(c=>String(c.name||'').toLowerCase().includes(CUSTOMER_NAME_SEARCH));
   if(g('mkt-group-summary')) g('mkt-group-summary').textContent=buildMarketingGroupSummary(customers);
   if(g('mkt-group-sample')){
     const sample=customers.slice(0,5).map(c=>`${c.name} (${c.area||'-'})`).join(', ');
@@ -1398,7 +1484,8 @@ function rCustomers(){
   const activeGroup=MKT_GROUPS.find(x=>x.id===MKT_ACTIVE_GROUP_ID);
   if(g('cs-sub')){
     const suffix=activeGroup ? ` · group: ${activeGroup.name}` : '';
-    g('cs-sub').textContent=`${customers.length} of ${totalCustomers} customer${totalCustomers!==1?'s':''}${suffix}`;
+    const searchSuffix=CUSTOMER_NAME_SEARCH?` · search: "${CUSTOMER_NAME_SEARCH}"`:'';
+    g('cs-sub').textContent=`${filteredCustomers.length} of ${totalCustomers} customer${totalCustomers!==1?'s':''}${suffix}${searchSuffix}`;
   }
   if(!totalCustomers){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customers yet</div><div class="es">Add your first customer to get started</div></div>`;
@@ -1408,11 +1495,15 @@ function rCustomers(){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customers in this filter</div><div class="es">Adjust group filters in this page or apply another saved group from Marketing.</div></div>`;
     return;
   }
-  grid.innerHTML=customers.map(c=>{
+  if(!filteredCustomers.length){
+    grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customer found</div><div class="es">Try a different name in search.</div></div>`;
+    return;
+  }
+  grid.innerHTML=filteredCustomers.map(c=>{
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const orderTag=oc>0?'Order recorded':'No order yet';
-    return`<div class="cc">
+    return`<div class="cc" onclick="openCustomerAnalytics(${c.id})" style="cursor:pointer">
       <div class="cc-top">
         <div class="cav">${ini}</div>
         <div style="flex:1;min-width:0">
@@ -1421,7 +1512,7 @@ function rCustomers(){
           </div>
           <div class="car">${esc(c.area)}</div>
         </div>
-        <button class="c-menu-btn" onclick="openCustomerMenu(${c.id},this)" title="Options">···</button>
+        <button class="c-menu-btn" onclick="event.stopPropagation();openCustomerMenu(${c.id},this)" title="Options">···</button>
       </div>
       <div class="cm">
         <div class="cmr"><span class="cmi">↗</span>${esc(c.phone)}</div>
