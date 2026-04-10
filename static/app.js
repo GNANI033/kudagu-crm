@@ -9,7 +9,7 @@
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 const DEFAULT_SIZES = ['100g','250g','500g','1kg'];
 const VL  = {'100g':'100g','250g':'250g','500g':'500g','1kg':'1 kg'};
-const W   = {'100g':7,'250g':10,'500g':14,'1kg':30};
+const W   = {'100g':7,'250g':10,'500g':14,'1kg':30,'1l':30,'1pcs':7};
 const SIZE_GRAMS = {'100g':100,'250g':250,'500g':500,'1kg':1000};
 
 const CHANNELS = [
@@ -225,9 +225,108 @@ function stBadge(st){ return`<span class="status-badge ${STATUS_CLS[st]||''}">${
 function variantToGrams(v){
   if(SIZE_GRAMS[v]) return SIZE_GRAMS[v];
   const s=String(v||'').trim().toLowerCase();
-  if(s.endsWith('kg')){ const n=parseFloat(s.replace('kg','').trim()); return isNaN(n)?0:n*1000; }
-  if(s.endsWith('g')){ const n=parseFloat(s.replace('g','').trim()); return isNaN(n)?0:n; }
+  const m=s.match(/^([0-9]*\.?[0-9]+)\s*(kg|g|l|ml)\s*$/i);
+  if(m){
+    const n=parseFloat(m[1]||0);
+    const u=String(m[2]||'').toLowerCase();
+    if(!Number.isFinite(n)||n<=0) return 0;
+    if(u==='kg') return n*1000;
+    if(u==='g') return n;
+    if(u==='l') return n*1000;
+    if(u==='ml') return n;
+  }
   return 0;
+}
+function variantCycleDays(v){
+  const raw=String(v||'').trim();
+  if(!raw) return 10;
+  if(Number.isFinite(W[raw])) return W[raw];
+  const m=raw.toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*(kg|g|l|ml|pcs)\s*$/i);
+  if(!m) return 10;
+  const n=parseFloat(m[1]||0);
+  const u=String(m[2]||'').toLowerCase();
+  if(!Number.isFinite(n)||n<=0) return 10;
+  if(u==='kg'||u==='g'){
+    const g=u==='kg' ? n*1000 : n;
+    if(g<=120) return 7;
+    if(g<=300) return 10;
+    if(g<=600) return 14;
+    if(g<=1200) return 30;
+    return 45;
+  }
+  if(u==='l'||u==='ml'){
+    const ml=u==='l' ? n*1000 : n;
+    if(ml<=120) return 7;
+    if(ml<=300) return 10;
+    if(ml<=600) return 14;
+    if(ml<=1200) return 30;
+    return 45;
+  }
+  if(u==='pcs'){
+    if(n<=1) return 7;
+    if(n<=3) return 14;
+    if(n<=6) return 21;
+    return 30;
+  }
+  return 10;
+}
+function variantIdToken(v){
+  return encodeURIComponent(String(v||''));
+}
+function parseVariantTokens(raw){
+  return String(raw||'')
+    .split(/[,\n]/)
+    .map(v=>v.trim())
+    .filter(Boolean);
+}
+function normalizeVariantValue(raw, metric){
+  const val=String(raw||'').trim();
+  if(!val) return '';
+  if(metric==='custom'){
+    return val
+      .replace(/[<>"'`\\]/g,'')
+      .replace(/\s+/g,' ')
+      .trim();
+  }
+  const n=parseFloat(val);
+  if(!Number.isFinite(n) || n<=0) return '';
+  const num=Number.isInteger(n) ? String(n) : String(n);
+  if(metric==='pcs') return `${num}pcs`;
+  return `${num}${metric}`;
+}
+function buildProductVariantsFromForm(){
+  const metric=(g('np-variant-metric')?.value||'g').trim().toLowerCase();
+  const raw = metric==='custom'
+    ? (g('np-variant-custom')?.value||'')
+    : (g('np-variant-values')?.value||'');
+  const out=[];
+  const seen=new Set();
+  parseVariantTokens(raw).forEach((token)=>{
+    const norm=normalizeVariantValue(token,metric);
+    if(!norm) return;
+    const key=norm.toLowerCase();
+    if(seen.has(key)) return;
+    seen.add(key);
+    out.push(norm);
+  });
+  return out;
+}
+function refreshVariantBuilderUI(){
+  const metric=(g('np-variant-metric')?.value||'g').trim().toLowerCase();
+  const customWrap=g('np-variant-custom-wrap');
+  const valuesWrap=g('np-variant-values-wrap');
+  if(customWrap) customWrap.style.display=metric==='custom'?'block':'none';
+  if(valuesWrap) valuesWrap.style.display=metric==='custom'?'none':'block';
+  const variants=buildProductVariantsFromForm();
+  const preview=g('np-variant-preview');
+  if(!preview) return;
+  if(!variants.length){
+    preview.textContent='Variants preview: add at least one value/label.';
+    preview.style.color='var(--amber)';
+    return;
+  }
+  preview.textContent=`Variants preview: ${variants.join(', ')}`;
+  preview.style.color='var(--text-3)';
 }
 function isDistributorOrder(o){
   return !!(o&&o.distribution&&typeof o.distribution==='object'&&String(o.distribution.distributorName||'').trim());
@@ -768,9 +867,11 @@ function sPanel(id){
   document.querySelectorAll('.settings-panel').forEach(p=>p.classList.remove('active'));
   g('sp-'+id).classList.add('active');
   document.querySelectorAll('.smenu-item').forEach(b=>b.classList.remove('active'));
-  const items=document.querySelectorAll('.smenu-item');
-  const map={products:0,'new-product':1,'wa-messages':2,'marketing-ai':3,shipping:4};
-  if(map[id]!==undefined) items[map[id]].classList.add('active');
+  const activeMenuPanel = id==='new-product' ? 'products' : id;
+  const activeBtn=document.querySelector(`.smenu-item[data-panel="${activeMenuPanel}"]`);
+  if(activeBtn) activeBtn.classList.add('active');
+  const addBtn=g('smenu-add-product-btn');
+  if(addBtn) addBtn.classList.toggle('active', id==='new-product');
   if(id==='wa-messages') rWaMessages();
   if(id==='marketing-ai') rMarketingSettings();
   if(id==='shipping') rShippingSettings();
@@ -791,6 +892,7 @@ let MKT_STATE={status:'idle',customerIds:[],currentIndex:0,total:0,delaySec:10,t
 let MKT_GROUPS=[];
 let MKT_ACTIVE_GROUP_ID='';
 let CUSTOMER_NAME_SEARCH='';
+let CUSTOMER_FILTERS_EXPANDED=false;
 let _mktTimer=null;
 let _mktGroupMenuId='';
 
@@ -1095,6 +1197,20 @@ function refreshMarketingGroup(){
   }
   previewMarketingTemplate();
   if(g('cg')) rCustomers();
+}
+function setCustomerFiltersExpanded(expanded){
+  CUSTOMER_FILTERS_EXPANDED=!!expanded;
+  const body=g('mkt-filters-body');
+  const btn=g('mkt-filters-toggle-btn');
+  if(body) body.style.display=CUSTOMER_FILTERS_EXPANDED?'block':'none';
+  if(btn){
+    btn.textContent=CUSTOMER_FILTERS_EXPANDED?'Hide':'Expand';
+    btn.title=CUSTOMER_FILTERS_EXPANDED?'Collapse filters':'Expand filters';
+    btn.setAttribute('aria-label',btn.title);
+  }
+}
+function toggleCustomerFiltersPanel(){
+  setCustomerFiltersExpanded(!CUSTOMER_FILTERS_EXPANDED);
 }
 function handleCustomerNameSearch(value){
   CUSTOMER_NAME_SEARCH=String(value||'').trim().toLowerCase();
@@ -1630,7 +1746,7 @@ function populateProdSelect(){
 }
 function onProdChange(){ const pid=g('ps').value;selV=null;if(!pid){g('vr-row').innerHTML='';refreshSum();return;}
   const prod=S.products.find(p=>p.id===pid);
-  g('vr-row').innerHTML=(prod.sizes||DEFAULT_SIZES).map(sz=>`<button class="vb" data-v="${sz}" onclick="pickV('${sz}')"><span class="vs">${VL[sz]||sz}</span><span class="vh">~${W[sz]||'?'}d cycle</span></button>`).join('');
+  g('vr-row').innerHTML=(prod.sizes||DEFAULT_SIZES).map(sz=>`<button class="vb" data-v="${sz}" onclick="pickV('${sz}')"><span class="vs">${VL[sz]||sz}</span><span class="vh">~${variantCycleDays(sz)}d cycle</span></button>`).join('');
   refreshSum();
 }
 function pickV(v){ selV=v;document.querySelectorAll('.vb').forEach(b=>b.classList.remove('on'));const b=document.querySelector(`[data-v="${v}"]`);if(b)b.classList.add('on');refreshSum(); }
@@ -1656,7 +1772,7 @@ function refreshSum(){
   if(!selC||!pid||!selV){box.style.display='none';return;}
   box.style.display='block';
   const prod=S.products.find(p=>p.id===pid);
-  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV),ad=(W[selV]||10)*qty;
+  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV),ad=variantCycleDays(selV)*qty;
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
   let priceRows='';
@@ -2535,7 +2651,7 @@ function getAlerts(){
     const cust=S.customers.find(c=>c.id==cid);if(!cust)return;
     const n=orders.length;let ad,mode,avg=null;
     if(n>=5){const gaps=[];for(let i=0;i<Math.min(n-1,5);i++)gaps.push((orders[i].at-orders[i+1].at)/864e5);avg=Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);ad=Math.round(avg*.9);mode='smart';}
-    else{ad=(W[last.variant]||10)*last.qty;mode='def';}
+    else{ad=variantCycleDays(last.variant)*last.qty;mode='def';}
     const dl=ad-(now-last.at)/864e5;
     const key=`${cust.id}:${last.id}`;
     if(dl<=3 && !closedSet.has(key))alerts.push({cust,last,dl:Math.round(dl),mode,avg,n});
@@ -3163,7 +3279,7 @@ function buildProdCard(p){
   const compEditorRows=buildExistingCompRows(p.id, compRows);
   const compTotal=(p.composition||[]).reduce((s,c)=>s+(parseFloat(c.percentage)||0),0);
   const compOk=(p.composition||[]).length>0 && Math.abs(compTotal-100)<=0.01;
-  const st=p.sizes.map((sz,i)=>`<button class="size-tab ${i===0?'active':''}" onclick="switchSizeTab('${p.id}','${sz}')" id="tab-${p.id}-${sz}">${VL[sz]||sz}</button>`).join('');
+  const st=p.sizes.map((sz,i)=>`<button class="size-tab ${i===0?'active':''}" onclick="switchSizeTab('${p.id}','${sz}')" id="tab-${p.id}-${variantIdToken(sz)}">${VL[sz]||sz}</button>`).join('');
   const sp=p.sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
   const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
   const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
@@ -3234,25 +3350,26 @@ async function saveExistingComposition(pid){
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
 function buildSizePanel(p,sz,isActive){
+  const tk=variantIdToken(sz);
   const pr=(p.pricing&&p.pricing[sz])||{salePrices:{retail:0,website:0,whatsapp:0},expenses:[]};
   const sp=pr.salePrices||{retail:0,website:0,whatsapp:0};
   const exRows=(pr.expenses||[]).map((e,i)=>buildExpRow(p.id,sz,i,e.name,e.cost)).join('');
   const tc=(pr.expenses||[]).reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
-  const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${sz}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
-  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${sz}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div id="expenses-${p.id}-${sz}">${exRows}</div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${sz}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
+  const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${tk}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
+  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div id="expenses-${p.id}-${tk}">${exRows}</div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
 }
 function buildMarginHTML(pid,sz,tc,sp){
   const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0;if(!price)return'';const margin=price-tc,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label}</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
   return`<div class="margin-row"><span class="margin-key">Total Cost / pack</span><span class="margin-val ${tc>0?'neg':''}">${tc>0?'₹'+tc.toFixed(0):'—'}</span></div>${rows||'<div style="font-size:12px;color:var(--text-3);padding:4px 0">Set sale prices above to see margins</div>'}`;
 }
-function buildExpRow(pid,sz,idx,name='',cost=''){ return`<div class="expense-row" id="er-${pid}-${sz}-${idx}"><input type="text" value="${esc(String(name))}" placeholder="Expense name" id="en-${pid}-${sz}-${idx}" oninput="calcMargin('${pid}','${sz}')"><div class="input-prefix"><span>₹</span><input type="number" value="${cost}" placeholder="0" min="0" id="ec-${pid}-${sz}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div><button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
+function buildExpRow(pid,sz,idx,name='',cost=''){ const tk=variantIdToken(sz); return`<div class="expense-row" id="er-${pid}-${tk}-${idx}"><input type="text" value="${esc(String(name))}" placeholder="Expense name" id="en-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"><div class="input-prefix"><span>₹</span><input type="number" value="${cost}" placeholder="0" min="0" id="ec-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div><button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
 function toggleProdCard(pid){ const b=g('pcard-body-'+pid),c=g('pcard-chevron-'+pid);b.classList.toggle('collapsed');c.textContent=b.classList.contains('collapsed')?'▶':'▼'; }
-function switchSizeTab(pid,sz){ const prod=S.products.find(p=>p.id===pid);(prod.sizes||DEFAULT_SIZES).forEach(s=>{const t=g(`tab-${pid}-${s}`),p=g(`sp-${pid}-${s}`);if(t)t.classList.remove('active');if(p)p.classList.remove('active');});const t=g(`tab-${pid}-${sz}`),p=g(`sp-${pid}-${sz}`);if(t)t.classList.add('active');if(p)p.classList.add('active'); }
-function getExpRows(pid,sz){ const rows=[];let i=0;while(g(`er-${pid}-${sz}-${i}`)){const n=g(`en-${pid}-${sz}-${i}`).value.trim(),c=g(`ec-${pid}-${sz}-${i}`).value;if(n||c)rows.push({name:n,cost:parseFloat(c)||0});i++;}return rows; }
-function calcMargin(pid,sz){ const disp=g(`margin-display-${pid}-${sz}`);if(!disp)return;const exp=getExpRows(pid,sz);const tc=exp.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${sz}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tc,sp); }
-function addExpRow(pid,sz){ let i=0;while(g(`er-${pid}-${sz}-${i}`))i++;const c=g(`expenses-${pid}-${sz}`);const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,'','');c.appendChild(d.firstChild);calcMargin(pid,sz); }
-function removeExpRow(pid,sz,idx){ const el=g(`er-${pid}-${sz}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
-async function saveSizePricing(pid,sz){ const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${sz}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}prod.pricing[sz]={salePrices,expenses:getExpRows(pid,sz)};try{await api.put(`/api/products/${pid}`,{pricing:prod.pricing});toast(`Saved ${prod.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
+function switchSizeTab(pid,sz){ const prod=S.products.find(p=>p.id===pid);(prod.sizes||DEFAULT_SIZES).forEach(s=>{const t=g(`tab-${pid}-${variantIdToken(s)}`),p=g(`sp-${pid}-${variantIdToken(s)}`);if(t)t.classList.remove('active');if(p)p.classList.remove('active');});const t=g(`tab-${pid}-${variantIdToken(sz)}`),p=g(`sp-${pid}-${variantIdToken(sz)}`);if(t)t.classList.add('active');if(p)p.classList.add('active'); }
+function getExpRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let i=0;while(g(`er-${pid}-${tk}-${i}`)){const n=g(`en-${pid}-${tk}-${i}`).value.trim(),c=g(`ec-${pid}-${tk}-${i}`).value;if(n||c)rows.push({name:n,cost:parseFloat(c)||0});i++;}return rows; }
+function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const exp=getExpRows(pid,sz);const tc=exp.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tc,sp); }
+function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-${pid}-${tk}`);const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,'','');c.appendChild(d.firstChild);calcMargin(pid,sz); }
+function removeExpRow(pid,sz,idx){ const tk=variantIdToken(sz);const el=g(`er-${pid}-${tk}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
+async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}prod.pricing[sz]={salePrices,expenses:getExpRows(pid,sz)};try{await api.put(`/api/products/${pid}`,{pricing:prod.pricing});toast(`Saved ${prod.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
 function getCompositionRows(){
   const rows=[];
   document.querySelectorAll('#np-comp-rows .comp-row').forEach((row)=>{
@@ -3300,8 +3417,8 @@ function refreshCompositionHint(){
 }
 async function addProduct(){
   const name=g('np-name').value.trim();if(!name){toast('Enter a product name','err');return;}
-  const sizes=[];document.querySelectorAll('#np-sizes-wrap input[type=checkbox]').forEach(cb=>{if(cb.checked)sizes.push(cb.value);});
-  if(!sizes.length){toast('Select at least one size','err');return;}
+  const sizes=buildProductVariantsFromForm();
+  if(!sizes.length){toast('Add at least one product variant','err');return;}
   const rawRows=getCompositionRows().filter(r=>r.inventoryProductId||r.percentage>0);
   if(!rawRows.length){toast('Add at least one composition row','err');return;}
   if(rawRows.some(r=>!r.inventoryProductId||r.percentage<=0)){toast('Each composition row needs product + percentage','err');return;}
@@ -3310,7 +3427,12 @@ async function addProduct(){
   const composition=rawRows.map(r=>{const inv=inventorySnapshot.find(p=>p.id===r.inventoryProductId);return{inventoryProductId:r.inventoryProductId,inventoryProductName:inv?.name||r.inventoryProductId,percentage:r.percentage};});
   try{
     const product=await api.post('/api/products',{name,sizes,waTpl:'',pricing:{},composition});
-    S.products.push(product);S.pid=parseInt(product.id.replace('p',''))+1;g('np-name').value='';resetCompositionBuilder();
+    S.products.push(product);S.pid=parseInt(product.id.replace('p',''))+1;g('np-name').value='';
+    if(g('np-variant-metric')) g('np-variant-metric').value='g';
+    if(g('np-variant-values')) g('np-variant-values').value='100,250,500,1000';
+    if(g('np-variant-custom')) g('np-variant-custom').value='';
+    refreshVariantBuilderUI();
+    resetCompositionBuilder();
     toast(name+' added','ok');sPanel('products');rSettings();populateProdSelect();
   }catch(e){toast('Error: '+e.message,'err');}
 }
@@ -3495,6 +3617,7 @@ async function init(){
   await pollStockAlerts();
   // Re-poll every 5 minutes
   setInterval(pollStockAlerts, 5 * 60 * 1000);
-  updBadge(); rDash(); populateProdSelect(); setDefaultDate(); resetCompositionBuilder();
+  setCustomerFiltersExpanded(false);
+  updBadge(); rDash(); populateProdSelect(); setDefaultDate(); resetCompositionBuilder(); refreshVariantBuilderUI();
 }
 window.addEventListener('DOMContentLoaded',init);

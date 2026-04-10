@@ -671,16 +671,25 @@ def _variant_to_grams(variant: str) -> float:
     if variant in SIZE_TO_GRAMS:
         return SIZE_TO_GRAMS[variant]
     v = str(variant or "").strip().lower()
-    if v.endswith("kg"):
+    # Support generic variant units, not just hard-coded pack sizes.
+    # For volume (ml/l), we use a 1:1 approximation to grams for inventory deduction.
+    m = re.match(r"^\s*([0-9]*\.?[0-9]+)\s*(kg|g|l|ml)\s*$", v)
+    if m:
         try:
-            return float(v.replace("kg", "").strip()) * 1000.0
+            qty = float(m.group(1))
         except ValueError:
             return 0.0
-    if v.endswith("g"):
-        try:
-            return float(v.replace("g", "").strip())
-        except ValueError:
+        unit = m.group(2)
+        if qty <= 0:
             return 0.0
+        if unit == "kg":
+            return qty * 1000.0
+        if unit == "g":
+            return qty
+        if unit == "l":
+            return qty * 1000.0
+        if unit == "ml":
+            return qty
     return 0.0
 
 
@@ -1645,7 +1654,7 @@ async def add_product(request: Request):
     if not body.get("name"):
         raise HTTPException(status_code=400, detail="Product name required")
     if not body.get("sizes"):
-        raise HTTPException(status_code=400, detail="At least one size required")
+        raise HTTPException(status_code=400, detail="At least one variant required")
     data = migrate(read_data())
     product = {
         "id":      "p" + str(data["pid"]),

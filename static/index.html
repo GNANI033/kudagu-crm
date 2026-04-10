@@ -448,6 +448,15 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .smenu-item { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); transition: all .15s; border: none; background: none; width: 100%; text-align: left; min-height: 42px; }
 .smenu-item:hover { background: var(--surface-2); color: var(--text); }
 .smenu-item.active { background: var(--accent); color: #fff; }
+.smenu-row { display: flex; align-items: center; gap: 6px; }
+.smenu-row .smenu-item { flex: 1; }
+.smenu-plus {
+  width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-2); font-size: 18px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: all .15s;
+}
+.smenu-plus:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-s); }
+.smenu-plus.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .settings-panel { display: none; } .settings-panel.active { display: block; }
 .mkt-filter-grid { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:10px 12px; }
 .mkt-rule-note { font-size:11.5px;color:var(--text-3);margin-top:-4px; }
@@ -1000,61 +1009,66 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
       <div class="cb" style="display:flex;flex-direction:column;gap:12px">
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
           <div class="sl-label" style="margin-bottom:0;flex:1">Group Filters</div>
-          <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
+          <button class="btn btn-g btn-sm" id="mkt-filters-toggle-btn" onclick="toggleCustomerFiltersPanel()" title="Expand filters" aria-label="Toggle group filters" style="min-width:72px;padding:6px 10px">Expand</button>
         </div>
-        <div class="mkt-filter-grid">
-          <div class="fg">
-            <label>Ordered</label>
-            <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="yes">Has orders</option>
-              <option value="no">No orders yet</option>
-            </select>
+        <div id="mkt-filters-body" style="display:none">
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
           </div>
-          <div class="fg">
-            <label>Area</label>
-            <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
-          </div>
-          <div class="fg">
-            <label>Order Type</label>
-            <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="retail">Retail</option>
-              <option value="whatsapp">WhatsApp</option>
-              <option value="website">Website</option>
-            </select>
-          </div>
-          <div class="fg">
-            <label>Avg Order Value</label>
-            <div style="display:flex;gap:8px">
-              <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
+          <div class="mkt-filter-grid" style="margin-top:8px">
+            <div class="fg">
+              <label>Ordered</label>
+              <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
                 <option value="any">Any</option>
-                <option value="above">Above</option>
-                <option value="below">Below</option>
+                <option value="yes">Has orders</option>
+                <option value="no">No orders yet</option>
               </select>
-              <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
+            </div>
+            <div class="fg">
+              <label>Area</label>
+              <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
+            </div>
+            <div class="fg">
+              <label>Order Type</label>
+              <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="retail">Retail</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="website">Website</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Avg Order Value</label>
+              <div style="display:flex;gap:8px">
+                <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
+                  <option value="any">Any</option>
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                </select>
+                <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
+              </div>
+            </div>
+            <div class="fg">
+              <label>Regular Customer</label>
+              <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="yes">Regular only</option>
+                <option value="no">Not regular</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Regular Rule</label>
+              <div style="display:flex;gap:8px">
+                <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
+                <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
+              </div>
             </div>
           </div>
-          <div class="fg">
-            <label>Regular Customer</label>
-            <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
-              <option value="any">Any</option>
-              <option value="yes">Regular only</option>
-              <option value="no">Not regular</option>
-            </select>
+          <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
+          <div class="card" style="padding:12px;border:1px solid var(--border)">
+            <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
+            <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
           </div>
-          <div class="fg">
-            <label>Regular Rule</label>
-            <div style="display:flex;gap:8px">
-              <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
-              <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
-            </div>
-          </div>
-        </div>
-        <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
-        <div class="card" style="padding:12px;border:1px solid var(--border)">
-          <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
-          <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
         </div>
       </div>
     </div>
@@ -1064,13 +1078,15 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
   <!-- SETTINGS -->
   <div class="view" id="view-settings">
     <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, pricing & messages</div></div></div>
-    <div class="settings-layout">
+      <div class="settings-layout">
       <div class="settings-menu">
-        <button class="smenu-item active" onclick="sPanel('products')">Products</button>
-        <button class="smenu-item" onclick="sPanel('new-product')">Add Product</button>
-        <button class="smenu-item" onclick="sPanel('wa-messages')">WA Messages</button>
-        <button class="smenu-item" onclick="sPanel('marketing-ai')">Marketing AI</button>
-        <button class="smenu-item" onclick="sPanel('shipping')">Shipping</button>
+        <div class="smenu-row">
+          <button class="smenu-item active" data-panel="products" onclick="sPanel('products')">Products</button>
+          <button class="smenu-plus" id="smenu-add-product-btn" onclick="event.stopPropagation();sPanel('new-product')" title="Add Product" aria-label="Add Product">+</button>
+        </div>
+        <button class="smenu-item" data-panel="wa-messages" onclick="sPanel('wa-messages')">WA Messages</button>
+        <button class="smenu-item" data-panel="marketing-ai" onclick="sPanel('marketing-ai')">Marketing AI</button>
+        <button class="smenu-item" data-panel="shipping" onclick="sPanel('shipping')">Shipping</button>
       </div>
       <div>
         <div class="settings-panel active" id="sp-products"><div id="prod-list-container"></div></div>
@@ -1080,12 +1096,30 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
             <div class="cb" style="display:flex;flex-direction:column;gap:14px">
               <div class="fg"><label>Product Name <span class="req">*</span></label><input id="np-name" type="text" placeholder="e.g. Coorg Instant Mix"></div>
               <div class="fg">
-                <label>Available Sizes</label>
-                <div style="display:flex;gap:14px;flex-wrap:wrap;margin-top:8px" id="np-sizes-wrap">
-                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;min-height:40px"><input type="checkbox" value="100g" checked style="width:18px;height:18px;padding:0;margin:0"> 100g</label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;min-height:40px"><input type="checkbox" value="250g" checked style="width:18px;height:18px;padding:0;margin:0"> 250g</label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;min-height:40px"><input type="checkbox" value="500g" checked style="width:18px;height:18px;padding:0;margin:0"> 500g</label>
-                  <label style="display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;min-height:40px"><input type="checkbox" value="1kg" checked style="width:18px;height:18px;padding:0;margin:0"> 1 kg</label>
+                <label>Product Variants</label>
+                <div class="fr" style="margin-top:8px">
+                  <div class="fg">
+                    <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Metric / Unit</label>
+                    <select id="np-variant-metric" onchange="refreshVariantBuilderUI()">
+                      <option value="g">Grams (g)</option>
+                      <option value="kg">Kilograms (kg)</option>
+                      <option value="ml">Millilitres (ml)</option>
+                      <option value="l">Litres (L)</option>
+                      <option value="pcs">Pieces (pcs)</option>
+                      <option value="custom">Custom labels</option>
+                    </select>
+                  </div>
+                  <div class="fg" id="np-variant-values-wrap">
+                    <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Values (comma separated)</label>
+                    <input id="np-variant-values" type="text" value="100,250,500,1000" placeholder="e.g. 100,250,500" oninput="refreshVariantBuilderUI()">
+                  </div>
+                </div>
+                <div class="fg" id="np-variant-custom-wrap" style="display:none">
+                  <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Custom Variant Labels</label>
+                  <input id="np-variant-custom" type="text" placeholder="e.g. Small, Medium, Family Pack" oninput="refreshVariantBuilderUI()">
+                </div>
+                <div id="np-variant-preview" style="font-size:12px;color:var(--text-3);margin-top:4px">
+                  Variants preview: 100g, 250g, 500g, 1000g
                 </div>
               </div>
               <div class="fg">
