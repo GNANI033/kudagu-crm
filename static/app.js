@@ -2904,7 +2904,6 @@ function rInventory(){
   const sub=g('inv-sub');
   const updated=g('inv-updated');
   const items=inventorySnapshot||[];
-  const total=items.reduce((s,p)=>s+(Number(p.stockGrams)||0),0);
   const low=items.filter(p=>p.isLow);
   const inv=calcInventoryUsageFromOrders();
   const completed=(S.orders||[]).filter(o=>o.status==='completed');
@@ -2915,7 +2914,7 @@ function rInventory(){
   if(stat){
     stat.innerHTML=`
       <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Tracked</div><div class="sv">${items.length}</div><div class="sn">Inventory products</div></div><div class="sbox-half"><div class="sl">Low Stock</div><div class="sv ${low.length?'red':''}">${low.length}</div><div class="sn">${low.length?'Needs restock':'Healthy levels'}</div></div></div></div>
-      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Inventory Moved</div><div class="sv">${fGrams(inv.moved)}</div><div class="sn">${inv.connected?`Inventory left: ${fGrams(total)}`:'Inventory app offline'}</div></div><div class="sbox-half"><div class="sl">Completed Synced</div><div class="sv">${synced}/${completed.length}</div><div class="sn">${completed.length?`${syncPct.toFixed(0)}% synced to inventory`:'No completed orders yet'}</div></div></div></div>`;
+      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Inventory Moved</div><div class="sv">${fGrams(inv.moved)}</div><div class="sn">${inv.connected?inventorySplitText(inv):'Inventory app offline'}</div></div><div class="sbox-half"><div class="sl">Completed Synced</div><div class="sv">${synced}/${completed.length}</div><div class="sn">${completed.length?`${syncPct.toFixed(0)}% synced to inventory`:'No completed orders yet'}</div></div></div></div>`;
   }
   if(!inventoryConnected){
     body.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">Inventory app is not reachable</div><div class="es">Run the inventory service to view stock inside CRM.</div></div>`;
@@ -3016,8 +3015,8 @@ function calcInventoryUsageFromOrders(){
       if(pct>0) moved += total*(pct/100);
     });
   });
-  const left=(inventorySnapshot||[]).reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
-  return { moved, left, connected:inventoryConnected };
+  const position=calcInventoryPosition();
+  return { moved, left:position.total, inStock:position.inStock, onHold:position.onHold, connected:inventoryConnected };
 }
 function calcInventoryUsageFromOrdersForProduct(inventoryProductId){
   const targetPid=String(inventoryProductId||'').trim();
@@ -3038,9 +3037,47 @@ function calcInventoryUsageFromOrdersForProduct(inventoryProductId){
       if(pct>0) moved += total*(pct/100);
     });
   });
-  const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===targetPid);
-  const left=parseFloat(item?.stockGrams||0)||0;
-  return { moved, left, connected:inventoryConnected };
+  const position=calcInventoryPosition(targetPid);
+  return { moved, left:position.total, inStock:position.inStock, onHold:position.onHold, connected:inventoryConnected };
+}
+function activeDistributorBatches(){
+  return (S.distributorBatches||[]).filter(b=>String(b.status||'').toLowerCase()==='active');
+}
+function inventoryMovementForBatch(batch, inventoryProductId=''){
+  if(!batch) return 0;
+  const prod=(S.products||[]).find(p=>p.id===batch.prodId);
+  const comp=(prod&&Array.isArray(prod.composition))?prod.composition:[];
+  if(!comp.length) return 0;
+  const pack=variantToGrams(batch.variant);
+  const qty=parseFloat(batch.qty||0)||0;
+  if(pack<=0||qty<=0) return 0;
+  const total=pack*qty;
+  if(!inventoryProductId){
+    return comp.reduce((sum,c)=>{
+      const pct=parseFloat(c.percentage||0)||0;
+      return pct>0 ? sum+(total*(pct/100)) : sum;
+    },0);
+  }
+  const row=comp.find(c=>String(c.inventoryProductId||'')===String(inventoryProductId||''));
+  if(!row) return 0;
+  const pct=parseFloat(row.percentage||0)||0;
+  return pct>0 ? total*(pct/100) : 0;
+}
+function calcInventoryPosition(inventoryProductId=''){
+  const targetPid=String(inventoryProductId||'').trim();
+  let total=0;
+  if(targetPid){
+    const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===targetPid);
+    total=parseFloat(item?.stockGrams||0)||0;
+  }else{
+    total=(inventorySnapshot||[]).reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
+  }
+  const onHold=activeDistributorBatches().reduce((sum,b)=>sum+inventoryMovementForBatch(b,targetPid),0);
+  const inStock=Math.max(0,total-onHold);
+  return { total, inStock, onHold };
+}
+function inventorySplitText(position){
+  return `In stock: ${fGrams(position.inStock)} · On hold: ${fGrams(position.onHold)}`;
 }
 
 const DASH_INV_ANALYTICS_KEY='kudagu_dash_inv_pid_v1';
@@ -3277,7 +3314,7 @@ function rDash(){
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:5px">
             <div class="sv" style="margin-top:0">${fGrams(invMoved.moved)}</div>
           </div>
-          <div class="sn" style="font-size:13px;line-height:1.35">${invMoved.connected?`Inventory left: ${fGrams(invMoved.left)}`:'Inventory app offline'}</div>
+          <div class="sn" style="font-size:13px;line-height:1.35">${invMoved.connected?inventorySplitText(invMoved):'Inventory app offline'}</div>
         </div>
       </div>
     </div>
