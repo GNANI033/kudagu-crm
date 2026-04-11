@@ -13,6 +13,56 @@ const api = {
   async put(p,b){ const r=await fetch(p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); if(!r.ok){const m=await r.text();throw new Error(m);} return r.json(); },
   async del(p){ const r=await fetch(p,{method:'DELETE'}); if(!r.ok) throw new Error(`DELETE ${p} → ${r.status}`); return r.json(); },
 };
+const THEME_OPTIONS = {
+  light: 'Light',
+  dark: 'Dark',
+  nord: 'Nord',
+  solarized: 'Solarized',
+  dracula: 'Dracula',
+};
+function normalizeTheme(theme){
+  const key=String(theme||'').trim().toLowerCase();
+  return THEME_OPTIONS[key] ? key : 'light';
+}
+function applyTheme(theme){
+  const next=normalizeTheme(theme);
+  document.documentElement.setAttribute('data-theme', next);
+  if(!S) S={};
+  S.uiPreferences={...(S.uiPreferences||{}), theme: next};
+  rThemeSettings();
+}
+function rThemeSettings(){
+  const current=normalizeTheme(S?.uiPreferences?.theme);
+  Object.keys(THEME_OPTIONS).forEach((themeKey)=>{
+    const btn=g(`theme-${themeKey}-btn`);
+    if(btn) btn.classList.toggle('active', current===themeKey);
+  });
+  const status=g('theme-status');
+  if(status) status.textContent=`Current theme: ${THEME_OPTIONS[current]}. This updates CRM and inventory together.`;
+}
+async function setTheme(theme){
+  const previous=normalizeTheme(S?.uiPreferences?.theme);
+  const next=normalizeTheme(theme);
+  if(previous===next){
+    applyTheme(next);
+    return;
+  }
+  applyTheme(next);
+  try{
+    const res=await api.put('/api/settings',{uiPreferences:{theme:next}});
+    applyTheme(res?.uiPreferences?.theme||next);
+    toast(`Theme switched to ${next}`,'ok');
+  }catch(e){
+    applyTheme(previous);
+    toast('Error: '+e.message,'err');
+  }
+}
+async function refreshThemePreference(){
+  try{
+    const res=await api.get('/api/settings');
+    applyTheme(res?.uiPreferences?.theme||'light');
+  }catch(_){}
+}
 
 // ─── FORMAT ──────────────────────────────────────────────────────────────────
 function fd(ts){ return ts ? new Date(ts).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
@@ -47,12 +97,13 @@ function nav(p){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,stock:1,movements:2,products:3};
+  const IDX={dashboard:0,stock:1,movements:2,products:3,settings:4};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   if(p==='dashboard')  rDash();
   if(p==='stock')      rStock();
   if(p==='movements')  rMovements();
   if(p==='products')   rProducts();
+  if(p==='settings')   rThemeSettings();
 }
 
 // ─── ANALYTICS ───────────────────────────────────────────────────────────────
@@ -528,6 +579,10 @@ async function doDeleteProduct(pid){
 async function init(){
   try{ S=await api.get('/api/data'); }
   catch(err){ g('toasts').innerHTML=`<div class="toast err">Cannot reach server: ${err.message}</div>`; return; }
+  applyTheme(S?.uiPreferences?.theme||'light');
   rDash();
 }
 window.addEventListener('DOMContentLoaded', init);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible') refreshThemePreference();
+});

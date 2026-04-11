@@ -49,16 +49,20 @@ DB_FILE = BASE_DIR / "data.sqlite3"
 LEGACY_DATA_FILE = BASE_DIR / "data.json"
 STATE_KEY = "root"
 STATIC_DIR = BASE_DIR / "static"
+UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
 SYNC_LOCK = threading.Lock()
 MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
 DATA_LOCK = threading.RLock()
+UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
 SCHEMA_VERSION = 1
 DASHBOARD_CACHE_LOCK = threading.RLock()
 DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
+DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
+ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
 
 # ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
 DEFAULT_DATA: dict = {
@@ -613,7 +617,34 @@ def _client_safe_data(data: dict) -> dict:
         ms["hasApiKey"] = bool(raw_key)
         ms["apiKeyPreview"] = ("*" * max(0, len(raw_key) - 4)) + raw_key[-4:] if raw_key else ""
         ms["aiApiKey"] = ""
+    safe["uiPreferences"] = read_ui_preferences()
     return safe
+
+
+def read_ui_preferences() -> dict:
+    with UI_PREFS_LOCK:
+        if UI_PREFS_FILE.exists():
+            try:
+                prefs = json.loads(UI_PREFS_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prefs = {}
+        else:
+            prefs = {}
+        theme = str(prefs.get("theme") or DEFAULT_UI_PREFERENCES["theme"]).strip().lower()
+        if theme not in ALLOWED_THEMES:
+            theme = DEFAULT_UI_PREFERENCES["theme"]
+        return {"theme": theme}
+
+
+def write_ui_preferences(incoming: dict) -> dict:
+    current = read_ui_preferences()
+    theme = str((incoming or {}).get("theme") or current["theme"]).strip().lower()
+    if theme not in ALLOWED_THEMES:
+        theme = current["theme"]
+    updated = {"theme": theme}
+    with UI_PREFS_LOCK:
+        UI_PREFS_FILE.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
 
 
 def _safe_float(value: Any) -> float:
@@ -1441,6 +1472,7 @@ async def get_bootstrap():
         "waDefaultTpl": data.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
         "shippingProfile": data.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
         "marketingSettings": data.get("marketingSettings", copy.deepcopy(DEFAULT_DATA["marketingSettings"])),
+        "uiPreferences": read_ui_preferences(),
     }
     return JSONResponse(
         {
@@ -2099,7 +2131,10 @@ async def update_settings(request: Request):
                 curr["aiApiKey"] = new_key
         data["marketingSettings"] = curr
     write_data(data)
-    return {"ok": True}
+    prefs = None
+    if "uiPreferences" in body and isinstance(body["uiPreferences"], dict):
+        prefs = write_ui_preferences(body["uiPreferences"])
+    return {"ok": True, "uiPreferences": prefs or read_ui_preferences()}
 
 
 @app.post("/api/marketing/draft")

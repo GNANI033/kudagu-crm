@@ -145,6 +145,56 @@ const api = {
   async put(p,b){ const r=await fetch(p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); if(!r.ok){const m=await r.text();throw new Error(m);} return r.json(); },
   async del(p){ const r=await fetch(p,{method:'DELETE'}); if(!r.ok) throw new Error(`DELETE ${p} → ${r.status}`); return r.json(); },
 };
+const THEME_OPTIONS = {
+  light: 'Light',
+  dark: 'Dark',
+  nord: 'Nord',
+  solarized: 'Solarized',
+  dracula: 'Dracula',
+};
+function normalizeTheme(theme){
+  const key=String(theme||'').trim().toLowerCase();
+  return THEME_OPTIONS[key] ? key : 'light';
+}
+function applyTheme(theme){
+  const next=normalizeTheme(theme);
+  document.documentElement.setAttribute('data-theme', next);
+  if(!S) S={};
+  S.uiPreferences={...(S.uiPreferences||{}), theme: next};
+  rThemeSettings();
+}
+function rThemeSettings(){
+  const current=normalizeTheme(S?.uiPreferences?.theme);
+  Object.keys(THEME_OPTIONS).forEach((themeKey)=>{
+    const btn=g(`theme-${themeKey}-btn`);
+    if(btn) btn.classList.toggle('active', current===themeKey);
+  });
+  const status=g('theme-status');
+  if(status) status.textContent=`Current theme: ${THEME_OPTIONS[current]}. Changes apply to CRM and inventory.`;
+}
+async function setTheme(theme){
+  const previous=normalizeTheme(S?.uiPreferences?.theme);
+  const next=normalizeTheme(theme);
+  if(next===previous){
+    applyTheme(next);
+    return;
+  }
+  applyTheme(next);
+  try{
+    const res=await api.put('/api/settings',{uiPreferences:{theme:next}});
+    applyTheme(res?.uiPreferences?.theme||next);
+    toast(`Theme switched to ${next}`,'ok');
+  }catch(e){
+    applyTheme(previous);
+    toast('Error: '+e.message,'err');
+  }
+}
+async function refreshThemePreference(){
+  try{
+    const data=await api.get('/api/bootstrap');
+    applyTheme(data?.state?.uiPreferences?.theme||'light');
+  }catch(_){}
+}
 async function postJSONWithTimeout(path, body, timeoutMs=45000){
   const ctrl = new AbortController();
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
@@ -418,6 +468,7 @@ function emptyState(){
     waDefaultTpl: DEFAULT_WA_TPL,
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
     marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' },
+    uiPreferences: { theme: 'light' },
   };
 }
 function activeViewId(){
@@ -950,6 +1001,7 @@ function sPanel(id){
   const addBtn=g('smenu-add-product-btn');
   if(addBtn) addBtn.classList.toggle('active', id==='new-product');
   if(id==='wa-messages') rWaMessages();
+  if(id==='appearance') rThemeSettings();
   if(id==='marketing-ai') rMarketingSettings();
   if(id==='shipping') rShippingSettings();
 }
@@ -1641,7 +1693,7 @@ function openCustomerAnalytics(cid){
         <strong>${esc(chLabel)}</strong>
       </div>
       <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
-        <span style="color:var(--text-3)">Top Product</span>
+        <span style="color:var(--text-3)">Top Item</span>
         <strong style="text-align:right">${esc(topProductLabel)}</strong>
       </div>
       <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
@@ -1832,7 +1884,7 @@ function clearC(){ selC=null;g('cs').value='';g('sel-c').style.display='none';re
 document.addEventListener('click',e=>{ if(!e.target.closest('.sw')) g('cs-dd').classList.remove('open'); });
 
 function populateProdSelect(){
-  const sel=g('ps'); sel.innerHTML='<option value="">Select product…</option>';
+  const sel=g('ps'); sel.innerHTML='<option value="">Select product / service…</option>';
   S.products.forEach(p=>{const o=document.createElement('option');o.value=p.id;o.textContent=p.name;sel.appendChild(o);});
   selV=null;selCh='retail';saleDelivered=false;g('vr-row').innerHTML='';renderChannelPicker();updateDeliveredToggle();refreshSum();
 }
@@ -1885,7 +1937,7 @@ function refreshSum(){
   const statusNote=saleDelivered?`<div class="sr"><span class="sk">Status</span><span class="sval"><span class="status-badge st-completed">Completed</span></span></div>`:'';
   g('sum-body').innerHTML=`
     <div class="sr"><span class="sk">Customer</span><span class="sval">${esc(selC.name)}</span></div>
-    <div class="sr"><span class="sk">Product</span><span class="sval">${esc(prod.name)}</span></div>
+    <div class="sr"><span class="sk">Product / Service</span><span class="sval">${esc(prod.name)}</span></div>
     <div class="sr"><span class="sk">Size</span><span class="sval">${esc(VL[selV]||selV)}</span></div>
     <div class="sr"><span class="sk">Qty</span><span class="sval">${qty} pack${qty>1?'s':''}</span></div>
     <div class="sr"><span class="sk">Channel</span><span class="sval">${esc(CHANNEL_MAP[selCh]?.label||selCh)}</span></div>
@@ -1898,7 +1950,7 @@ function refreshSum(){
 async function recSale(){
   const pid=g('ps').value;
   if(!selC){toast('Select a customer','err');return;}
-  if(!pid){toast('Select a product','err');return;}
+  if(!pid){toast('Select a product or service','err');return;}
   if(!selV){toast('Select a pack size','err');return;}
   const prod=S.products.find(p=>p.id===pid);
   const dateVal=g('sale-date').value;
@@ -1946,7 +1998,7 @@ function buildOrderTable(orders,title,collapsible,bucket){
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>#</th><th>Customer</th><th>Product</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
     <tbody>${pageOrders.map(o=>orderRow(o)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
@@ -2326,7 +2378,7 @@ async function doDeleteOrder(oid){
 
 // ─── DISTRIBUTION ─────────────────────────────────────────────────────────────
 function distProductOptions(selected=''){
-  return `<option value="">Select product…</option>` + (S.products||[]).map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join('');
+  return `<option value="">Select product / service…</option>` + (S.products||[]).map(p=>`<option value="${p.id}" ${p.id===selected?'selected':''}>${esc(p.name)}</option>`).join('');
 }
 function distVariantOptions(pid, selected=''){
   const prod=(S.products||[]).find(p=>p.id===pid);
@@ -2355,7 +2407,7 @@ async function createDistributorBatch(){
     if(!isNaN(dt.getTime())) at=dt.getTime();
   }
   if(!distributorName){ toast('Distributor name is required','err'); return; }
-  if(!prodId||!variant){ toast('Select product and size','err'); return; }
+  if(!prodId||!variant){ toast('Select a product / service and variant','err'); return; }
   if(qty<=0){ toast('Quantity must be greater than 0','err'); return; }
   try{
     const batch=await api.post('/api/distribution/batches',{distributorName,prodId,variant,qty,commission,commissionMode,notes,at});
@@ -2478,7 +2530,7 @@ function openEditDistributorBatch(batchId){
       </div>
       <div class="fr">
         <div class="fg">
-          <label>Product <span class="req">*</span></label>
+          <label>Product / Service <span class="req">*</span></label>
           <select id="edit-dist-prod" onchange="onEditDistProductChange()">${distProductOptions(b.prodId||'')}</select>
         </div>
         <div class="fg">
@@ -2534,7 +2586,7 @@ async function submitEditDistributorBatch(batchId){
   const commissionMode=(g('edit-dist-comm-batch')?.checked)?'batch':'per_pcs';
   const notes=(g('edit-dist-notes')?.value||'').trim();
   if(!distributorName){ toast('Distributor name is required','err'); return; }
-  if(!prodId||!variant){ toast('Select product and size','err'); return; }
+  if(!prodId||!variant){ toast('Select a product / service and variant','err'); return; }
   if(qty<=0){ toast('Quantity must be greater than 0','err'); return; }
   try{
     const updated=await api.put(`/api/distribution/batches/${batchId}`,{distributorName,prodId,variant,qty,commission,commissionMode,notes});
@@ -2710,7 +2762,7 @@ function rDistribution(){
     return;
   }
   const desktop=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>#</th><th>Distributor</th><th>Product</th><th>Size</th><th>Qty</th><th>Commission</th><th>Status</th><th>Date</th><th></th></tr></thead>
+    <thead><tr><th>#</th><th>Distributor</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Commission</th><th>Status</th><th>Date</th><th></th></tr></thead>
     <tbody>${list.map(distributionRow).join('')}</tbody>
   </table></div>`;
   const mobile=`<div class="order-card-list">${list.map(distributionMobileCard).join('')}</div>`;
@@ -2832,7 +2884,7 @@ function rAlerts(){
         <div class="adot sm"></div>
         <div class="ab">
           <div class="an">${esc(a.distributorName||'Distributor')} <span style="font-size:12px;color:var(--text-3);font-weight:400">· ${a.ageDays} days pending</span></div>
-          <div class="ad">${esc(a.prod||'Product')} · ${VL[a.variant]||a.variant} × ${a.qty||0} pcs · started ${started}</div>
+          <div class="ad">${esc(a.prod||'Item')} · ${VL[a.variant]||a.variant} × ${a.qty||0} pcs · started ${started}</div>
           <div class="at2"><span class="pill pa">Over 15 days</span><span class="pill pn">Distribution aging</span></div>
         </div>
         <div class="aa"><button class="btn btn-s btn-sm" onclick="nav('distribution')">View Batch →</button></div>
@@ -3378,7 +3430,7 @@ function rDash(){
       return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${isCrit?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(s.name)} <span class="pill pn" style="margin-left:6px">Stock</span></div><div style="font-size:11.5px;color:var(--text-3)">${fGrams(Number(s.stockGrams)||0)} left · threshold ${fGrams(Number(s.lowStockThreshold)||0)}</div><div style="margin-top:5px">${isCrit?`<span class="pill pr">Critical stock</span>`:`<span class="pill pa">Low stock</span>`}</div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('dashboard')">View</button></div>`;
     }
     const d=item.data;
-    return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Product')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
+    return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Item')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
   }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">✓</div><div class="et">All alerts clear</div></div>`;
 }
 
@@ -3415,7 +3467,7 @@ async function dashQuickStatus(oid,sel){
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
 function rSettings(){
   const c=g('prod-list-container');
-  if(!S.products.length){c.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">No products yet</div></div>`;return;}
+  if(!S.products.length){c.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">No products or services yet</div></div>`;return;}
   c.innerHTML=S.products.map(p=>buildProdCard(p)).join('');
 }
 function buildProdCard(p){
@@ -3560,9 +3612,9 @@ function refreshCompositionHint(){
   el.style.color=ok?'var(--green)':'var(--amber)';
 }
 async function addProduct(){
-  const name=g('np-name').value.trim();if(!name){toast('Enter a product name','err');return;}
+  const name=g('np-name').value.trim();if(!name){toast('Enter a product or service name','err');return;}
   const sizes=buildProductVariantsFromForm();
-  if(!sizes.length){toast('Add at least one product variant','err');return;}
+  if(!sizes.length){toast('Add at least one variant or plan','err');return;}
   const rawRows=getCompositionRows().filter(r=>r.inventoryProductId||r.percentage>0);
   if(!rawRows.length){toast('Add at least one composition row','err');return;}
   if(rawRows.some(r=>!r.inventoryProductId||r.percentage<=0)){toast('Each composition row needs product + percentage','err');return;}
@@ -3580,7 +3632,7 @@ async function addProduct(){
     toast(name+' added','ok');sPanel('products');rSettings();populateProdSelect();
   }catch(e){toast('Error: '+e.message,'err');}
 }
-async function delProduct(pid){ if(!confirm('Delete this product?'))return;try{await api.del(`/api/products/${pid}`);S.products=S.products.filter(p=>p.id!==pid);rSettings();populateProdSelect();toast('Product deleted');}catch(e){toast('Error: '+e.message,'err');} }
+async function delProduct(pid){ if(!confirm('Delete this product or service?'))return;try{await api.del(`/api/products/${pid}`);S.products=S.products.filter(p=>p.id!==pid);rSettings();populateProdSelect();toast('Item deleted');}catch(e){toast('Error: '+e.message,'err');} }
 
 // ─── WA TEMPLATES ────────────────────────────────────────────────────────────
 function getWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(prod&&prod.waTpl&&prod.waTpl.trim())return prod.waTpl;return(S.waDefaultTpl&&S.waDefaultTpl.trim())?S.waDefaultTpl:DEFAULT_WA_TPL; }
@@ -3611,7 +3663,7 @@ function insertShippingToken(token){
   el.selectionStart=el.selectionEnd=s+token.length;
   el.focus();
 }
-function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;const merged=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Product'),variant:'250g',qty:'1'});pr.innerHTML=esc(merged).replace(/\n/g,'<br>'); }
+function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;const merged=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Item'),variant:'250g',qty:'1'});pr.innerHTML=esc(merged).replace(/\n/g,'<br>'); }
 async function saveWaTpl(key){ if(key==='default'){const el=g('wa-tpl-default');if(!el)return;S.waDefaultTpl=el.value.trim();try{await api.put('/api/settings',{waDefaultTpl:S.waDefaultTpl});toast('Default template saved','ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}}else{const prod=S.products.find(p=>p.id===key);if(!prod)return;const el=g(`wa-tpl-${key}`);if(!el)return;prod.waTpl=el.value.trim();try{await api.put(`/api/products/${key}`,{waTpl:prod.waTpl});toast(`Template saved for ${prod.name}`,'ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}} }
 async function clearProdWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(!prod)return;prod.waTpl='';try{await api.put(`/api/products/${pid}`,{waTpl:''});toast('Reset to default');rWaMessages();}catch(e){toast('Error: '+e.message,'err');} }
 
@@ -3765,6 +3817,7 @@ async function init(){
     try{ await fetchFullData(); }
     catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
   }
+  applyTheme(S?.uiPreferences?.theme||'light');
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
   setCustomerFiltersExpanded(false);
@@ -3783,3 +3836,6 @@ async function init(){
   setInterval(pollStockAlerts, 5 * 60 * 1000);
 }
 window.addEventListener('DOMContentLoaded',init);
+document.addEventListener('visibilitychange', ()=>{
+  if(document.visibilityState==='visible') refreshThemePreference();
+});

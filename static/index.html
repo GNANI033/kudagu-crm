@@ -34,6 +34,82 @@
   --safe-top:    env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
+html[data-theme="dark"] {
+  --bg:         #111315;
+  --surface:    #181c20;
+  --surface-2:  #21262c;
+  --surface-3:  #2a3138;
+  --border:     #313841;
+  --border-s:   #495260;
+  --text:       #f3f5f7;
+  --text-2:     #c0c7d0;
+  --text-3:     #8e98a6;
+  --accent:     #f3f5f7;
+  --green:      #4ade80;  --green-bg:  #112218;  --green-bd:  #1f6b37;
+  --amber:      #fbbf24;  --amber-bg:  #271d08;  --amber-bd:  #7c5b12;
+  --red:        #f87171;  --red-bg:    #2a1416;  --red-bd:    #7f2b31;
+  --blue:       #60a5fa;  --blue-bg:   #0f1d34;  --blue-bd:   #294f8a;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.25);
+  --sh:    0 8px 24px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.45), 0 4px 12px rgba(0,0,0,.28);
+  color-scheme: dark;
+}
+html[data-theme="nord"] {
+  --bg:         #2e3440;
+  --surface:    #3b4252;
+  --surface-2:  #434c5e;
+  --surface-3:  #4c566a;
+  --border:     #566277;
+  --border-s:   #81a1c1;
+  --text:       #eceff4;
+  --text-2:     #d8dee9;
+  --text-3:     #aeb8c7;
+  --accent:     #88c0d0;
+  --green:      #a3be8c;  --green-bg:  #374438;  --green-bd:  #64795f;
+  --amber:      #ebcb8b;  --amber-bg:  #4b4332;  --amber-bd:  #957d49;
+  --red:        #bf616a;  --red-bg:    #4d3136;  --red-bd:    #87565c;
+  --blue:       #81a1c1;  --blue-bg:   #314253;  --blue-bd:   #5e7f9f;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.28), 0 1px 2px rgba(0,0,0,.18);
+  --sh:    0 8px 24px rgba(0,0,0,.32), 0 2px 6px rgba(0,0,0,.18);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.38), 0 4px 12px rgba(0,0,0,.22);
+  color-scheme: dark;
+}
+html[data-theme="solarized"] {
+  --bg:         #fdf6e3;
+  --surface:    #fffaf0;
+  --surface-2:  #f5edd9;
+  --surface-3:  #eee4cb;
+  --border:     #e0d6be;
+  --border-s:   #cbbd9b;
+  --text:       #586e75;
+  --text-2:     #657b83;
+  --text-3:     #93a1a1;
+  --accent:     #268bd2;
+  --green:      #859900;  --green-bg:  #f1f6cd;  --green-bd:  #cad59b;
+  --amber:      #b58900;  --amber-bg:  #f9f0c3;  --amber-bd:  #dbc36d;
+  --red:        #dc322f;  --red-bg:    #fde3df;  --red-bd:    #f2b7b2;
+  --blue:       #268bd2;  --blue-bg:   #e7f2fb;  --blue-bd:   #a7cae7;
+}
+html[data-theme="dracula"] {
+  --bg:         #282a36;
+  --surface:    #313442;
+  --surface-2:  #3a3d4f;
+  --surface-3:  #44475a;
+  --border:     #565a70;
+  --border-s:   #7a80a0;
+  --text:       #f8f8f2;
+  --text-2:     #d6d6cf;
+  --text-3:     #a4a7b8;
+  --accent:     #bd93f9;
+  --green:      #50fa7b;  --green-bg:  #173723;  --green-bd:  #2f8750;
+  --amber:      #f1fa8c;  --amber-bg:  #3d4021;  --amber-bd:  #8b9151;
+  --red:        #ff5555;  --red-bg:    #431f2b;  --red-bd:    #92505e;
+  --blue:       #8be9fd;  --blue-bg:   #203f50;  --blue-bd:   #5492a0;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.32), 0 1px 2px rgba(0,0,0,.22);
+  --sh:    0 8px 24px rgba(0,0,0,.34), 0 2px 6px rgba(0,0,0,.2);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.42), 0 4px 12px rgba(0,0,0,.24);
+  color-scheme: dark;
+}
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { -webkit-text-size-adjust: 100%; }
 body { font-family: 'Instrument Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
@@ -162,7 +238,7 @@ input[type="date"] {
 input:focus, select:focus, textarea:focus { border-color: var(--text); box-shadow: 0 0 0 3px rgba(17,17,16,.08); }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
 select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23a0a09a'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
-select option { background: #fff; color: var(--text); font-size: 14px; }
+select option { background: var(--surface); color: var(--text); font-size: 14px; }
 textarea { resize: vertical; font-size: 15px; }
 .input-prefix { position: relative; }
 .input-prefix > span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-3); font-size: 13px; pointer-events: none; }
@@ -178,6 +254,12 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .btn-p      { background: var(--accent); color: #fff; }
 .btn-p:hover { background: #2d2d2b; box-shadow: var(--sh); }
 .btn-p:active { background: #3a3a38; }
+html[data-theme="dark"] .btn-p:hover,
+html[data-theme="nord"] .btn-p:hover,
+html[data-theme="dracula"] .btn-p:hover { background: #d7dce2; color: #111315; }
+html[data-theme="dark"] .btn-p:active,
+html[data-theme="nord"] .btn-p:active,
+html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; }
 .btn-s      { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
 .btn-s:hover { background: var(--surface-3); }
 .btn-g      { background: transparent; color: var(--text-2); }
@@ -448,6 +530,27 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 .smenu-item { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); transition: all .15s; border: none; background: none; width: 100%; text-align: left; min-height: 42px; }
 .smenu-item:hover { background: var(--surface-2); color: var(--text); }
 .smenu-item.active { background: var(--accent); color: #fff; }
+html[data-theme="dark"] .smenu-item.active,
+html[data-theme="dark"] .smenu-plus.active,
+html[data-theme="dark"] .nb.active,
+html[data-theme="dark"] .bnav-item.active,
+html[data-theme="dark"] .btn-p,
+html[data-theme="dark"] .vb.on,
+html[data-theme="dark"] .ch-btn.on,
+html[data-theme="nord"] .smenu-item.active,
+html[data-theme="nord"] .smenu-plus.active,
+html[data-theme="nord"] .nb.active,
+html[data-theme="nord"] .bnav-item.active,
+html[data-theme="nord"] .btn-p,
+html[data-theme="nord"] .vb.on,
+html[data-theme="nord"] .ch-btn.on,
+html[data-theme="dracula"] .smenu-item.active,
+html[data-theme="dracula"] .smenu-plus.active,
+html[data-theme="dracula"] .nb.active,
+html[data-theme="dracula"] .bnav-item.active,
+html[data-theme="dracula"] .btn-p,
+html[data-theme="dracula"] .vb.on,
+html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .smenu-row { display: flex; align-items: center; gap: 6px; }
 .smenu-row .smenu-item { flex: 1; }
 .smenu-plus {
@@ -457,6 +560,33 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 }
 .smenu-plus:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-s); }
 .smenu-plus.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.theme-option-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.theme-option {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--r);
+  padding: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: all .15s;
+}
+.theme-option:hover { background: var(--surface-2); border-color: var(--border-s); }
+.theme-option.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.theme-option-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; color: var(--text); }
+.theme-option-sub { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.theme-preview {
+  margin-top: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  gap: 6px;
+  background: linear-gradient(135deg, var(--surface), var(--surface-2));
+}
+.theme-preview span { flex: 1; height: 26px; border-radius: 5px; border: 1px solid var(--border); }
+.theme-preview .tp-bg { background: var(--bg); }
+.theme-preview .tp-surface { background: var(--surface); }
+.theme-preview .tp-accent { background: var(--accent); }
 .settings-panel { display: none; } .settings-panel.active { display: block; }
 .mkt-filter-grid { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:10px 12px; }
 .mkt-rule-note { font-size:11.5px;color:var(--text-3);margin-top:-4px; }
@@ -773,8 +903,8 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
           <div id="sel-c" style="display:none"></div>
         </div>
         <div class="fg">
-          <label>Product <span class="req">*</span></label>
-          <select id="ps" onchange="onProdChange()"><option value="">Select product…</option></select>
+          <label>Product / Service <span class="req">*</span></label>
+          <select id="ps" onchange="onProdChange()"><option value="">Select product / service…</option></select>
         </div>
         <div class="fg">
           <label>Pack Size <span class="req">*</span></label>
@@ -892,7 +1022,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
           <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Defaults to today.</div>
         </div>
         <div class="fr">
-          <div class="fg"><label>Product <span class="req">*</span></label><select id="dist-prod" onchange="onDistProductChange()"><option value="">Select product…</option></select></div>
+          <div class="fg"><label>Product / Service <span class="req">*</span></label><select id="dist-prod" onchange="onDistProductChange()"><option value="">Select product / service…</option></select></div>
           <div class="fg"><label>Size <span class="req">*</span></label><select id="dist-variant"><option value="">Select size…</option></select></div>
         </div>
         <div class="fr">
@@ -1077,26 +1207,83 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
 
   <!-- SETTINGS -->
   <div class="view" id="view-settings">
-    <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, pricing & messages</div></div></div>
+    <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, services, pricing & messages</div></div></div>
       <div class="settings-layout">
       <div class="settings-menu">
         <div class="smenu-row">
-          <button class="smenu-item active" data-panel="products" onclick="sPanel('products')">Products</button>
-          <button class="smenu-plus" id="smenu-add-product-btn" onclick="event.stopPropagation();sPanel('new-product')" title="Add Product" aria-label="Add Product">+</button>
+          <button class="smenu-item active" data-panel="products" onclick="sPanel('products')">Products / Services</button>
+          <button class="smenu-plus" id="smenu-add-product-btn" onclick="event.stopPropagation();sPanel('new-product')" title="Add Product or Service" aria-label="Add Product or Service">+</button>
         </div>
+        <button class="smenu-item" data-panel="appearance" onclick="sPanel('appearance')">Appearance</button>
         <button class="smenu-item" data-panel="wa-messages" onclick="sPanel('wa-messages')">WA Messages</button>
         <button class="smenu-item" data-panel="marketing-ai" onclick="sPanel('marketing-ai')">Marketing AI</button>
         <button class="smenu-item" data-panel="shipping" onclick="sPanel('shipping')">Shipping</button>
       </div>
       <div>
         <div class="settings-panel active" id="sp-products"><div id="prod-list-container"></div></div>
+        <div class="settings-panel" id="sp-appearance">
+          <div class="card">
+            <div class="ch"><div class="ct">Theme</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:16px">
+              <div style="font-size:12.5px;color:var(--text-3)">Switch the whole CRM and inventory workspace between light and dark mode.</div>
+              <div class="theme-option-row">
+                <button class="theme-option" id="theme-light-btn" onclick="setTheme('light')">
+                  <div class="theme-option-title">Light</div>
+                  <div class="theme-option-sub">Bright surfaces with dark text.</div>
+                  <div class="theme-preview">
+                    <span class="tp-bg"></span>
+                    <span class="tp-surface"></span>
+                    <span class="tp-accent" style="background:#1a1a18"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-dark-btn" onclick="setTheme('dark')">
+                  <div class="theme-option-title">Dark</div>
+                  <div class="theme-option-sub">Low-glare UI for night work.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#181c20,#21262c);border-color:#313841">
+                    <span class="tp-bg" style="background:#111315;border-color:#313841"></span>
+                    <span class="tp-surface" style="background:#181c20;border-color:#313841"></span>
+                    <span class="tp-accent" style="background:#f3f5f7;border-color:#f3f5f7"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-nord-btn" onclick="setTheme('nord')">
+                  <div class="theme-option-title">Nord</div>
+                  <div class="theme-option-sub">Cool arctic blues from the well-known Nord palette.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#3b4252,#434c5e);border-color:#566277">
+                    <span class="tp-bg" style="background:#2e3440;border-color:#566277"></span>
+                    <span class="tp-surface" style="background:#3b4252;border-color:#566277"></span>
+                    <span class="tp-accent" style="background:#88c0d0;border-color:#88c0d0"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-solarized-btn" onclick="setTheme('solarized')">
+                  <div class="theme-option-title">Solarized</div>
+                  <div class="theme-option-sub">Classic warm-paper theme inspired by Solarized Light.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#fffaf0,#f5edd9);border-color:#e0d6be">
+                    <span class="tp-bg" style="background:#fdf6e3;border-color:#e0d6be"></span>
+                    <span class="tp-surface" style="background:#fffaf0;border-color:#e0d6be"></span>
+                    <span class="tp-accent" style="background:#268bd2;border-color:#268bd2"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-dracula-btn" onclick="setTheme('dracula')">
+                  <div class="theme-option-title">Dracula</div>
+                  <div class="theme-option-sub">High-contrast neon dark theme inspired by Dracula.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#313442,#3a3d4f);border-color:#565a70">
+                    <span class="tp-bg" style="background:#282a36;border-color:#565a70"></span>
+                    <span class="tp-surface" style="background:#313442;border-color:#565a70"></span>
+                    <span class="tp-accent" style="background:#bd93f9;border-color:#bd93f9"></span>
+                  </div>
+                </button>
+              </div>
+              <div id="theme-status" style="font-size:12px;color:var(--text-3)"></div>
+            </div>
+          </div>
+        </div>
         <div class="settings-panel" id="sp-new-product">
           <div class="card">
-            <div class="ch"><div class="ct">Add New Product</div></div>
+            <div class="ch"><div class="ct">Add New Product / Service</div></div>
             <div class="cb" style="display:flex;flex-direction:column;gap:14px">
-              <div class="fg"><label>Product Name <span class="req">*</span></label><input id="np-name" type="text" placeholder="e.g. Coorg Instant Mix"></div>
+              <div class="fg"><label>Product / Service Name <span class="req">*</span></label><input id="np-name" type="text" placeholder="e.g. Coorg Instant Mix or Coffee Tasting Session"></div>
               <div class="fg">
-                <label>Product Variants</label>
+                <label>Variants / Plans</label>
                 <div class="fr" style="margin-top:8px">
                   <div class="fg">
                     <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Metric / Unit</label>
@@ -1130,7 +1317,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
                   <div id="np-comp-hint" style="font-size:12px;color:var(--text-3)">Set at least one ingredient. Total must be 100%.</div>
                 </div>
               </div>
-              <hr><button class="btn btn-p btn-full" onclick="addProduct()">Add Product</button>
+              <hr><button class="btn btn-p btn-full" onclick="addProduct()">Add Product / Service</button>
             </div>
           </div>
         </div>
@@ -1141,7 +1328,7 @@ hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
           </div>
           <div class="wa-card">
             <div class="wa-card-header">
-              <div><div class="wa-card-title">Default Template</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">Used for products without a custom message</div></div>
+              <div><div class="wa-card-title">Default Template</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">Used for products or services without a custom message</div></div>
             </div>
             <div class="wa-card-body">
               <div class="fg"><label>Message Template</label><textarea id="wa-tpl-default" rows="3" oninput="previewWa('default')" placeholder="Hi {{customer_name}}, your last order was on {{last_order_date}}…"></textarea></div>

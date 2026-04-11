@@ -40,9 +40,13 @@ DB_FILE = BASE_DIR / "data.sqlite3"
 LEGACY_DATA_FILE = BASE_DIR / "data.json"
 STATE_KEY = "root"
 STATIC_DIR = BASE_DIR / "static"
+UI_PREFS_FILE = BASE_DIR.parent / "ui_prefs.json"
 DATA_LOCK = threading.RLock()
+UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
 SCHEMA_VERSION = 1
+DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
+ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
 
 # ── Default seed data ────────────────────────────────────────────────────────
 DEFAULT_DATA: dict = {
@@ -198,6 +202,30 @@ def write_data(data: dict) -> None:
             _set_schema_version(conn, SCHEMA_VERSION)
         DATA_CACHE = migrated
 
+def read_ui_preferences() -> dict:
+    with UI_PREFS_LOCK:
+        if UI_PREFS_FILE.exists():
+            try:
+                prefs = json.loads(UI_PREFS_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prefs = {}
+        else:
+            prefs = {}
+        theme = str(prefs.get("theme") or DEFAULT_UI_PREFERENCES["theme"]).strip().lower()
+        if theme not in ALLOWED_THEMES:
+            theme = DEFAULT_UI_PREFERENCES["theme"]
+        return {"theme": theme}
+
+def write_ui_preferences(incoming: dict) -> dict:
+    current = read_ui_preferences()
+    theme = str((incoming or {}).get("theme") or current["theme"]).strip().lower()
+    if theme not in ALLOWED_THEMES:
+        theme = current["theme"]
+    updated = {"theme": theme}
+    with UI_PREFS_LOCK:
+        UI_PREFS_FILE.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
+
 def migrate(data: dict) -> dict:
     if "products" not in data: data["products"] = []
     if "pid" not in data: data["pid"] = len(data["products"]) + 1
@@ -296,7 +324,20 @@ async def get_data():
     # Attach analytics to each product
     for p in data["products"]:
         p["analytics"] = compute_analytics(p)
+    data["uiPreferences"] = read_ui_preferences()
     return JSONResponse(data)
+
+@app.get("/api/settings")
+async def get_settings():
+    return {"uiPreferences": read_ui_preferences()}
+
+@app.put("/api/settings")
+async def put_settings(request: Request):
+    body = await request.json()
+    prefs = read_ui_preferences()
+    if "uiPreferences" in body and isinstance(body["uiPreferences"], dict):
+        prefs = write_ui_preferences(body["uiPreferences"])
+    return {"ok": True, "uiPreferences": prefs}
 
 @app.put("/api/data")
 async def put_data(request: Request):
