@@ -237,7 +237,9 @@ function rMovements(){
 function movRow(m, showDelete=false){
   const sign=m.type==='out'?'−':'+';
   const typeLabel={in:'Restock',out:'Dispatch',adjustment:'Adjustment'}[m.type]||m.type;
-  const delBtn=showDelete?`<button class="btn btn-g btn-xs" style="flex-shrink:0;color:var(--text-3)" onclick="deleteMovement('${m.productId}',${m.id})" title="Delete">✕</button>`:'';
+  const actions=showDelete?`
+    ${m.type==='in'?`<button class="btn btn-g btn-xs" style="flex-shrink:0" onclick="openEditMovementModal('${m.productId}',${m.id})" title="Edit Restock">Edit</button>`:''}
+    <button class="btn btn-g btn-xs" style="flex-shrink:0;color:var(--text-3)" onclick="deleteMovement('${m.productId}',${m.id})" title="Delete">✕</button>`:'';
   return`<div class="mov-item">
     <div class="mov-dot ${m.type}"></div>
     <div class="mov-body">
@@ -248,7 +250,7 @@ function movRow(m, showDelete=false){
       <div class="mov-grams ${m.type}">${sign}${fGrams(m.grams)}</div>
       <div class="mov-date">${fdt(m.at)}</div>
     </div>
-    ${delBtn}
+    ${actions}
   </div>`;
 }
 
@@ -259,6 +261,70 @@ async function deleteMovement(pid, mid){
     const p=S.products.find(x=>x.id===pid);
     if(p){ p.movements=p.movements.filter(m=>m.id!==mid); p.stock=res.newStock; }
     toast('Movement deleted'); rMovements(); rDash(); rStock();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+
+function openEditMovementModal(pid, mid){
+  const p=S.products.find(x=>x.id===pid); if(!p) return;
+  const m=(p.movements||[]).find(x=>x.id===mid); if(!m) return;
+  if(m.type!=='in'){ toast('Only restocks can be edited here','err'); return; }
+
+  let dateVal='';
+  if(m.at){
+    const dt=new Date(m.at);
+    if(!isNaN(dt.getTime())){
+      dateVal=`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+    }
+  }
+  openModal(`
+    <div class="modal-title">Edit Restock</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
+      <div class="fg">
+        <label>Product</label>
+        <input value="${esc(p.name)}" disabled>
+      </div>
+      <div class="fr">
+        <div class="fg">
+          <label>Quantity (grams) <span class="req">*</span></label>
+          <input type="number" id="em-grams" value="${m.grams}" min="1" inputmode="decimal">
+        </div>
+        <div class="fg">
+          <label>Date</label>
+          <input type="date" id="em-date" value="${dateVal}">
+        </div>
+      </div>
+      <div class="fg">
+        <label>Note <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+        <input type="text" id="em-note" value="${esc(m.note||'')}">
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-p" style="flex:1" onclick="submitEditMovement('${pid}',${mid})">Save Changes</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`);
+}
+
+async function submitEditMovement(pid, mid){
+  const grams=parseFloat(g('em-grams')?.value||0);
+  if(!grams||grams<=0){toast('Enter a valid quantity','err');return;}
+  const note=g('em-note')?.value||'';
+  const dateInput=g('em-date')?.value;
+  let at=Date.now();
+  if(dateInput){
+    const [y,mo,d]=dateInput.split('-').map(Number);
+    const dt=new Date(y,mo-1,d,12,0,0);
+    if(!isNaN(dt.getTime())) at=dt.getTime();
+  }
+  try{
+    const res=await api.put(`/api/products/${pid}/movements/${mid}`,{grams,note,at});
+    const p=S.products.find(x=>x.id===pid);
+    if(p){
+      const m=p.movements.find(x=>x.id===mid);
+      if(m){ m.grams=grams; m.note=note; m.at=at; }
+      p.stock=res.newStock;
+    }
+    closeModal(); toast('Restock updated','ok');
+    rMovements(); rDash(); rStock();
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
 

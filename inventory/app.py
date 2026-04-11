@@ -400,6 +400,41 @@ async def delete_movement(product_id: str, movement_id: int):
     write_data(data)
     return {"ok": True, "newStock": data["products"][idx]["stock"]}
 
+@app.put("/api/products/{product_id}/movements/{movement_id}")
+async def update_movement(product_id: str, movement_id: int, request: Request):
+    """
+    Update a stock movement.
+    body may include: { grams: number, note: string, at: timestamp }
+    """
+    body = await request.json()
+    data = read_data()
+    pidx = next((i for i, p in enumerate(data["products"]) if p["id"] == product_id), None)
+    if pidx is None:
+        raise HTTPException(404, "Product not found")
+
+    midx = next(
+        (i for i, m in enumerate(data["products"][pidx]["movements"]) if m["id"] == movement_id),
+        None,
+    )
+    if midx is None:
+        raise HTTPException(404, "Movement not found")
+
+    mov = data["products"][pidx]["movements"][midx]
+
+    if "grams" in body:
+        grams = float(body.get("grams", 0))
+        if grams <= 0:
+            raise HTTPException(400, "grams must be > 0")
+        mov["grams"] = grams
+    if "note" in body:
+        mov["note"] = str(body.get("note", ""))
+    if "at" in body:
+        mov["at"] = body.get("at")
+
+    recompute_stock(data["products"][pidx])
+    write_data(data)
+    return {**mov, "newStock": data["products"][pidx]["stock"]}
+
 
 @app.post("/api/crm/replace-movements")
 async def crm_replace_movements(request: Request):
