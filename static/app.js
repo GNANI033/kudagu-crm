@@ -63,6 +63,8 @@ let S = null;
 let FULL_DATA_READY = false;
 let FULL_DATA_PROMISE = null;
 let DASH_BOOTSTRAP_METRICS = null;
+let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false };
+let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
 let ORDER_PAGES = { active: 1, completed: 1 };
 let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
@@ -139,11 +141,96 @@ window.fetch = async (...args)=>{
 };
 
 // ─── API ─────────────────────────────────────────────────────────────────────
+function authContext(){
+  const fallback={ enabled:false, authenticated:true, setupRequired:false, user:null, roleModelEnabled:false };
+  if(AUTH_STATE && typeof AUTH_STATE==='object') return { ...fallback, ...AUTH_STATE };
+  return fallback;
+}
+function currentUser(){ return authContext().user || null; }
+function authEnabled(){ return !!authContext().enabled; }
+function roleModelEnabled(){ return !!authContext().roleModelEnabled; }
+function currentPermissions(){
+  return currentUser()?.permissions || { pages:{}, dashboardCards:{}, actions:{} };
+}
+function hasPageAccess(page){
+  if(authEnabled() && !currentUser()) return false;
+  if(!roleModelEnabled()) return true;
+  const user=currentUser();
+  if(!user) return false;
+  if(user.role==='admin') return true;
+  return !!currentPermissions().pages?.[page];
+}
+function hasActionAccess(section, action){
+  if(authEnabled() && !currentUser()) return false;
+  if(!roleModelEnabled()) return true;
+  const user=currentUser();
+  if(!user) return false;
+  if(user.role==='admin') return true;
+  return !!currentPermissions().actions?.[section]?.[action];
+}
+function hasDashboardCard(card){
+  if(authEnabled() && !currentUser()) return false;
+  if(!roleModelEnabled()) return true;
+  const user=currentUser();
+  if(!user) return false;
+  if(user.role==='admin') return true;
+  return !!currentPermissions().dashboardCards?.[card];
+}
+function canViewFinancialData(){
+  return hasDashboardCard('revenue') || hasDashboardCard('profit') || hasDashboardCard('avgOrderValue');
+}
+function allowedInventoryProductIds(){
+  const products=Array.isArray(S?.products)?S.products:[];
+  if(!products.length) return null;
+  const ids=new Set();
+  products.forEach((product)=>{
+    const comp=Array.isArray(product?.composition)?product.composition:[];
+    comp.forEach((row)=>{
+      const id=String(row?.inventoryProductId||'').trim();
+      if(id) ids.add(id);
+    });
+  });
+  return ids;
+}
+function visibleInventorySnapshot(){
+  const items=Array.isArray(inventorySnapshot)?inventorySnapshot:[];
+  const allowed=allowedInventoryProductIds();
+  if(allowed===null) return items;
+  return items.filter((item)=>allowed.has(String(item?.id||'')));
+}
+async function handleAuthFailure(){
+  try{
+    const status=await refreshAuthState();
+    if(authEnabled()){
+      enterAuthMode(status);
+      return;
+    }
+    hideAuthGate();
+    setAppLocked(false);
+  }catch(_){}
+}
+async function parseApiResponse(r){
+  if(r.status===401 || r.status===403){
+    await handleAuthFailure();
+  }
+  if(!r.ok){
+    const raw=await r.text();
+    let message=raw||`${r.status}`;
+    try{
+      const parsed=JSON.parse(raw);
+      if(parsed && typeof parsed.detail==='string' && parsed.detail.trim()){
+        message=parsed.detail.trim();
+      }
+    }catch(_){}
+    throw new Error(message);
+  }
+  return r.json();
+}
 const api = {
-  async get(p){ const r=await fetch(p); if(!r.ok) throw new Error(`GET ${p} → ${r.status}`); return r.json(); },
-  async post(p,b){ const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); if(!r.ok){const m=await r.text();throw new Error(m);} return r.json(); },
-  async put(p,b){ const r=await fetch(p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}); if(!r.ok){const m=await r.text();throw new Error(m);} return r.json(); },
-  async del(p){ const r=await fetch(p,{method:'DELETE'}); if(!r.ok) throw new Error(`DELETE ${p} → ${r.status}`); return r.json(); },
+  async get(p){ const r=await fetch(p,{credentials:'same-origin'}); return parseApiResponse(r); },
+  async post(p,b){ const r=await fetch(p,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),credentials:'same-origin'}); return parseApiResponse(r); },
+  async put(p,b){ const r=await fetch(p,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(b),credentials:'same-origin'}); return parseApiResponse(r); },
+  async del(p){ const r=await fetch(p,{method:'DELETE',credentials:'same-origin'}); return parseApiResponse(r); },
 };
 const THEME_OPTIONS = {
   light: 'Light',
@@ -469,7 +556,175 @@ function emptyState(){
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
     marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' },
     uiPreferences: { theme: 'light' },
+    authContext: { ...AUTH_STATE },
   };
+}
+function firstAccessiblePage(){
+  const pages=['dashboard','sales','orders','alerts','marketing','distribution','customers','settings'];
+  return pages.find(hasPageAccess) || 'dashboard';
+}
+function appShellEls(){
+  return [
+    document.querySelector('.app'),
+    g('bottom-nav'),
+  ].filter(Boolean);
+}
+function setAppLocked(locked){
+  appShellEls().forEach((el)=>{
+    el.style.visibility=locked?'hidden':'';
+    el.style.pointerEvents=locked?'none':'';
+    el.setAttribute('aria-hidden', locked?'true':'false');
+  });
+}
+function ensureAuthUi(){
+  if(g('auth-gate')) return;
+  const style=document.createElement('style');
+  style.textContent=`
+    .auth-gate{position:fixed;inset:0;z-index:1200;display:none;align-items:center;justify-content:center;padding:24px;background:rgba(17,17,16,.18);backdrop-filter:blur(10px)}
+    .auth-gate.open{display:flex}
+    .auth-card{width:min(460px,100%);background:var(--surface);border:1px solid var(--border);border-radius:18px;box-shadow:var(--sh-lg);padding:28px}
+    .auth-title{font-family:'Syne',sans-serif;font-size:26px;font-weight:700}
+    .auth-sub{font-size:13px;color:var(--text-3);margin-top:6px}
+    .auth-stack{display:flex;flex-direction:column;gap:14px;margin-top:20px}
+    .auth-note{font-size:12px;color:var(--text-3);margin-top:10px}
+    .session-chip{margin-top:auto;padding:12px 14px;border-top:1px solid var(--border);display:flex;flex-direction:column;gap:8px}
+    .session-chip-name{font-size:12px;font-weight:700;color:var(--text)}
+    .session-chip-sub{font-size:11px;color:var(--text-3)}
+    .user-check-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+    .user-check-item{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:var(--surface-2);font-size:12px;line-height:1.35;cursor:pointer}
+    .user-check-item input[type="checkbox"]{width:16px;height:16px;min-width:16px;min-height:16px;margin-top:1px;padding:0;border:none;box-shadow:none;background:transparent;appearance:auto;-webkit-appearance:checkbox}
+  `;
+  document.head.appendChild(style);
+  const gate=document.createElement('div');
+  gate.id='auth-gate';
+  gate.className='auth-gate';
+  document.body.appendChild(gate);
+  const foot=document.querySelector('.sidebar');
+  if(foot && !g('session-chip')){
+    const chip=document.createElement('div');
+    chip.id='session-chip';
+    chip.className='session-chip';
+    chip.innerHTML='<div id="session-chip-body"></div><button id="session-logout-btn" class="btn btn-s btn-sm" style="display:none" onclick="logoutUser()">Log Out</button>';
+    foot.appendChild(chip);
+  }
+}
+function renderSessionChip(){
+  const body=g('session-chip-body');
+  const logoutBtn=g('session-logout-btn');
+  if(!body || !logoutBtn) return;
+  if(!authEnabled()){
+    body.innerHTML='<div class="session-chip-name">Single-User Mode</div><div class="session-chip-sub">Authentication is currently disabled</div>';
+    logoutBtn.style.display='none';
+    return;
+  }
+  if(!currentUser()){
+    body.innerHTML='<div class="session-chip-name">Signed Out</div><div class="session-chip-sub">Authentication enabled</div>';
+    logoutBtn.style.display='none';
+    return;
+  }
+  const user=currentUser();
+  const roleLabel=String(user.role||'admin').replace(/^\w/, (m)=>m.toUpperCase());
+  body.innerHTML=`<div class="session-chip-name">${esc(user.displayName||user.username)}</div><div class="session-chip-sub">${esc(roleLabel)} Account · @${esc(user.username)}</div>`;
+  logoutBtn.style.display='inline-flex';
+}
+function renderAuthGate(){
+  ensureAuthUi();
+  const gate=g('auth-gate');
+  const setup=!!authContext().setupRequired;
+  gate.innerHTML=`
+    <div class="auth-card">
+      <div class="auth-title">${setup?'Set Up Admin Account':'Sign In'}</div>
+      <div class="auth-sub">${setup?'Create the first admin account for this CRM instance.':'Enter your username and password to continue.'}</div>
+      <div class="auth-stack">
+        <div class="fg">
+          <label>Username</label>
+          <input id="auth-username" type="text" autocomplete="username" placeholder="e.g. admin">
+        </div>
+        ${setup?`<div class="fg"><label>Display Name</label><input id="auth-display-name" type="text" placeholder="e.g. Main Admin"></div>`:''}
+        <div class="fg">
+          <label>Password</label>
+          <input id="auth-password" type="password" autocomplete="${setup?'new-password':'current-password'}" placeholder="Minimum 8 characters">
+        </div>
+        <button class="btn btn-p btn-full" onclick="${setup?'submitAuthSetup()':'submitLogin()'}">${setup?'Create Admin Account':'Sign In'}</button>
+        <div id="auth-error" class="auth-note" style="color:var(--red)"></div>
+      </div>
+    </div>`;
+  gate.classList.add('open');
+}
+async function showAuthGate(){
+  setAppLocked(true);
+  renderAuthGate();
+}
+function hideAuthGate(){
+  const gate=g('auth-gate');
+  if(gate) gate.classList.remove('open');
+}
+async function fetchAuthStatus(){
+  const r=await fetch('/api/auth/status',{credentials:'same-origin'});
+  if(!r.ok) throw new Error(`Auth status failed: ${r.status}`);
+  return r.json();
+}
+async function refreshAuthState(){
+  const payload=await fetchAuthStatus();
+  FEATURE_CONFIG=payload?.featureConfig||FEATURE_CONFIG;
+  AUTH_STATE=payload?.auth||AUTH_STATE;
+  if(S) S.authContext=AUTH_STATE;
+  return AUTH_STATE;
+}
+function enterAuthMode(nextAuthState=null){
+  if(nextAuthState && typeof nextAuthState==='object'){
+    AUTH_STATE={...AUTH_STATE, ...nextAuthState};
+    if(S) S.authContext=AUTH_STATE;
+  }
+  if(!S) S=emptyState();
+  FULL_DATA_READY=false;
+  FULL_DATA_PROMISE=null;
+  DASH_BOOTSTRAP_METRICS=null;
+  applyTheme(S?.uiPreferences?.theme||'light');
+  setAppLocked(true);
+  renderSessionChip();
+  renderAuthGate();
+}
+function enterAppMode(){
+  hideAuthGate();
+  setAppLocked(false);
+  renderSessionChip();
+}
+async function submitAuthSetup(){
+  const username=g('auth-username')?.value?.trim()||'';
+  const password=g('auth-password')?.value||'';
+  const displayName=g('auth-display-name')?.value?.trim()||username;
+  try{
+    await api.post('/api/auth/setup',{username,password,displayName});
+    hideAuthGate();
+    window.location.replace('/');
+    return;
+  }catch(e){
+    if(String(e?.message||'').toLowerCase().includes('setup is already complete')){
+      try{
+        await refreshAuthState();
+        renderAuthGate();
+      }catch(_){}
+    }
+    if(g('auth-error')) g('auth-error').textContent=e.message;
+  }
+}
+async function submitLogin(){
+  const username=g('auth-username')?.value?.trim()||'';
+  const password=g('auth-password')?.value||'';
+  try{
+    await api.post('/api/auth/login',{username,password});
+    hideAuthGate();
+    window.location.replace('/');
+    return;
+  }catch(e){
+    if(g('auth-error')) g('auth-error').textContent=e.message;
+  }
+}
+async function logoutUser(){
+  try{ await api.post('/api/auth/logout',{}); }catch(_){}
+  hideAuthGate();
+  window.location.replace('/');
 }
 function activeViewId(){
   const v=document.querySelector('.view.active');
@@ -478,6 +733,7 @@ function activeViewId(){
 }
 async function fetchFullData(){
   S = await api.get('/api/data');
+  AUTH_STATE=S?.authContext||AUTH_STATE;
   FULL_DATA_READY = true;
   DASH_BOOTSTRAP_METRICS = null;
   return S;
@@ -593,17 +849,19 @@ function openOrderMenu(oid, btnEl){
   closeOrderMenu();
   const ord=S.orders.find(o=>o.id===oid);
   const canShip=!!ord && (ord.channel==='website' || ord.channel==='whatsapp');
+  const canEdit=hasActionAccess('orders','edit');
+  const canDelete=hasActionAccess('orders','delete');
+  const canShipLabel=hasActionAccess('shipping','labels');
   const menu=document.createElement('div');
   menu.className='ctx-menu'; menu.id='ctx-menu';
   menu.innerHTML=`
-    <button class="ctx-item" onclick="closeOrderMenu();openEditOrder(${oid})">Edit Order</button>
-    ${canShip
+    ${canEdit?`<button class="ctx-item" onclick="closeOrderMenu();openEditOrder(${oid})">Edit Order</button>`:''}
+    ${canShip && canShipLabel
       ? `<button class="ctx-item" onclick="closeOrderMenu();shippingLabel(${oid},'download')">Download Label</button>
          <button class="ctx-item" onclick="closeOrderMenu();shippingLabel(${oid},'print')">Print Label</button>`
       : `<div class="ctx-item" style="cursor:default;opacity:.65">Label - Not Valid</div>`
     }
-    <hr class="ctx-divider">
-    <button class="ctx-item ctx-danger" onclick="closeOrderMenu();deleteOrder(${oid})">Delete Order</button>`;
+    ${canDelete?`<hr class="ctx-divider"><button class="ctx-item ctx-danger" onclick="closeOrderMenu();deleteOrder(${oid})">Delete Order</button>`:''}`;
   document.body.appendChild(menu);
   // position near the button (always keep within viewport)
   const r=btnEl.getBoundingClientRect();
@@ -970,6 +1228,12 @@ function isMobile(){ return window.innerWidth < 600; }
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 // Sidebar nav: dashboard=0, orders=1, alerts=2, marketing=3, distribution=4, customers=5, settings=6
 function nav(p){
+  if(!hasPageAccess(p)){
+    const fallback=firstAccessiblePage();
+    if(p!==fallback) return nav(fallback);
+    toast('Access restricted for this account','err');
+    return;
+  }
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   // Desktop sidebar
@@ -992,6 +1256,10 @@ function nav(p){
   if(p==='settings')  { sPanel('products'); rSettings(); }
 }
 function sPanel(id){
+  if(id==='users' && !hasActionAccess('users','manage')){
+    toast('Only admins can manage users','err');
+    return;
+  }
   document.querySelectorAll('.settings-panel').forEach(p=>p.classList.remove('active'));
   g('sp-'+id).classList.add('active');
   document.querySelectorAll('.smenu-item').forEach(b=>b.classList.remove('active'));
@@ -1004,6 +1272,41 @@ function sPanel(id){
   if(id==='appearance') rThemeSettings();
   if(id==='marketing-ai') rMarketingSettings();
   if(id==='shipping') rShippingSettings();
+  if(id==='users') rUsersSettings();
+}
+function setNavVisibility(selector, visible){
+  document.querySelectorAll(selector).forEach((el)=>{ el.style.display=visible?'':'none'; });
+}
+function applyPermissionUI(){
+  const signedIn=!!currentUser();
+  setNavVisibility('.sidebar .nb[onclick="nav(\'dashboard\')"]', hasPageAccess('dashboard'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'orders\')"]', hasPageAccess('orders'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'alerts\')"]', hasPageAccess('alerts'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'marketing\')"]', hasPageAccess('marketing'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'distribution\')"]', hasPageAccess('distribution'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'customers\')"]', hasPageAccess('customers'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'settings\')"]', hasPageAccess('settings'));
+  if(g('bnav-dashboard')) g('bnav-dashboard').style.display=hasPageAccess('dashboard')?'':'none';
+  if(g('bnav-orders')) g('bnav-orders').style.display=hasPageAccess('orders')?'':'none';
+  if(g('bnav-alerts')) g('bnav-alerts').style.display=hasPageAccess('alerts')?'':'none';
+  if(g('bnav-marketing')) g('bnav-marketing').style.display=hasPageAccess('marketing')?'':'none';
+  if(g('bnav-distribution')) g('bnav-distribution').style.display=hasPageAccess('distribution')?'':'none';
+  if(g('bnav-customers')) g('bnav-customers').style.display=hasPageAccess('customers')?'':'none';
+  if(g('bnav-settings')) g('bnav-settings').style.display=hasPageAccess('settings')?'':'none';
+  document.querySelectorAll('.dash-sale-btn, .mobile-topbar .btn').forEach((el)=>{ el.style.display=(hasPageAccess('sales') && hasActionAccess('orders','create'))?'':'none'; });
+  document.querySelectorAll('[onclick="openAddCustomerModal()"]').forEach((el)=>{ el.style.display=(hasPageAccess('customers') && hasActionAccess('customers','create'))?'':'none'; });
+  document.querySelectorAll('[onclick="createDistributorBatch()"]').forEach((el)=>{ el.style.display=(hasPageAccess('distribution') && hasActionAccess('distribution','create'))?'':'none'; });
+  const usersBtn=document.querySelector('.smenu-item[data-panel="users"]');
+  if(usersBtn) usersBtn.style.display=(signedIn && FEATURE_CONFIG.usernamePasswordAuthEnabled && hasActionAccess('users','manage'))?'':'none';
+  const usersPanel=g('sp-users');
+  if(usersPanel) usersPanel.style.display=(signedIn && FEATURE_CONFIG.usernamePasswordAuthEnabled && hasActionAccess('users','manage'))?'':'none';
+  const activeSettingsPanel=document.querySelector('.settings-panel.active');
+  if(activeSettingsPanel?.id==='sp-users' && (!signedIn || !FEATURE_CONFIG.usernamePasswordAuthEnabled || !hasActionAccess('users','manage'))){
+    const fallback=hasPageAccess('settings') ? 'appearance' : null;
+    if(fallback) sPanel(fallback);
+  }
+  const active=activeViewId();
+  if(active && !hasPageAccess(active)) nav(firstAccessiblePage());
 }
 
 function marketingWaPhone(phone){
@@ -1497,6 +1800,7 @@ function rMarketingSettings(){
   }
 }
 async function saveMarketingSettings(){
+  if(!hasActionAccess('settings','manage')){ toast('Settings access is restricted','err'); return; }
   const aiBaseUrl=(g('mkt-ai-base-url')?.value||'').trim();
   const aiModel=(g('mkt-ai-model')?.value||'').trim();
   const brandName=(g('mkt-ai-brand-name')?.value||'').trim();
@@ -1528,6 +1832,7 @@ async function saveMarketingSettings(){
   }
 }
 async function clearMarketingApiKey(){
+  if(!hasActionAccess('settings','manage')){ toast('Settings access is restricted','err'); return; }
   try{
     await api.put('/api/settings',{marketingSettings:{clearApiKey:true}});
     await fetchFullData();
@@ -1604,6 +1909,7 @@ async function submitBulkImport(){
 
 // "Add Customer" button on the Customers page opens a modal form
 function openAddCustomerModal(){
+  if(!hasActionAccess('customers','create')){ toast('Customer creation is restricted','err'); return; }
   openModal(`
     <div class="modal-title">Add Customer</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
@@ -1794,7 +2100,7 @@ function openCustomerMenu(cid, btn){
   closeOrderMenu(); // reuse same close logic
   const menu=document.createElement('div');
   menu.className='ctx-menu'; menu.id='ctx-menu';
-  menu.innerHTML=`<button class="ctx-item" onclick="closeOrderMenu();openEditCustomer(${cid})">Edit Customer</button>`;
+  menu.innerHTML=`${hasActionAccess('customers','edit')?`<button class="ctx-item" onclick="closeOrderMenu();openEditCustomer(${cid})">Edit Customer</button>`:'<div class="ctx-item" style="cursor:default;opacity:.65">View only</div>'}`;
   document.body.appendChild(menu);
   const r=btn.getBoundingClientRect();
   positionCtxMenu(menu, r);
@@ -1802,6 +2108,7 @@ function openCustomerMenu(cid, btn){
 }
 
 function openEditCustomer(cid){
+  if(!hasActionAccess('customers','edit')){ toast('Customer editing is restricted','err'); return; }
   const c=S.customers.find(x=>x.id===cid); if(!c) return;
   openModal(`
     <div class="modal-title">Edit Customer</div>
@@ -1820,8 +2127,7 @@ function openEditCustomer(cid){
         <button class="btn btn-p" style="flex:1" onclick="submitEditCustomer(${cid})">Save Changes</button>
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
-      <hr style="margin:4px 0">
-      <button class="btn btn-danger btn-full" onclick="confirmDeleteCustomer(${cid})">Delete Customer</button>
+      ${hasActionAccess('customers','delete')?`<hr style="margin:4px 0"><button class="btn btn-danger btn-full" onclick="confirmDeleteCustomer(${cid})">Delete Customer</button>`:''}
     </div>`,'lg');
 }
 
@@ -1838,6 +2144,7 @@ async function submitEditCustomer(cid){
 }
 
 function confirmDeleteCustomer(cid){
+  if(!hasActionAccess('customers','delete')){ toast('Customer deletion is restricted','err'); return; }
   const c=S.customers.find(x=>x.id===cid); if(!c) return;
   const oc=S.orders.filter(o=>o.cid===cid).length;
   openModal(`
@@ -1948,6 +2255,7 @@ function refreshSum(){
 }
 
 async function recSale(){
+  if(!hasActionAccess('orders','create')){ toast('Order creation is restricted','err'); return; }
   const pid=g('ps').value;
   if(!selC){toast('Select a customer','err');return;}
   if(!pid){toast('Select a product or service','err');return;}
@@ -2392,6 +2700,7 @@ function onDistProductChange(){
   sel.innerHTML=pid?distVariantOptions(pid):'<option value="">Select size…</option>';
 }
 async function createDistributorBatch(){
+  if(!hasActionAccess('distribution','create')){ toast('Distribution batch creation is restricted','err'); return; }
   const distributorName=getDistNameValue('dist');
   const prodId=(g('dist-prod')?.value||'').trim();
   const variant=(g('dist-variant')?.value||'').trim();
@@ -3117,12 +3426,13 @@ function inventoryMovementForBatch(batch, inventoryProductId=''){
 }
 function calcInventoryPosition(inventoryProductId=''){
   const targetPid=String(inventoryProductId||'').trim();
+  const visibleItems=visibleInventorySnapshot();
   let total=0;
   if(targetPid){
-    const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===targetPid);
+    const item=visibleItems.find(p=>String(p.id||'')===targetPid);
     total=parseFloat(item?.stockGrams||0)||0;
   }else{
-    total=(inventorySnapshot||[]).reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
+    total=visibleItems.reduce((s,p)=>s+(parseFloat(p.stockGrams)||0),0);
   }
   const onHold=activeDistributorBatches().reduce((sum,b)=>sum+inventoryMovementForBatch(b,targetPid),0);
   const inStock=Math.max(0,total-onHold);
@@ -3130,6 +3440,29 @@ function calcInventoryPosition(inventoryProductId=''){
 }
 function inventorySplitText(position){
   return `In stock: ${fGrams(position.inStock)} · On hold: ${fGrams(position.onHold)}`;
+}
+function dashboardHalfByLabel(label){
+  return Array.from(document.querySelectorAll('#sg .sbox-half, #sg2 .sbox-half')).find((el)=>el.querySelector('.sl')?.textContent?.trim()===label) || null;
+}
+function applyDashboardCardVisibility(){
+  const map=[
+    ['Revenue','revenue'],
+    ['Profit','profit'],
+    ['MoM Change','momChange'],
+    ['Analytics','analytics'],
+    ['Avg Order Value','avgOrderValue'],
+    ['Inventory Moved','inventoryMoved'],
+    ['Customers','customers'],
+    ['Alerts','alerts'],
+  ];
+  map.forEach(([label,key])=>{
+    const half=dashboardHalfByLabel(label);
+    if(half) half.style.display=hasDashboardCard(key)?'':'none';
+  });
+  document.querySelectorAll('#sg .sbox, #sg2 .sbox').forEach((box)=>{
+    const visibleHalves=Array.from(box.querySelectorAll('.sbox-half')).filter((half)=>half.style.display!=='none');
+    box.style.display=visibleHalves.length?'':'none';
+  });
 }
 
 const DASH_INV_ANALYTICS_KEY='kudagu_dash_inv_pid_v1';
@@ -3147,7 +3480,7 @@ function saveDashInventoryPid(pid){
   try{ localStorage.setItem(DASH_INV_ANALYTICS_KEY,DASH_INV_ANALYTICS_PID); }catch(_){}
 }
 function defaultDashInventoryPid(){
-  const items=Array.isArray(inventorySnapshot)?inventorySnapshot:[];
+  const items=visibleInventorySnapshot();
   if(!items.length) return '';
   if(DASH_INV_ANALYTICS_PID && items.some(p=>String(p.id)===String(DASH_INV_ANALYTICS_PID))) return DASH_INV_ANALYTICS_PID;
   const coffee=items.find(p=>/coffee/i.test(String(p.name||'')));
@@ -3165,7 +3498,7 @@ function saveDashInventoryMovedPid(pid){
   try{ localStorage.setItem(DASH_INV_MOVED_KEY,DASH_INV_MOVED_PID); }catch(_){}
 }
 function defaultDashInventoryMovedPid(){
-  const items=Array.isArray(inventorySnapshot)?inventorySnapshot:[];
+  const items=visibleInventorySnapshot();
   if(!items.length) return '';
   if(!DASH_INV_MOVED_PID) return '';
   if(items.some(p=>String(p.id)===String(DASH_INV_MOVED_PID))) return DASH_INV_MOVED_PID;
@@ -3186,7 +3519,7 @@ function inventoryMovementForProduct(order, inventoryProductId){
 }
 function calcInventoryAnalyticsForProduct(inventoryProductId){
   const pid=String(inventoryProductId||'').trim();
-  const item=(inventorySnapshot||[]).find(p=>String(p.id||'')===pid) || null;
+  const item=visibleInventorySnapshot().find(p=>String(p.id||'')===pid) || null;
   const stockGrams=Number(item?.stockGrams||0)||0;
   const now=Date.now();
   const dayMs=86400000;
@@ -3263,6 +3596,7 @@ function rDash(){
   const alerts=getAlerts();
   const distAlerts=getDistributorAgingAlerts(15);
   const allOpsAlerts=alerts.length+distAlerts.length;
+  const visibleInventory=visibleInventorySnapshot();
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const f=calcFin();
   const inv=calcInventoryUsageFromOrders();
@@ -3273,11 +3607,11 @@ function rDash(){
   if(selectedPid && selectedPid!==DASH_INV_ANALYTICS_PID) saveDashInventoryPid(selectedPid);
   if(selectedMovedPid!==DASH_INV_MOVED_PID) saveDashInventoryMovedPid(selectedMovedPid);
   const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid);
-  const invOpts=(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
+  const invOpts=visibleInventory.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
   const invMoved=calcInventoryUsageFromOrdersForProduct(selectedMovedPid);
   const invMovedOpts=[
     `<option value="" ${!selectedMovedPid?'selected':''}>Total</option>`,
-    ...(inventorySnapshot||[]).map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedMovedPid)?'selected':''}>${esc(p.name||p.id)}</option>`)
+    ...visibleInventory.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedMovedPid)?'selected':''}>${esc(p.name||p.id)}</option>`)
   ].join('');
   const monthlyTxt=invAnalytics.monthly>0?fGrams(invAnalytics.monthly)+'/month':'0 g/month';
   const basisShort = invAnalytics.coverageDays>0
@@ -3432,6 +3766,7 @@ function rDash(){
     const d=item.data;
     return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Item')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
   }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">✓</div><div class="et">All alerts clear</div></div>`;
+  applyDashboardCardVisibility();
 }
 
 async function dashQuickStatus(oid,sel){
@@ -3465,6 +3800,238 @@ async function dashQuickStatus(oid,sel){
 }
 
 // ─── SETTINGS ────────────────────────────────────────────────────────────────
+function ensureUserManagementUi(){
+  const menu=document.querySelector('.settings-menu');
+  if(menu && !document.querySelector('.smenu-item[data-panel="users"]')){
+    const btn=document.createElement('button');
+    btn.className='smenu-item';
+    btn.dataset.panel='users';
+    btn.textContent='Users';
+    btn.setAttribute('onclick',"sPanel('users')");
+    menu.appendChild(btn);
+  }
+  const panelHost=document.querySelector('#view-settings .settings-layout > div:last-child');
+  if(panelHost && !g('sp-users')){
+    const panel=document.createElement('div');
+    panel.className='settings-panel';
+    panel.id='sp-users';
+    panel.innerHTML='<div class="card"><div class="ch"><div class="ct">User Management</div></div><div class="cb" id="users-settings-body"></div></div>';
+    panelHost.appendChild(panel);
+  }
+}
+async function rUsersSettings(){
+  const body=g('users-settings-body');
+  if(!body) return;
+  if(!FEATURE_CONFIG.usernamePasswordAuthEnabled){
+    body.innerHTML='<div style="font-size:12.5px;color:var(--text-3)">Enable username/password auth in <code>app_config.py</code> to use user management.</div>';
+    return;
+  }
+  if(!hasActionAccess('users','manage')){
+    body.innerHTML='<div style="font-size:12.5px;color:var(--text-3)">Only admins can manage users.</div>';
+    return;
+  }
+  body.innerHTML='<div style="font-size:12.5px;color:var(--text-3)">Loading users…</div>';
+  try{
+    const res=await api.get('/api/users');
+    const users=Array.isArray(res?.users)?res.users:[];
+    const productOptions=(S?.products||[]).map((p)=>`<label class="user-check-item"><input type="checkbox" class="user-scope-product" value="${esc(p.id)}"><span>${esc(p.name)}</span></label>`).join('');
+    body.innerHTML=`
+      <div style="display:flex;flex-direction:column;gap:18px">
+        <div class="fg">
+          <label>Existing Users</label>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            ${users.length?users.map((u)=>`
+              <div style="border:1px solid var(--border);border-radius:12px;padding:14px">
+                <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+                  <div>
+                    <div style="font-weight:700">${esc(u.displayName||u.username)} <span class="pill pn" style="margin-left:6px">${esc(u.role||'admin')}</span></div>
+                    <div style="font-size:12px;color:var(--text-3);margin-top:3px">@${esc(u.username)}</div>
+                    ${u.allowedProductIds?.length?`<div style="font-size:11.5px;color:var(--text-3);margin-top:6px">Products: ${u.allowedProductIds.map(pid=>esc((S.products.find(p=>p.id===pid)||{}).name||pid)).join(', ')}</div>`:'<div style="font-size:11.5px;color:var(--text-3);margin-top:6px">Product scope: all products</div>'}
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+                    <button class="btn btn-s btn-xs" onclick="openEditUser(${u.id})">Edit</button>
+                    <button class="btn btn-s btn-xs" onclick="openResetUserPassword(${u.id})">Password</button>
+                    <button class="btn btn-danger btn-xs" onclick="deleteUserAccount(${u.id})">Delete</button>
+                  </div>
+                </div>
+              </div>`).join(''):'<div style="font-size:12.5px;color:var(--text-3)">No users yet.</div>'}
+          </div>
+        </div>
+        <div class="fg">
+          <label>Create User</label>
+          <div class="fr">
+            <div class="fg"><label>Display Name</label><input id="new-user-display" type="text" placeholder="e.g. Partner One"></div>
+            <div class="fg"><label>Username</label><input id="new-user-username" type="text" placeholder="e.g. partner1"></div>
+          </div>
+          <div class="fr">
+            <div class="fg"><label>Password</label><input id="new-user-password" type="password" placeholder="Minimum 8 characters"></div>
+            <div class="fg"><label>Role</label><select id="new-user-role" onchange="toggleNewUserScope()"><option value="admin">Admin</option><option value="partner">Partner</option><option value="employee">Employee</option></select></div>
+          </div>
+          <div id="new-user-scope" style="display:none;border:1px solid var(--border);border-radius:12px;padding:12px">
+            <div style="font-size:12px;font-weight:700;margin-bottom:8px">Allowed Products</div>
+            <div class="user-check-grid">${productOptions||'<div style="font-size:12px;color:var(--text-3)">No products configured yet.</div>'}</div>
+          </div>
+          <button class="btn btn-p" onclick="createUserAccount()">Create User</button>
+        </div>
+      </div>`;
+    toggleNewUserScope();
+  }catch(e){
+    body.innerHTML=`<div style="font-size:12.5px;color:var(--red)">Could not load users: ${esc(e.message)}</div>`;
+  }
+}
+const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',customers:'Customers',settings:'Settings'};
+const USER_CARD_LABELS={revenue:'Revenue',profit:'Profit',momChange:'MoM Change',analytics:'Analytics',avgOrderValue:'Avg Order Value',inventoryMoved:'Inventory Moved',customers:'Customers',alerts:'Alerts'};
+const USER_ACTION_LABELS={
+  customers:{create:'Create customers',edit:'Edit customers',delete:'Delete customers'},
+  orders:{create:'Create orders',edit:'Edit orders',delete:'Delete orders'},
+  distribution:{create:'Create batches',edit:'Edit batches',delete:'Delete batches',complete:'Complete batches'},
+  products:{create:'Create products',edit:'Edit products',delete:'Delete products'},
+  settings:{view:'View settings',manage:'Manage settings'},
+  marketing:{view:'View marketing',generate:'Generate AI marketing'},
+  shipping:{labels:'Shipping labels'},
+  inventory:{sync:'Inventory sync'},
+  users:{manage:'Manage users'},
+};
+function normalizePermissionState(role, perms){
+  if(role==='admin' || !roleModelEnabled()) return { pages:{}, dashboardCards:{}, actions:{} };
+  return perms||{ pages:{}, dashboardCards:{}, actions:{} };
+}
+function productScopeCheckboxes(selected=[]){
+  const picked=new Set(selected||[]);
+  return (S.products||[]).map((p)=>`<label class="user-check-item"><input type="checkbox" class="user-scope-product" value="${esc(p.id)}" ${picked.has(p.id)?'checked':''}><span>${esc(p.name)}</span></label>`).join('');
+}
+function permissionCheckboxGrid(map, values, section, group){
+  return `<div class="user-check-grid">${Object.entries(map).map(([key,label])=>`<label class="user-check-item"><input type="checkbox" data-perm-group="${group}" data-perm-section="${section||''}" value="${esc(key)}" ${values?.[key]?'checked':''}><span>${esc(label)}</span></label>`).join('')}</div>`;
+}
+function buildUserPermissionEditor(role, perms={}, products=[]){
+  if(role==='admin' || !roleModelEnabled()){
+    return '<div style="font-size:12px;color:var(--text-3)">Admins always have full access.</div>';
+  }
+  const state=normalizePermissionState(role, perms);
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:8px">Allowed Products</div>
+        <div class="user-check-grid">${productScopeCheckboxes(products)}</div>
+      </div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:8px">Pages</div>
+        ${permissionCheckboxGrid(USER_PAGE_LABELS,state.pages,'','pages')}
+      </div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:8px">Dashboard Cards</div>
+        ${permissionCheckboxGrid(USER_CARD_LABELS,state.dashboardCards,'','cards')}
+      </div>
+      <div style="border:1px solid var(--border);border-radius:12px;padding:12px">
+        <div style="font-size:12px;font-weight:700;margin-bottom:8px">Actions</div>
+        <div style="display:flex;flex-direction:column;gap:12px">
+          ${Object.entries(USER_ACTION_LABELS).map(([section,map])=>`<div><div style="font-size:11px;font-weight:700;color:var(--text-3);text-transform:uppercase;margin-bottom:6px">${esc(section)}</div>${permissionCheckboxGrid(map,state.actions?.[section],section,'actions')}</div>`).join('')}
+        </div>
+      </div>
+    </div>`;
+}
+function collectPermissionPayload(role, root=document){
+  if(role==='admin' || !roleModelEnabled()) return { allowedProductIds:[], permissions:{} };
+  const allowedProductIds=Array.from(root.querySelectorAll('.user-scope-product:checked')).map((el)=>el.value);
+  const pages={}, dashboardCards={}, actions={};
+  root.querySelectorAll('[data-perm-group="pages"]').forEach((el)=>{ pages[el.value]=!!el.checked; });
+  root.querySelectorAll('[data-perm-group="cards"]').forEach((el)=>{ dashboardCards[el.value]=!!el.checked; });
+  root.querySelectorAll('[data-perm-group="actions"]').forEach((el)=>{
+    const section=el.getAttribute('data-perm-section')||'';
+    if(!actions[section]) actions[section]={};
+    actions[section][el.value]=!!el.checked;
+  });
+  return { allowedProductIds, permissions:{ pages, dashboardCards, actions } };
+}
+function toggleNewUserScope(){
+  const role=g('new-user-role')?.value||'admin';
+  const wrap=g('new-user-scope');
+  if(wrap) wrap.style.display=(role!=='admin' && roleModelEnabled())?'block':'none';
+}
+async function createUserAccount(){
+  const role=g('new-user-role')?.value||'admin';
+  const scopeRoot=g('users-settings-body')||document;
+  const payload={
+    displayName:g('new-user-display')?.value?.trim()||'',
+    username:g('new-user-username')?.value?.trim()||'',
+    password:g('new-user-password')?.value||'',
+    role,
+    ...collectPermissionPayload(role, scopeRoot),
+  };
+  try{
+    await api.post('/api/users',payload);
+    toast('User created','ok');
+    rUsersSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+async function openEditUser(userId){
+  let user=null;
+  try{
+    const res=await api.get('/api/users');
+    user=(res.users||[]).find((u)=>Number(u.id)===Number(userId));
+  }catch(e){ toast('Error: '+e.message,'err'); return; }
+  if(!user) return;
+  openModal(`
+    <div class="modal-title">Edit User</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
+      <div class="fr">
+        <div class="fg"><label>Display Name</label><input id="edit-user-display" type="text" value="${esc(user.displayName||'')}"></div>
+        <div class="fg"><label>Username</label><input id="edit-user-username" type="text" value="${esc(user.username||'')}"></div>
+      </div>
+      <div class="fg"><label>Role</label><select id="edit-user-role" onchange="refreshEditUserPermissions()"><option value="admin" ${user.role==='admin'?'selected':''}>Admin</option><option value="partner" ${user.role==='partner'?'selected':''}>Partner</option><option value="employee" ${user.role==='employee'?'selected':''}>Employee</option></select></div>
+      <div id="edit-user-perms"></div>
+      <div style="display:flex;gap:8px"><button class="btn btn-p" style="flex:1" onclick="saveUserAccount(${user.id})">Save Changes</button><button class="btn btn-s" onclick="closeModal()">Cancel</button></div>
+    </div>`,'lg');
+  window.__editingUser=user;
+  refreshEditUserPermissions();
+}
+function refreshEditUserPermissions(){
+  const user=window.__editingUser;
+  if(!user) return;
+  const role=g('edit-user-role')?.value||user.role||'admin';
+  const host=g('edit-user-perms');
+  if(!host) return;
+  host.innerHTML=buildUserPermissionEditor(role,user.permissions,user.allowedProductIds||[]);
+}
+async function saveUserAccount(userId){
+  const role=g('edit-user-role')?.value||'admin';
+  const scopeRoot=g('modal-box')||document;
+  const payload={
+    displayName:g('edit-user-display')?.value?.trim()||'',
+    username:g('edit-user-username')?.value?.trim()||'',
+    role,
+    ...collectPermissionPayload(role, scopeRoot),
+  };
+  try{
+    await api.put(`/api/users/${userId}`,payload);
+    closeModal();
+    toast('User updated','ok');
+    rUsersSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function openResetUserPassword(userId){
+  openModal(`
+    <div class="modal-title">Change Password</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
+      <div class="fg"><label>New Password</label><input id="reset-user-password" type="password" placeholder="Minimum 8 characters"></div>
+      <div style="display:flex;gap:8px"><button class="btn btn-p" style="flex:1" onclick="saveUserPassword(${userId})">Update Password</button><button class="btn btn-s" onclick="closeModal()">Cancel</button></div>
+    </div>`);
+}
+async function saveUserPassword(userId){
+  try{
+    await api.post(`/api/users/${userId}/password`,{password:g('reset-user-password')?.value||''});
+    closeModal();
+    toast('Password updated','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+async function deleteUserAccount(userId){
+  if(!confirm('Delete this user account?')) return;
+  try{
+    await api.del(`/api/users/${userId}`);
+    toast('User deleted','ok');
+    rUsersSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
 function rSettings(){
   const c=g('prod-list-container');
   if(!S.products.length){c.innerHTML=`<div class="empty"><div class="ei">📦</div><div class="et">No products or services yet</div></div>`;return;}
@@ -3753,6 +4320,7 @@ function insertAwbPlaceholder(i){
   updateTrackingTemplatePreview(i);
 }
 async function saveShippingSettings(){
+  if(!hasActionAccess('settings','manage')){ toast('Settings access is restricted','err'); return; }
   const rows=[];
   const seen=new Set();
   for(const row of SHIPPING_ROWS){
@@ -3805,35 +4373,63 @@ function openNativePicker(id){
 
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 async function init(){
+  ensureAuthUi();
+  try{
+    const status=await refreshAuthState();
+    if(status?.enabled && (status.setupRequired || !status.authenticated)){
+      enterAuthMode(status);
+      return;
+    }
+  }catch(_){
+    S=emptyState();
+    enterAuthMode();
+    return;
+  }
+  await loadApplicationData();
+}
+async function loadApplicationData(){
   try{
     const boot=await api.get('/api/bootstrap');
     S=boot?.state||emptyState();
     DASH_BOOTSTRAP_METRICS=boot?.dashboardMetrics||null;
+    FEATURE_CONFIG=boot?.featureConfig||FEATURE_CONFIG;
+    AUTH_STATE=S?.authContext||AUTH_STATE;
     FULL_DATA_READY=false;
   }catch(_){
     S=emptyState();
+  }
+  if(authEnabled() && !authContext().authenticated){
+    enterAuthMode();
+    return;
   }
   if(!S){
     try{ await fetchFullData(); }
     catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
   }
+  enterAppMode();
   applyTheme(S?.uiPreferences?.theme||'light');
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
   setCustomerFiltersExpanded(false);
+  ensureUserManagementUi();
+  applyPermissionUI();
   updBadge(); rDash(); populateProdSelect(); setDefaultDate(); resetCompositionBuilder(); refreshVariantBuilderUI();
   ensureFullDataLoaded().then(()=>{
     if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
     if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
+    AUTH_STATE=S?.authContext||AUTH_STATE;
+    enterAppMode();
+    applyPermissionUI();
     rerenderActiveView();
     updBadge();
   }).catch((err)=>{
     toast('Full data load failed: '+(err?.message||'Unknown error'),'err');
   });
-  // Poll inventory stock levels in background (do not block initial dashboard render)
   pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
-  // Re-poll every 5 minutes
-  setInterval(pollStockAlerts, 5 * 60 * 1000);
+  if(!window.__inventoryPollStarted){
+    window.__inventoryPollStarted=true;
+    setInterval(pollStockAlerts, 5 * 60 * 1000);
+  }
 }
 window.addEventListener('DOMContentLoaded',init);
 document.addEventListener('visibilitychange', ()=>{

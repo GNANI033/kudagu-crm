@@ -30,6 +30,9 @@ import csv
 import socket
 import ipaddress
 import sqlite3
+import secrets
+import hashlib
+import hmac
 from contextlib import asynccontextmanager
 from io import BytesIO
 from pathlib import Path
@@ -39,9 +42,11 @@ from urllib import request as urlrequest
 from urllib import parse as urlparse
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+
+import app_config
 
 # ── Paths ──────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent
@@ -58,11 +63,37 @@ ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").stri
 DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
-SCHEMA_VERSION = 1
 DASHBOARD_CACHE_LOCK = threading.RLock()
 DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
+SCHEMA_VERSION = 2
+AUTH_COOKIE_NAME = "kudagu_crm_session"
+PASSWORD_HASH_ITERATIONS = 310_000
+AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
+
+PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "customers", "settings")
+DASHBOARD_CARD_KEYS = (
+    "revenue",
+    "profit",
+    "momChange",
+    "analytics",
+    "avgOrderValue",
+    "inventoryMoved",
+    "customers",
+    "alerts",
+)
+ACTION_KEYS: dict[str, tuple[str, ...]] = {
+    "customers": ("create", "edit", "delete"),
+    "orders": ("create", "edit", "delete"),
+    "distribution": ("create", "edit", "delete", "complete"),
+    "products": ("create", "edit", "delete"),
+    "settings": ("view", "manage"),
+    "marketing": ("view", "generate"),
+    "shipping": ("labels",),
+    "inventory": ("sync",),
+    "users": ("manage",),
+}
 
 # ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
 DEFAULT_DATA: dict = {
@@ -71,10 +102,13 @@ DEFAULT_DATA: dict = {
     "distributorBatches": [],
     "distributionChannels": [],
     "closedFollowUps": [],
+    "users": [],
+    "authSessions": [],
     "cid": 1,
     "oid": 1,
     "dbid": 1,
     "pid": 6,
+    "uid": 1,
     "waDefaultTpl": (
         "Hi {{customer_name}}, your last order was on {{last_order_date}}. "
         "Would you like to order {{product_name}} ({{variant}}) again? "
@@ -116,6 +150,398 @@ DEFAULT_DATA: dict = {
         {"id": "p5", "name": "Instant Coffee Mix",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
     ],
 }
+
+
+def _auth_enabled() -> bool:
+    return bool(getattr(app_config, "USERNAME_PASSWORD_AUTH_ENABLED", False))
+
+
+def _rbac_enabled() -> bool:
+    return _auth_enabled() and bool(getattr(app_config, "ROLE_BASED_ACCESS_ENABLED", False))
+
+
+def _default_permissions_for_role(role: str) -> dict:
+    if role == "employee":
+        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "customers"} for key in PAGE_KEYS}
+        cards = {
+            "revenue": False,
+            "profit": False,
+            "momChange": True,
+            "analytics": True,
+            "avgOrderValue": False,
+            "inventoryMoved": True,
+            "customers": True,
+            "alerts": True,
+        }
+        actions = {
+            "customers": {"create": True, "edit": True, "delete": False},
+            "orders": {"create": True, "edit": True, "delete": False},
+            "distribution": {"create": False, "edit": False, "delete": False, "complete": False},
+            "products": {"create": False, "edit": False, "delete": False},
+            "settings": {"view": False, "manage": False},
+            "marketing": {"view": False, "generate": False},
+            "shipping": {"labels": True},
+            "inventory": {"sync": False},
+            "users": {"manage": False},
+        }
+    elif role == "partner":
+        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "marketing", "distribution", "customers"} for key in PAGE_KEYS}
+        cards = {key: True for key in DASHBOARD_CARD_KEYS}
+        actions = {
+            "customers": {"create": True, "edit": True, "delete": False},
+            "orders": {"create": True, "edit": True, "delete": False},
+            "distribution": {"create": True, "edit": True, "delete": False, "complete": True},
+            "products": {"create": False, "edit": False, "delete": False},
+            "settings": {"view": False, "manage": False},
+            "marketing": {"view": True, "generate": True},
+            "shipping": {"labels": True},
+            "inventory": {"sync": False},
+            "users": {"manage": False},
+        }
+    else:
+        pages = {key: True for key in PAGE_KEYS}
+        cards = {key: True for key in DASHBOARD_CARD_KEYS}
+        actions = {section: {action: True for action in keys} for section, keys in ACTION_KEYS.items()}
+    return {"pages": pages, "dashboardCards": cards, "actions": actions}
+
+
+def _normalize_permissions(role: str, raw: Any = None) -> dict:
+    base = _default_permissions_for_role(role)
+    if role == "admin":
+        return base
+    incoming = raw if isinstance(raw, dict) else {}
+    pages = incoming.get("pages") if isinstance(incoming.get("pages"), dict) else {}
+    cards = incoming.get("dashboardCards") if isinstance(incoming.get("dashboardCards"), dict) else {}
+    actions_in = incoming.get("actions") if isinstance(incoming.get("actions"), dict) else {}
+    for key in PAGE_KEYS:
+        if key in pages:
+            base["pages"][key] = bool(pages[key])
+    for key in DASHBOARD_CARD_KEYS:
+        if key in cards:
+            base["dashboardCards"][key] = bool(cards[key])
+    for section, keys in ACTION_KEYS.items():
+        section_in = actions_in.get(section) if isinstance(actions_in.get(section), dict) else {}
+        for key in keys:
+            if key in section_in:
+                base["actions"][section][key] = bool(section_in[key])
+    return base
+
+
+def _normalize_product_access(values: Any, known_products: list[dict]) -> list[str]:
+    allowed_ids = {str(p.get("id")) for p in known_products if isinstance(p, dict) and p.get("id")}
+    if not isinstance(values, list):
+        values = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        pid = str(raw or "").strip()
+        if not pid or pid not in allowed_ids or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+    return out
+
+
+def _normalize_username(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _password_hash(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
+    return "pbkdf2_sha256${}${}${}".format(
+        PASSWORD_HASH_ITERATIONS,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(derived).decode("ascii"),
+    )
+
+
+def _verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations_raw, salt_b64, digest_b64 = str(encoded or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+    except Exception:
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
+
+
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _prune_expired_sessions(data: dict) -> None:
+    now = int(time.time())
+    data["authSessions"] = [
+        s for s in (data.get("authSessions", []) or [])
+        if isinstance(s, dict) and int(s.get("expiresAt") or 0) > now
+    ]
+
+
+def _create_session(data: dict, user_id: int) -> str:
+    _prune_expired_sessions(data)
+    token = secrets.token_urlsafe(32)
+    now = int(time.time())
+    data.setdefault("authSessions", []).append(
+        {
+            "tokenHash": _hash_session_token(token),
+            "userId": int(user_id),
+            "createdAt": now,
+            "expiresAt": now + AUTH_SESSION_TTL_SECONDS,
+            "lastSeenAt": now,
+        }
+    )
+    return token
+
+
+def _delete_session(data: dict, token: str) -> None:
+    hashed = _hash_session_token(token)
+    data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if s.get("tokenHash") != hashed]
+
+
+def _set_auth_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=AUTH_SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=False,
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+
+
+def _find_user_by_id(data: dict, user_id: Any) -> dict | None:
+    try:
+        numeric_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    return next((u for u in data.get("users", []) if int(u.get("id", 0)) == numeric_id), None)
+
+
+def _find_user_by_username(data: dict, username: Any) -> dict | None:
+    key = _normalize_username(username)
+    return next((u for u in data.get("users", []) if _normalize_username(u.get("username")) == key), None)
+
+
+def _auth_user_payload(user: dict | None) -> dict | None:
+    if not user:
+        return None
+    return {
+        "id": int(user.get("id", 0)),
+        "username": str(user.get("username") or ""),
+        "displayName": str(user.get("displayName") or user.get("username") or ""),
+        "role": str(user.get("role") or "admin"),
+        "allowedProductIds": list(user.get("allowedProductIds", []) or []),
+        "permissions": _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")),
+    }
+
+
+def _has_financial_access(user: dict | None) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    cards = _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")).get("dashboardCards", {})
+    return bool(cards.get("revenue") or cards.get("profit") or cards.get("avgOrderValue"))
+
+
+def _allowed_product_ids_for_user(user: dict | None, data: dict) -> set[str] | None:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return None
+    allowed = _normalize_product_access(user.get("allowedProductIds"), data.get("products", []) or [])
+    return set(allowed)
+
+
+def _user_can_view_page(user: dict | None, page: str) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    return bool(_normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")).get("pages", {}).get(page, False))
+
+
+def _user_can_do(user: dict | None, section: str, action: str) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    perms = _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions"))
+    return bool(perms.get("actions", {}).get(section, {}).get(action, False))
+
+
+def _build_auth_context(data: dict, request: Request) -> dict:
+    if not _auth_enabled():
+        return {"enabled": False, "authenticated": True, "setupRequired": False, "user": None}
+    _prune_expired_sessions(data)
+    setup_required = not any(str(u.get("role") or "admin") == "admin" for u in data.get("users", []))
+    token = request.cookies.get(AUTH_COOKIE_NAME) or ""
+    if not token:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    hashed = _hash_session_token(token)
+    now = int(time.time())
+    session = next((s for s in data.get("authSessions", []) if s.get("tokenHash") == hashed and int(s.get("expiresAt") or 0) > now), None)
+    if not session:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    user = _find_user_by_id(data, session.get("userId"))
+    if not user:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    session["lastSeenAt"] = now
+    return {"enabled": True, "authenticated": True, "setupRequired": setup_required, "user": user}
+
+
+def _require_signed_in(request: Request, data: dict) -> dict:
+    ctx = _build_auth_context(data, request)
+    if not ctx["enabled"]:
+        return ctx
+    if ctx["setupRequired"]:
+        raise HTTPException(status_code=403, detail="Setup is required before sign in.")
+    if not ctx["authenticated"] or not ctx["user"]:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return ctx
+
+
+def _require_admin(request: Request, data: dict) -> dict:
+    ctx = _require_signed_in(request, data)
+    user = ctx.get("user")
+    if _rbac_enabled() and str(user.get("role") or "") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    return ctx
+
+
+def _ensure_page_access(user: dict | None, page: str) -> None:
+    if not _user_can_view_page(user, page):
+        raise HTTPException(status_code=403, detail=f"Access denied for page '{page}'.")
+
+
+def _ensure_action_access(user: dict | None, section: str, action: str) -> None:
+    if not _user_can_do(user, section, action):
+        raise HTTPException(status_code=403, detail=f"Access denied for {section}:{action}.")
+
+
+def _ensure_product_scope(user: dict | None, data: dict, product_id: Any) -> None:
+    allowed = _allowed_product_ids_for_user(user, data)
+    if allowed is None:
+        return
+    if str(product_id or "") not in allowed:
+        raise HTTPException(status_code=403, detail="Access denied for this product.")
+
+
+def _ensure_customer_scope(user: dict | None, data: dict, customer_id: Any) -> None:
+    allowed = _allowed_product_ids_for_user(user, data)
+    if allowed is None:
+        return
+    visible_customer_ids = {
+        int(o.get("cid") or 0)
+        for o in data.get("orders", [])
+        if int(o.get("cid") or 0) > 0 and str(o.get("prodId") or "") in allowed
+    }
+    try:
+        cid = int(customer_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid not in visible_customer_ids:
+        raise HTTPException(status_code=403, detail="Access denied for this customer.")
+
+
+def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
+    safe = copy.deepcopy(data)
+    allowed_product_ids = _allowed_product_ids_for_user(user, data)
+    if allowed_product_ids is not None:
+        safe["products"] = [p for p in safe.get("products", []) if str(p.get("id")) in allowed_product_ids]
+        safe["orders"] = [o for o in safe.get("orders", []) if str(o.get("prodId")) in allowed_product_ids]
+        safe["distributorBatches"] = [b for b in safe.get("distributorBatches", []) if str(b.get("prodId")) in allowed_product_ids]
+        allowed_customer_ids = {int(o.get("cid") or 0) for o in safe.get("orders", []) if int(o.get("cid") or 0) > 0}
+        safe["customers"] = [c for c in safe.get("customers", []) if int(c.get("id") or 0) in allowed_customer_ids]
+        safe["closedFollowUps"] = [
+            r for r in safe.get("closedFollowUps", [])
+            if int(r.get("cid") or 0) in allowed_customer_ids and int(r.get("orderId") or 0) in {int(o.get("id") or 0) for o in safe.get("orders", [])}
+        ]
+    if not _has_financial_access(user):
+        for product in safe.get("products", []):
+            product["pricing"] = {}
+        for order in safe.get("orders", []):
+            order["discount"] = None
+            order["commission"] = None
+            order["realizedRevenue"] = None
+        if isinstance(safe.get("shippingProfile"), dict):
+            safe["shippingProfile"]["paymentGatewayCommissionPct"] = 0.0
+    safe.pop("users", None)
+    safe.pop("authSessions", None)
+    return safe
+
+
+def _filtered_order_response(data: dict, user: dict | None, order_id: int) -> dict:
+    filtered = _filtered_data_for_user(data, user)
+    order = next((o for o in filtered.get("orders", []) if int(o.get("id", 0)) == int(order_id)), None)
+    if order is None:
+        raise HTTPException(status_code=403, detail="Access denied for this order.")
+    return order
+
+
+def _auth_context_payload(data: dict, request: Request) -> dict:
+    ctx = _build_auth_context(data, request)
+    user_payload = _auth_user_payload(ctx.get("user"))
+    return {
+        "enabled": _auth_enabled(),
+        "roleModelEnabled": _rbac_enabled(),
+        "setupRequired": bool(ctx.get("setupRequired")),
+        "authenticated": bool(ctx.get("authenticated")),
+        "user": user_payload,
+    }
+
+
+def _sanitize_dashboard_metrics_for_user(metrics: dict, user: dict | None) -> dict:
+    safe = copy.deepcopy(metrics)
+    if _has_financial_access(user):
+        return safe
+    for key in ("revAll", "profAll", "revM", "profM", "mom", "yoy", "completedOrders", "ordersPerCustomer", "retentionPct"):
+        if key in safe:
+            safe[key] = None
+    return safe
+
+
+def _allowed_inventory_product_ids_for_user(user: dict | None, data: dict) -> set[str] | None:
+    allowed_product_ids = _allowed_product_ids_for_user(user, data)
+    if allowed_product_ids is None:
+        return None
+    allowed_inventory_ids: set[str] = set()
+    for product in data.get("products", []) or []:
+        if str(product.get("id") or "") not in allowed_product_ids:
+            continue
+        for row in product.get("composition", []) or []:
+            inv_id = str(row.get("inventoryProductId") or "").strip()
+            if inv_id:
+                allowed_inventory_ids.add(inv_id)
+    return allowed_inventory_ids
+
+
+def _normalize_user_record(raw: dict, data: dict, *, preserve_password_hash: str = "") -> dict:
+    username = _normalize_username(raw.get("username"))
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    role = str(raw.get("role") or "admin").strip().lower()
+    if role not in {"admin", "partner", "employee"}:
+        role = "admin"
+    if not _rbac_enabled():
+        role = "admin"
+    record = {
+        "id": int(raw.get("id") or 0),
+        "username": username,
+        "displayName": str(raw.get("displayName") or username).strip() or username,
+        "role": role,
+        "allowedProductIds": _normalize_product_access(raw.get("allowedProductIds"), data.get("products", []) or []),
+        "permissions": _normalize_permissions(role, raw.get("permissions")),
+        "passwordHash": preserve_password_hash,
+        "createdAt": int(raw.get("createdAt") or int(time.time() * 1000)),
+        "updatedAt": int(time.time() * 1000),
+    }
+    if role == "admin":
+        record["allowedProductIds"] = []
+        record["permissions"] = _normalize_permissions("admin")
+    return record
 
 # ── Data helpers ────────────────────────────────────────────────────────────
 def _connect_db() -> sqlite3.Connection:
@@ -273,10 +699,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "closedFollowUps"):
+    for key in ("customers", "orders", "products", "distributorBatches", "closedFollowUps", "users", "authSessions"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid", "dbid"):
+    for key in ("cid", "oid", "dbid", "uid"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -425,6 +851,29 @@ def migrate(data: dict) -> dict:
         if "notes" not in c:
             c["notes"] = ""
         c["phone"] = _normalize_customer_phone(c.get("phone"))
+
+    normalized_users: list[dict] = []
+    highest_uid = int(data.get("uid", 1) or 1)
+    for idx, raw_user in enumerate(data.get("users", []) or [], start=1):
+        if not isinstance(raw_user, dict):
+            continue
+        password_hash = str(raw_user.get("passwordHash") or "").strip()
+        if not password_hash:
+            continue
+        merged = _normalize_user_record(
+            {
+                **raw_user,
+                "id": int(raw_user.get("id") or idx),
+                "createdAt": int(raw_user.get("createdAt") or int(time.time() * 1000)),
+            },
+            data,
+            preserve_password_hash=password_hash,
+        )
+        highest_uid = max(highest_uid, int(merged["id"]) + 1)
+        normalized_users.append(merged)
+    data["users"] = normalized_users
+    data["uid"] = max(highest_uid, int(data.get("uid", 1) or 1))
+    _prune_expired_sessions(data)
 
     return data
 
@@ -608,7 +1057,7 @@ def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
     return contacts
 
 
-def _client_safe_data(data: dict) -> dict:
+def _client_safe_data(data: dict, request: Request | None = None, auth_source_data: dict | None = None) -> dict:
     """Return payload safe for frontend (avoid returning raw API key)."""
     safe = copy.deepcopy(data)
     ms = safe.get("marketingSettings")
@@ -618,6 +1067,8 @@ def _client_safe_data(data: dict) -> dict:
         ms["apiKeyPreview"] = ("*" * max(0, len(raw_key) - 4)) + raw_key[-4:] if raw_key else ""
         ms["aiApiKey"] = ""
     safe["uiPreferences"] = read_ui_preferences()
+    if request is not None:
+        safe["authContext"] = _auth_context_payload(auth_source_data or data, request)
     return safe
 
 
@@ -1443,41 +1894,240 @@ async def serve_index():
     return FileResponse(str(index))
 
 
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    data = read_data()
+    return {
+        "auth": _auth_context_payload(data, request),
+        "featureConfig": {
+            "usernamePasswordAuthEnabled": _auth_enabled(),
+            "roleBasedAccessEnabled": _rbac_enabled(),
+        },
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request):
+    if not _auth_enabled():
+        raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
+    body = await request.json()
+    username = _normalize_username(body.get("username"))
+    password = str(body.get("password") or "")
+    display_name = str(body.get("displayName") or username).strip() or username
+    if len(username) < 3:
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    data = read_data()
+    if any(str(u.get("role") or "admin") == "admin" for u in data.get("users", [])):
+        raise HTTPException(status_code=400, detail="Initial setup is already complete.")
+    user = _normalize_user_record(
+        {"id": data.get("uid", 1), "username": username, "displayName": display_name, "role": "admin"},
+        data,
+        preserve_password_hash=_password_hash(password),
+    )
+    data["users"].append(user)
+    data["uid"] = int(data.get("uid", 1) or 1) + 1
+    token = _create_session(data, user["id"])
+    write_data(data)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "auth": {
+                "enabled": True,
+                "roleModelEnabled": _rbac_enabled(),
+                "setupRequired": False,
+                "authenticated": True,
+                "user": _auth_user_payload(user),
+            },
+        }
+    )
+    _set_auth_cookie(response, token)
+    return response
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    if not _auth_enabled():
+        raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
+    body = await request.json()
+    username = _normalize_username(body.get("username"))
+    password = str(body.get("password") or "")
+    data = read_data()
+    if not data.get("users"):
+        raise HTTPException(status_code=403, detail="Initial setup is required before sign in.")
+    user = _find_user_by_username(data, username)
+    if not user or not _verify_password(password, str(user.get("passwordHash") or "")):
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    token = _create_session(data, int(user["id"]))
+    write_data(data)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "auth": {
+                "enabled": True,
+                "roleModelEnabled": _rbac_enabled(),
+                "setupRequired": False,
+                "authenticated": True,
+                "user": _auth_user_payload(user),
+            },
+        }
+    )
+    _set_auth_cookie(response, token)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    data = read_data()
+    token = request.cookies.get(AUTH_COOKIE_NAME) or ""
+    if token:
+        _delete_session(data, token)
+        write_data(data)
+    response = JSONResponse({"ok": True})
+    _clear_auth_cookie(response)
+    return response
+
+
+@app.get("/api/users")
+async def list_users(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    users = []
+    for user in data.get("users", []):
+        payload = _auth_user_payload(user) or {}
+        payload["createdAt"] = int(user.get("createdAt") or 0)
+        payload["updatedAt"] = int(user.get("updatedAt") or 0)
+        users.append(payload)
+    return {"users": users}
+
+
+@app.post("/api/users")
+async def create_user(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if _find_user_by_username(data, body.get("username")):
+        raise HTTPException(status_code=400, detail="Username already exists.")
+    record = _normalize_user_record(
+        {"id": data.get("uid", 1), **body},
+        data,
+        preserve_password_hash=_password_hash(password),
+    )
+    data["users"].append(record)
+    data["uid"] = int(data.get("uid", 1) or 1) + 1
+    write_data(data)
+    return _auth_user_payload(record)
+
+
+@app.put("/api/users/{user_id}")
+async def update_user(user_id: int, request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    user = _find_user_by_id(data, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    body = await request.json()
+    if "username" in body:
+        existing = _find_user_by_username(data, body.get("username"))
+        if existing and int(existing.get("id", 0)) != user_id:
+            raise HTTPException(status_code=400, detail="Username already exists.")
+    replacement = _normalize_user_record(
+        {**user, **body, "id": user_id, "createdAt": user.get("createdAt")},
+        data,
+        preserve_password_hash=str(user.get("passwordHash") or ""),
+    )
+    if int(user_id) == int(((_build_auth_context(data, request).get("user") or {}).get("id") or 0)) and replacement["role"] != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+    idx = next(i for i, row in enumerate(data["users"]) if int(row.get("id", 0)) == user_id)
+    data["users"][idx] = replacement
+    write_data(data)
+    return _auth_user_payload(replacement)
+
+
+@app.post("/api/users/{user_id}/password")
+async def change_user_password(user_id: int, request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    user = _find_user_by_id(data, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    user["passwordHash"] = _password_hash(password)
+    user["updatedAt"] = int(time.time() * 1000)
+    write_data(data)
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(user_id: int, request: Request):
+    data = read_data()
+    ctx = _require_admin(request, data)
+    current_user = ctx.get("user") or {}
+    if int(current_user.get("id", 0)) == user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    before = len(data.get("users", []))
+    data["users"] = [u for u in data.get("users", []) if int(u.get("id", 0)) != user_id]
+    if len(data["users"]) == before:
+        raise HTTPException(status_code=404, detail="User not found.")
+    data["authSessions"] = [s for s in data.get("authSessions", []) if int(s.get("userId", 0)) != user_id]
+    write_data(data)
+    return {"ok": True}
+
+
 # ── Data — full read/write ─────────────────────────────────────────────────
 @app.get("/api/data")
-async def get_data():
+async def get_data(request: Request):
     """Return the full persisted app data."""
     data = read_data()
-    return JSONResponse(content=_client_safe_data(data))
+    ctx = _require_signed_in(request, data)
+    filtered = _filtered_data_for_user(data, ctx.get("user"))
+    return JSONResponse(content=_client_safe_data(filtered, request, auth_source_data=data))
 
 
 @app.get("/api/bootstrap")
-async def get_bootstrap():
+async def get_bootstrap(request: Request):
     """
     Return a lightweight bootstrap payload for faster first paint.
     Full data should be loaded by calling /api/data after initial render.
     """
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    filtered = _filtered_data_for_user(data, ctx.get("user"))
     bootstrap_state = {
         "customers": [],
         "orders": [],
         "distributorBatches": [],
         "closedFollowUps": [],
-        "products": data.get("products", []),
-        "distributionChannels": data.get("distributionChannels", []),
-        "cid": data.get("cid", 1),
-        "oid": data.get("oid", 1),
-        "dbid": data.get("dbid", 1),
-        "pid": data.get("pid", 1),
-        "waDefaultTpl": data.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
-        "shippingProfile": data.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
-        "marketingSettings": data.get("marketingSettings", copy.deepcopy(DEFAULT_DATA["marketingSettings"])),
+        "products": filtered.get("products", []),
+        "distributionChannels": filtered.get("distributionChannels", []),
+        "cid": filtered.get("cid", 1),
+        "oid": filtered.get("oid", 1),
+        "dbid": filtered.get("dbid", 1),
+        "pid": filtered.get("pid", 1),
+        "waDefaultTpl": filtered.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
+        "shippingProfile": filtered.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
+        "marketingSettings": filtered.get("marketingSettings", copy.deepcopy(DEFAULT_DATA["marketingSettings"])),
         "uiPreferences": read_ui_preferences(),
     }
+    metrics_source = _filtered_data_for_user(data, ctx.get("user"))
     return JSONResponse(
         {
-            "state": _client_safe_data(bootstrap_state),
-            "dashboardMetrics": _get_cached_dashboard_metrics(data, ttl_seconds=60),
+            "state": _client_safe_data(bootstrap_state, request, auth_source_data=data),
+            "dashboardMetrics": _sanitize_dashboard_metrics_for_user(
+                _compute_dashboard_metrics(metrics_source),
+                ctx.get("user"),
+            ),
+            "featureConfig": {
+                "usernamePasswordAuthEnabled": _auth_enabled(),
+                "roleBasedAccessEnabled": _rbac_enabled(),
+            },
         }
     )
 
@@ -1490,6 +2140,8 @@ async def put_data(request: Request):
         body = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON body")
+    data = read_data()
+    _require_admin(request, data)
     if "products" not in body:
         raise HTTPException(status_code=400, detail="Missing 'products' key")
     write_data(body)
@@ -1504,6 +2156,9 @@ async def add_customer(request: Request):
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "create")
     customer = _build_customer(
         cid=data["cid"],
         name=body["name"],
@@ -1527,9 +2182,13 @@ async def update_customer(customer_id: int, request: Request):
     """Update an existing customer's details."""
     body = await request.json()
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "edit")
     idx = next((i for i, c in enumerate(data["customers"]) if c["id"] == customer_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Customer not found")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
     for key in ("name", "phone", "area", "email", "address", "notes"):
         if key in body:
             if key == "phone":
@@ -1576,6 +2235,9 @@ async def import_customers(request: Request):
         raise HTTPException(status_code=400, detail="Unsupported import format. Use .vcf, .xlsx, .xlsm, or .csv")
 
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "create")
     existing_phone_set = {_normalize_customer_phone(c.get("phone")) for c in data.get("customers", [])}
     import_batch_id = f"imp-{int(time.time() * 1000)}"
     created: list[dict] = []
@@ -1619,8 +2281,12 @@ async def import_customers(request: Request):
 
 
 @app.delete("/api/customers/{customer_id}")
-async def delete_customer(customer_id: int):
+async def delete_customer(customer_id: int, request: Request):
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "delete")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
     before = len(data["customers"])
     data["customers"] = [c for c in data["customers"] if c["id"] != customer_id]
     if len(data["customers"]) == before:
@@ -1637,6 +2303,10 @@ async def add_order(request: Request):
     if not all(k in body for k in required):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "sales")
+    _ensure_action_access(ctx.get("user"), "orders", "create")
+    _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
     channel = body["channel"]
     default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
     order = {
@@ -1665,7 +2335,7 @@ async def add_order(request: Request):
     data["oid"] += 1
     _reconcile_order_inventory(data, 0, prev_order=None, force=True)
     write_data(data)
-    return order
+    return _filtered_order_response(data, ctx.get("user"), order["id"])
 
 
 @app.put("/api/orders/{order_id}")
@@ -1673,16 +2343,22 @@ async def update_order(order_id: int, request: Request):
     """Update mutable fields on an order: status, discount, commission."""
     body = await request.json()
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "edit")
     idx = next((i for i, o in enumerate(data["orders"]) if o["id"] == order_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, data["orders"][idx].get("prodId"))
+    if "prodId" in body:
+        _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
     prev = copy.deepcopy(data["orders"][idx])
     for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution"):
         if key in body:
             data["orders"][idx][key] = body[key]
     _reconcile_order_inventory(data, idx, prev_order=prev)
     write_data(data)
-    return data["orders"][idx]
+    return _filtered_order_response(data, ctx.get("user"), order_id)
 
 
 @app.post("/api/distribution/batches")
@@ -1693,6 +2369,10 @@ async def add_distribution_batch(request: Request):
         raise HTTPException(status_code=400, detail=f"Required fields: {required}")
 
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "create")
+    _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
     product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
     if product is None:
         raise HTTPException(status_code=400, detail="Product not found")
@@ -1742,6 +2422,9 @@ async def add_distribution_batch(request: Request):
 async def update_distribution_batch(batch_id: int, request: Request):
     body = await request.json()
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "edit")
     idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Batch not found")
@@ -1793,6 +2476,9 @@ def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Batch not found")
 
     batch = data["distributorBatches"][idx]
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
+    if "prodId" in body:
+        _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
     removed_order_id = None
     try:
         linked_order_id = int(batch.get("orderId") or 0)
@@ -1812,16 +2498,30 @@ def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
 
 
 @app.delete("/api/distribution/batches/{batch_id}")
-async def delete_distribution_batch(batch_id: int):
+async def delete_distribution_batch(batch_id: int, request: Request):
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "delete")
+    batch = next((b for b in data["distributorBatches"] if int(b.get("id", 0)) == batch_id), None)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
     res = _delete_distribution_batch_from_data(data, batch_id)
     write_data(data)
     return res
 
 
 @app.post("/api/distribution/batches/{batch_id}/delete")
-async def delete_distribution_batch_via_post(batch_id: int):
+async def delete_distribution_batch_via_post(batch_id: int, request: Request):
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "delete")
+    batch = next((b for b in data["distributorBatches"] if int(b.get("id", 0)) == batch_id), None)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
     res = _delete_distribution_batch_from_data(data, batch_id)
     write_data(data)
     return res
@@ -1831,10 +2531,14 @@ async def delete_distribution_batch_via_post(batch_id: int):
 async def complete_distribution_batch(batch_id: int, request: Request):
     body = await request.json()
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "complete")
     idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Batch not found")
     batch = data["distributorBatches"][idx]
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
     if batch.get("status") == "completed":
         raise HTTPException(status_code=400, detail="Batch already completed")
 
@@ -1893,7 +2597,7 @@ async def complete_distribution_batch(batch_id: int, request: Request):
 
     _reconcile_order_inventory(data, 0, prev_order=None, force=True)
     write_data(data)
-    return {"batch": batch, "order": order}
+    return {"batch": batch, "order": _filtered_order_response(data, ctx.get("user"), order["id"])}
 
 
 @app.post("/api/alerts/followups/close")
@@ -1911,6 +2615,8 @@ async def close_followup_alert(request: Request):
     closed_at = int(body.get("at") or int(time.time() * 1000))
 
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "alerts")
     data["closedFollowUps"] = [
         r
         for r in data.get("closedFollowUps", [])
@@ -1929,11 +2635,14 @@ async def close_followup_alert(request: Request):
 
 
 @app.get("/api/orders/{order_id}/shipping-label.pdf")
-async def shipping_label_pdf(order_id: int):
+async def shipping_label_pdf(order_id: int, request: Request):
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_action_access(ctx.get("user"), "shipping", "labels")
     order = next((o for o in data["orders"] if o.get("id") == order_id), None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
 
     ship = order.get("shipping") or {}
     awb = str(ship.get("awb", "")).strip()
@@ -1954,16 +2663,18 @@ async def shipping_label_pdf(order_id: int):
 
 
 @app.post("/api/inventory/sync-completed-orders")
-async def sync_completed_orders():
+async def sync_completed_orders(request: Request):
     """
     Reconcile inventory usage from completed CRM orders.
     Safe to run repeatedly; removes prior CRM-linked movements per order
     and re-applies from current order values (date/qty/variant/product).
     """
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_action_access(ctx.get("user"), "inventory", "sync")
     if not SYNC_LOCK.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="Inventory sync already in progress")
     try:
-        data = read_data()
         completed_total = sum(1 for o in data["orders"] if o.get("status") == "completed")
         movements = _build_crm_movements_from_completed_orders(data)
         try:
@@ -1998,19 +2709,28 @@ async def sync_completed_orders():
 
 
 @app.get("/api/inventory/stock")
-async def inventory_stock():
+async def inventory_stock(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
     stock = _get_inventory_stock()
     if stock is None:
         raise HTTPException(status_code=502, detail="Inventory service unavailable")
+    allowed_inventory_ids = _allowed_inventory_product_ids_for_user(ctx.get("user"), data)
+    if allowed_inventory_ids is not None:
+        stock = [item for item in stock if str(item.get("id") or "") in allowed_inventory_ids]
     return stock
 
 
 @app.delete("/api/orders/{order_id}")
-async def delete_order(order_id: int):
+async def delete_order(order_id: int, request: Request):
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "delete")
     order = next((o for o in data["orders"] if o["id"] == order_id), None)
     if order is None:
         raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
     # Remove previously synced inventory movements for this order.
     if order.get("inventorySynced") or order.get("status") == "completed":
         _remove_inventory_movements_for_order(order_id)
@@ -2028,6 +2748,9 @@ async def add_product(request: Request):
     if not body.get("sizes"):
         raise HTTPException(status_code=400, detail="At least one variant required")
     data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "create")
     product = {
         "id":      "p" + str(data["pid"]),
         "name":    body["name"],
@@ -2047,6 +2770,9 @@ async def update_product(product_id: str, request: Request):
     """Update a product (pricing, waTpl, sizes, name)."""
     body = await request.json()
     data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "edit")
     idx = next((i for i, p in enumerate(data["products"]) if p["id"] == product_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Product not found")
@@ -2061,8 +2787,11 @@ async def update_product(product_id: str, request: Request):
 
 
 @app.delete("/api/products/{product_id}")
-async def delete_product(product_id: str):
+async def delete_product(product_id: str, request: Request):
     data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "delete")
     before = len(data["products"])
     data["products"] = [p for p in data["products"] if p["id"] != product_id]
     if len(data["products"]) == before:
@@ -2076,6 +2805,9 @@ async def delete_product(product_id: str):
 async def update_settings(request: Request):
     body = await request.json()
     data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
     if "waDefaultTpl" in body:
         data["waDefaultTpl"] = body["waDefaultTpl"]
     if "shippingProfile" in body and isinstance(body["shippingProfile"], dict):
@@ -2151,6 +2883,10 @@ async def generate_marketing_draft(request: Request):
     extra_instruction = str(body.get("extraInstruction") or "").strip()
 
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "marketing")
+    _ensure_action_access(ctx.get("user"), "marketing", "generate")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
     customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
     if not customer:
         raise HTTPException(status_code=404, detail="Customer not found")
@@ -2223,6 +2959,9 @@ async def generate_marketing_template(request: Request):
         ]
 
     data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "marketing")
+    _ensure_action_access(ctx.get("user"), "marketing", "generate")
     ms = data.get("marketingSettings", {})
     base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
     model = str(ms.get("aiModel") or "").strip()
