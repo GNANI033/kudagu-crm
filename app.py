@@ -72,7 +72,7 @@ AUTH_COOKIE_NAME = "kudagu_crm_session"
 PASSWORD_HASH_ITERATIONS = 310_000
 AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
 
-PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "customers", "settings")
+PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
 DASHBOARD_CARD_KEYS = (
     "revenue",
     "profit",
@@ -87,6 +87,7 @@ ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "customers": ("create", "edit", "delete"),
     "orders": ("create", "edit", "delete"),
     "distribution": ("create", "edit", "delete", "complete"),
+    "expenses": ("create",),
     "products": ("create", "edit", "delete"),
     "settings": ("view", "manage"),
     "marketing": ("view", "generate"),
@@ -101,12 +102,14 @@ DEFAULT_DATA: dict = {
     "orders": [],
     "distributorBatches": [],
     "distributionChannels": [],
+    "operationalExpenses": [],
     "closedFollowUps": [],
     "users": [],
     "authSessions": [],
     "cid": 1,
     "oid": 1,
     "dbid": 1,
+    "exid": 1,
     "pid": 6,
     "uid": 1,
     "waDefaultTpl": (
@@ -177,6 +180,7 @@ def _default_permissions_for_role(role: str) -> dict:
             "customers": {"create": True, "edit": True, "delete": False},
             "orders": {"create": True, "edit": True, "delete": False},
             "distribution": {"create": False, "edit": False, "delete": False, "complete": False},
+            "expenses": {"create": False},
             "products": {"create": False, "edit": False, "delete": False},
             "settings": {"view": False, "manage": False},
             "marketing": {"view": False, "generate": False},
@@ -191,6 +195,7 @@ def _default_permissions_for_role(role: str) -> dict:
             "customers": {"create": True, "edit": True, "delete": False},
             "orders": {"create": True, "edit": True, "delete": False},
             "distribution": {"create": True, "edit": True, "delete": False, "complete": True},
+            "expenses": {"create": False},
             "products": {"create": False, "edit": False, "delete": False},
             "settings": {"view": False, "manage": False},
             "marketing": {"view": True, "generate": True},
@@ -339,6 +344,48 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             },
         )
     return normalized
+
+
+def _expense_creator_payload(user: dict | None) -> dict:
+    if not user:
+        return {"id": 0, "username": "local", "displayName": "Local User"}
+    return {
+        "id": int(user.get("id") or 0),
+        "username": str(user.get("username") or "").strip() or "unknown",
+        "displayName": str(user.get("displayName") or user.get("username") or "Unknown User").strip() or "Unknown User",
+    }
+
+
+def _normalize_operational_expense(raw: dict, fallback_id: int = 0) -> dict:
+    title = str(raw.get("title") or raw.get("name") or "").strip()
+    if not title:
+        title = "Operational Expense"
+    category = str(raw.get("category") or "").strip()
+    notes = str(raw.get("notes") or raw.get("note") or "").strip()
+    try:
+        amount = round(float(raw.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount < 0:
+        amount = 0.0
+    expense_at = int(raw.get("expenseAt") or raw.get("at") or raw.get("createdAt") or int(time.time() * 1000))
+    created_at = int(raw.get("createdAt") or expense_at or int(time.time() * 1000))
+    creator = raw.get("createdBy") if isinstance(raw.get("createdBy"), dict) else {}
+    created_by = {
+        "id": int(creator.get("id") or raw.get("createdById") or 0),
+        "username": str(creator.get("username") or raw.get("createdByUsername") or "").strip() or "local",
+        "displayName": str(creator.get("displayName") or raw.get("createdByName") or "").strip() or "Local User",
+    }
+    return {
+        "id": int(raw.get("id") or fallback_id or 0),
+        "title": title,
+        "category": category,
+        "amount": amount,
+        "expenseAt": expense_at,
+        "createdAt": created_at,
+        "notes": notes,
+        "createdBy": created_by,
+    }
 
 
 def _normalize_username(value: Any) -> str:
@@ -572,6 +619,9 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
             order["realizedRevenue"] = None
         if isinstance(safe.get("shippingProfile"), dict):
             safe["shippingProfile"]["paymentGatewayCommissionPct"] = 0.0
+        safe["operationalExpenses"] = []
+    elif not _user_can_view_page(user, "expenses"):
+        safe["operationalExpenses"] = []
     safe.pop("users", None)
     safe.pop("authSessions", None)
     return safe
@@ -803,10 +853,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "closedFollowUps", "users", "authSessions"):
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "authSessions"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid", "dbid", "uid"):
+    for key in ("cid", "oid", "dbid", "uid", "exid"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -851,6 +901,18 @@ def migrate(data: dict) -> dict:
         data["shippingProfile"]["trackingTemplates"] = {
             c["name"]: c.get("trackingTemplate", "") for c in data["shippingProfile"]["couriers"]
         }
+    normalized_expenses: list[dict] = []
+    for idx, raw_expense in enumerate(data.get("operationalExpenses", []) or [], start=1):
+        if not isinstance(raw_expense, dict):
+            continue
+        normalized_expenses.append(_normalize_operational_expense(raw_expense, idx))
+    data["operationalExpenses"] = sorted(
+        normalized_expenses,
+        key=lambda row: int(row.get("createdAt") or row.get("expenseAt") or 0),
+        reverse=True,
+    )
+    next_expense_id = max([int(e.get("id") or 0) for e in data["operationalExpenses"]] + [0]) + 1
+    data["exid"] = max(int(data.get("exid") or 1), next_expense_id)
 
     # Migrate old salePrice → salePrices
     for p in data["products"]:
@@ -2201,11 +2263,13 @@ async def get_bootstrap(request: Request):
         "orders": [],
         "distributorBatches": [],
         "closedFollowUps": [],
+        "operationalExpenses": filtered.get("operationalExpenses", []),
         "products": filtered.get("products", []),
         "distributionChannels": filtered.get("distributionChannels", []),
         "cid": filtered.get("cid", 1),
         "oid": filtered.get("oid", 1),
         "dbid": filtered.get("dbid", 1),
+        "exid": filtered.get("exid", 1),
         "pid": filtered.get("pid", 1),
         "waDefaultTpl": filtered.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
         "shippingProfile": filtered.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
@@ -2694,6 +2758,45 @@ async def complete_distribution_batch(batch_id: int, request: Request):
     _reconcile_order_inventory(data, 0, prev_order=None, force=True)
     write_data(data)
     return {"batch": batch, "order": _filtered_order_response(data, ctx.get("user"), order["id"])}
+
+
+@app.post("/api/operational-expenses")
+async def add_operational_expense(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "expenses")
+    _ensure_action_access(ctx.get("user"), "expenses", "create")
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Expense title is required")
+    try:
+        amount = round(float(body.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Valid expense amount is required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Expense amount must be greater than zero")
+    try:
+        expense_at = int(body.get("expenseAt") or body.get("at") or int(time.time() * 1000))
+    except (TypeError, ValueError):
+        expense_at = int(time.time() * 1000)
+    record = _normalize_operational_expense(
+        {
+            "id": data.get("exid", 1),
+            "title": title,
+            "category": body.get("category", ""),
+            "amount": amount,
+            "expenseAt": expense_at,
+            "notes": body.get("notes", ""),
+            "createdAt": int(time.time() * 1000),
+            "createdBy": _expense_creator_payload(ctx.get("user")),
+        },
+        int(data.get("exid") or 1),
+    )
+    data.setdefault("operationalExpenses", []).insert(0, record)
+    data["exid"] = int(data.get("exid") or 1) + 1
+    write_data(data)
+    return record
 
 
 @app.post("/api/alerts/followups/close")

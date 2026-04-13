@@ -361,6 +361,7 @@ function calcFin(){
 
 // ─── FORMAT ──────────────────────────────────────────────────────────────────
 function fd(ts){ return new Date(ts).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}); }
+function fdt(ts){ return new Date(ts).toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'}); }
 function fC(v){ return v==null?'—':'₹'+Number(v).toFixed(0); }
 function fPct(v){ if(v==null)return'—';return(v>=0?'+':'')+v.toFixed(1)+'%'; }
 function pCls(v){ return v==null?'neutral':v>=0?'up':'down'; }
@@ -556,10 +557,12 @@ function emptyState(){
     products: [],
     distributorBatches: [],
     distributionChannels: [],
+    operationalExpenses: [],
     closedFollowUps: [],
     cid: 1,
     oid: 1,
     dbid: 1,
+    exid: 1,
     pid: 1,
     waDefaultTpl: DEFAULT_WA_TPL,
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
@@ -569,7 +572,7 @@ function emptyState(){
   };
 }
 function firstAccessiblePage(){
-  const pages=['dashboard','sales','orders','alerts','marketing','distribution','customers','settings'];
+  const pages=['dashboard','sales','orders','alerts','marketing','distribution','expenses','customers','settings'];
   return pages.find(hasPageAccess) || 'dashboard';
 }
 function appShellEls(){
@@ -761,6 +764,7 @@ function rerenderActiveView(){
   if(p==='alerts') rAlerts();
   if(p==='marketing') rMarketingView();
   if(p==='distribution') rDistribution();
+  if(p==='expenses') rOperationalExpenses();
   if(p==='customers') rCustomers();
   if(p==='settings'){ sPanel('products'); rSettings(); }
 }
@@ -810,6 +814,44 @@ function openModal(html,size=''){
 }
 function closeModal(){ g('modal').classList.remove('open'); g('modal-box').innerHTML=''; }
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
+function isTypingTarget(target){
+  if(!(target instanceof Element)) return false;
+  const tag=String(target.tagName||'').toLowerCase();
+  return tag==='input' || tag==='textarea' || tag==='select' || !!target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""], [contenteditable]');
+}
+function modalOpen(){
+  return !!g('modal')?.classList.contains('open');
+}
+function runKeyboardShortcut(key){
+  if(key==='r'){
+    if(!hasPageAccess('sales') || !hasActionAccess('orders','create')) return false;
+    nav('sales');
+    setTimeout(()=>g('cs')?.focus(),0);
+    return true;
+  }
+  if(key==='a'){
+    if(!hasPageAccess('customers') || !hasActionAccess('customers','create')) return false;
+    openAddCustomerModal();
+    setTimeout(()=>g('fn')?.focus(),0);
+    return true;
+  }
+  if(key==='s'){
+    if(!hasPageAccess('settings')) return false;
+    nav('settings');
+    return true;
+  }
+  return false;
+}
+document.addEventListener('keydown',(e)=>{
+  if(e.defaultPrevented) return;
+  if(e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return;
+  if(isTypingTarget(e.target)) return;
+  if(modalOpen()) return;
+  const key=String(e.key||'').toLowerCase();
+  if(runKeyboardShortcut(key)){
+    e.preventDefault();
+  }
+});
 
 // ─── CONTEXT MENU (3-dot) ────────────────────────────────────────────────────
 let _menuOpen = null;
@@ -1247,11 +1289,11 @@ function nav(p){
   g('view-'+p).classList.add('active');
   // Desktop sidebar
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,distribution:4,customers:5,settings:6};
+  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,distribution:4,expenses:5,customers:6,settings:7};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',expenses:'bnav-expenses',customers:'bnav-customers',settings:'bnav-settings'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
@@ -1260,6 +1302,7 @@ function nav(p){
   if(p==='alerts')    rAlerts();
   if(p==='marketing') rMarketingView();
   if(p==='distribution') rDistribution();
+  if(p==='expenses') rOperationalExpenses();
   if(p==='customers') rCustomers();
   if(p==='sales')     { populateProdSelect(); setDefaultDate(); }
   if(p==='settings')  { sPanel('products'); rSettings(); }
@@ -1293,6 +1336,7 @@ function applyPermissionUI(){
   setNavVisibility('.sidebar .nb[onclick="nav(\'alerts\')"]', hasPageAccess('alerts'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'marketing\')"]', hasPageAccess('marketing'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'distribution\')"]', hasPageAccess('distribution'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'expenses\')"]', hasPageAccess('expenses'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'customers\')"]', hasPageAccess('customers'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'settings\')"]', hasPageAccess('settings'));
   if(g('bnav-dashboard')) g('bnav-dashboard').style.display=hasPageAccess('dashboard')?'':'none';
@@ -1300,6 +1344,7 @@ function applyPermissionUI(){
   if(g('bnav-alerts')) g('bnav-alerts').style.display=hasPageAccess('alerts')?'':'none';
   if(g('bnav-marketing')) g('bnav-marketing').style.display=hasPageAccess('marketing')?'':'none';
   if(g('bnav-distribution')) g('bnav-distribution').style.display=hasPageAccess('distribution')?'':'none';
+  if(g('bnav-expenses')) g('bnav-expenses').style.display=hasPageAccess('expenses')?'':'none';
   if(g('bnav-customers')) g('bnav-customers').style.display=hasPageAccess('customers')?'':'none';
   if(g('bnav-settings')) g('bnav-settings').style.display=hasPageAccess('settings')?'':'none';
   document.querySelectorAll('.dash-sale-btn, .mobile-topbar .btn').forEach((el)=>{ el.style.display=(hasPageAccess('sales') && hasActionAccess('orders','create'))?'':'none'; });
@@ -2181,9 +2226,11 @@ let selC=null,selV=null,qty=1,selCh='retail',saleDelivered=false;
 
 function setDefaultDate(){ const el=g('sale-date'); if(el) el.value=todayISO(); }
 
+let CUSTOMER_SEARCH_HITS = [];
 function cs_search(){
   const q=g('cs').value.trim().toLowerCase(),dd=g('cs-dd');
   const hits=S.customers.filter(c=>c.name.toLowerCase().includes(q)||c.phone.includes(q)||c.area.toLowerCase().includes(q)).slice(0,8);
+  CUSTOMER_SEARCH_HITS = hits;
   if(!hits.length){dd.classList.remove('open');return;}
   dd.innerHTML=hits.map(c=>{const oc=S.orders.filter(o=>o.cid===c.id).length;return`<div class="ddi" onclick="pickC(${c.id})"><div><div class="ddi-n">${esc(c.name)}</div><div class="ddi-m">${esc(c.phone)} · ${esc(c.area)}</div></div><span class="ddi-a">${oc} order${oc!==1?'s':''}</span></div>`;}).join('');
   dd.classList.add('open');
@@ -2196,8 +2243,17 @@ function pickC(id){
   el.innerHTML=`<div class="sc-box"><div style="display:flex;align-items:center;gap:10px"><div class="sc-av">${esc(ini)}</div><div><div class="sc-n">${esc(selC.name)}</div><div class="sc-m">${esc(selC.area)} · ${oc} previous order${oc!==1?'s':''}</div></div></div><button class="btn btn-g btn-xs" onclick="clearC()">✕</button></div>`;
   refreshSum();
 }
-function clearC(){ selC=null;g('cs').value='';g('sel-c').style.display='none';refreshSum(); }
-document.addEventListener('click',e=>{ if(!e.target.closest('.sw')) g('cs-dd').classList.remove('open'); });
+function clearC(){ selC=null;CUSTOMER_SEARCH_HITS=[];g('cs').value='';g('sel-c').style.display='none';refreshSum(); }
+document.addEventListener('keydown',(e)=>{
+  if(String(e.key||'')!=='Enter') return;
+  const target=e.target;
+  if(!(target instanceof Element)) return;
+  if(target.id!=='cs') return;
+  if(!Array.isArray(CUSTOMER_SEARCH_HITS) || !CUSTOMER_SEARCH_HITS.length) return;
+  e.preventDefault();
+  pickC(CUSTOMER_SEARCH_HITS[0].id);
+});
+document.addEventListener('click',e=>{ if(!e.target.closest('.sw')){ CUSTOMER_SEARCH_HITS=[]; g('cs-dd').classList.remove('open'); } });
 
 function populateProdSelect(){
   const sel=g('ps'); sel.innerHTML='<option value="">Select product / service…</option>';
@@ -3087,6 +3143,162 @@ function rDistribution(){
   host.innerHTML=desktop+mobile;
 }
 
+function setOperationalExpenseDateDefault(){
+  if(g('opx-date') && !g('opx-date').value) g('opx-date').value=todayISO();
+}
+const DEFAULT_EXPENSE_CATEGORIES=['Logistics','Rent','Utilities','Salary','Packaging','Travel','Maintenance','Marketing','Office','Miscellaneous'];
+function operationalExpenseCategories(){
+  const seen=new Set();
+  const out=[];
+  DEFAULT_EXPENSE_CATEGORIES.forEach((label)=>{
+    const key=String(label||'').trim().toLowerCase();
+    if(!key || seen.has(key)) return;
+    seen.add(key);
+    out.push(String(label).trim());
+  });
+  (S?.operationalExpenses||[]).forEach((exp)=>{
+    const label=String(exp?.category||'').trim();
+    const key=label.toLowerCase();
+    if(!label || seen.has(key)) return;
+    seen.add(key);
+    out.push(label);
+  });
+  return out.sort((a,b)=>a.localeCompare(b));
+}
+function renderOperationalExpenseCategoryOptions(selected=''){
+  const sel=g('opx-category');
+  if(!sel) return;
+  const categories=operationalExpenseCategories();
+  const current=String(selected||'').trim();
+  const hasCurrent=current && categories.some((item)=>item.toLowerCase()===current.toLowerCase());
+  const value=hasCurrent ? categories.find((item)=>item.toLowerCase()===current.toLowerCase()) : (current?'__new__':'');
+  sel.innerHTML=`<option value="">Select category…</option>${categories.map((item)=>`<option value="${esc(item)}">${esc(item)}</option>`).join('')}<option value="__new__">+ Add new category…</option>`;
+  sel.value=value||'';
+  const custom=g('opx-category-custom');
+  if(custom){
+    custom.style.display=sel.value==='__new__'?'block':'none';
+    if(sel.value==='__new__') custom.value=current||'';
+    else custom.value='';
+  }
+}
+function toggleOperationalExpenseCategoryInput(){
+  const sel=g('opx-category');
+  const custom=g('opx-category-custom');
+  if(!sel||!custom) return;
+  const show=sel.value==='__new__';
+  custom.style.display=show?'block':'none';
+  if(show) setTimeout(()=>custom.focus(),0);
+  else custom.value='';
+}
+function operationalExpenseCategoryValue(){
+  const sel=g('opx-category');
+  const custom=g('opx-category-custom');
+  if(!sel) return '';
+  if(sel.value==='__new__') return String(custom?.value||'').trim();
+  return String(sel.value||'').trim();
+}
+function operationalExpenseTimestamp(){
+  const raw=g('opx-date')?.value||'';
+  if(!raw) return Date.now();
+  const [y,m,d]=raw.split('-').map(Number);
+  const dt=new Date(y,(m||1)-1,d||1,12,0,0);
+  return Number.isFinite(dt.getTime()) ? dt.getTime() : Date.now();
+}
+function expenseCreatorLabel(exp){
+  const by=exp?.createdBy||{};
+  return String(by.displayName||by.username||'Local User');
+}
+function expenseCategoryBadge(category){
+  const label=String(category||'').trim();
+  return label?`<span class="pill pn">${esc(label)}</span>`:'';
+}
+function expenseMetaLine(exp){
+  const expenseAt=exp.expenseAt||exp.createdAt||Date.now();
+  const createdAt=exp.createdAt||expenseAt;
+  const sameDay=fd(expenseAt)===fd(createdAt);
+  const createdTime=new Date(createdAt).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});
+  if(sameDay) return `${fd(expenseAt)} · logged ${createdTime} by ${esc(expenseCreatorLabel(exp))}`;
+  return `Expense ${fd(expenseAt)} · logged ${fdt(createdAt)} by ${esc(expenseCreatorLabel(exp))}`;
+}
+function expenseMonthRange(offset=0){
+  const now=new Date();
+  const start=new Date(now.getFullYear(), now.getMonth()+offset, 1, 0, 0, 0, 0);
+  const end=new Date(now.getFullYear(), now.getMonth()+offset+1, 1, 0, 0, 0, 0);
+  return { s:start.getTime(), e:end.getTime() };
+}
+function rOperationalExpenses(){
+  setOperationalExpenseDateDefault();
+  renderOperationalExpenseCategoryOptions(operationalExpenseCategoryValue());
+  const list=(S.operationalExpenses||[]).slice().sort((a,b)=>(b.createdAt||0)-(a.createdAt||0));
+  const canCreateExpense=hasActionAccess('expenses','create');
+  const stats=g('opx-stats');
+  const body=g('opx-body');
+  ['opx-title','opx-category','opx-category-custom','opx-amount','opx-date','opx-notes'].forEach((id)=>{ const el=g(id); if(el) el.disabled=!canCreateExpense; });
+  const saveBtn=g('opx-save-btn'); if(saveBtn){ saveBtn.disabled=!canCreateExpense; saveBtn.style.display=canCreateExpense?'':'none'; }
+  const month=expenseMonthRange(0);
+  const prevMonth=expenseMonthRange(-1);
+  const monthTotal=list.filter(e=>(e.expenseAt||e.createdAt||0)>=month.s && (e.expenseAt||e.createdAt||0)<month.e).reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+  const prevTotal=list.filter(e=>(e.expenseAt||e.createdAt||0)>=prevMonth.s && (e.expenseAt||e.createdAt||0)<prevMonth.e).reduce((s,e)=>s+(parseFloat(e.amount)||0),0);
+  const topCategories={};
+  list.forEach((e)=>{ const key=String(e.category||'Uncategorized').trim()||'Uncategorized'; topCategories[key]=(topCategories[key]||0)+(parseFloat(e.amount)||0); });
+  const topCategory=Object.entries(topCategories).sort((a,b)=>b[1]-a[1])[0];
+  if(g('opx-sub')) g('opx-sub').textContent=`${list.length} entries · ${fC(monthTotal)} this month`;
+  if(stats){
+    stats.innerHTML=`
+      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">This Month</div><div class="sv">${fC(monthTotal)}</div><div class="sn">${list.filter(e=>(e.expenseAt||e.createdAt||0)>=month.s && (e.expenseAt||e.createdAt||0)<month.e).length} entries logged</div></div><div class="sbox-half"><div class="sl">Last Month</div><div class="sv">${fC(prevTotal)}</div><div class="sn">${prevTotal>0?`${(((monthTotal-prevTotal)/prevTotal)*100).toFixed(1)}% vs last month`:'No baseline yet'}</div></div></div></div>
+      <div class="sbox"><div class="sbox-inner"><div class="sbox-half"><div class="sl">All Time</div><div class="sv">${fC(list.reduce((s,e)=>s+(parseFloat(e.amount)||0),0))}</div><div class="sn">${list.length} operational expense records</div></div><div class="sbox-half"><div class="sl">Top Category</div><div class="sv" style="font-size:22px">${esc((topCategory&&topCategory[0])||'—')}</div><div class="sn">${topCategory?fC(topCategory[1]):'No category data yet'}</div></div></div></div>
+    `;
+  }
+  if(!body) return;
+  if(!list.length){
+    body.innerHTML=`<div class="empty"><div class="ei">₹</div><div class="et">No operational expenses yet</div><div class="es">Add the first rent, logistics, utility, or office expense from the form.</div></div>`;
+    return;
+  }
+  body.innerHTML=list.map((exp)=>{
+    const amount=parseFloat(exp.amount)||0;
+    const notes=String(exp.notes||'').trim();
+    return `<div style="padding:14px 0;border-bottom:1px solid var(--border)">
+      <div style="display:flex;justify-content:space-between;gap:12px;align-items:flex-start">
+        <div style="min-width:0;flex:1">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <div style="font-weight:700">${esc(exp.title||'Expense')}</div>
+            ${expenseCategoryBadge(exp.category)}
+          </div>
+          <div style="font-size:12px;color:var(--text-3);margin-top:4px">${expenseMetaLine(exp)}</div>
+          ${notes?`<div style="font-size:12.5px;color:var(--text);margin-top:8px;line-height:1.45">${esc(notes)}</div>`:''}
+        </div>
+        <div style="font-family:'Syne',sans-serif;font-size:22px;font-weight:700;white-space:nowrap">₹${amount.toFixed(2)}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function saveOperationalExpense(){
+  if(!hasPageAccess('expenses')){ toast('Expenses access is restricted','err'); return; }
+  if(!hasActionAccess('expenses','create')){ toast('Recording expenses is restricted','err'); return; }
+  const title=(g('opx-title')?.value||'').trim();
+  const category=operationalExpenseCategoryValue();
+  const amount=parseFloat(g('opx-amount')?.value||0);
+  const notes=(g('opx-notes')?.value||'').trim();
+  if(!title){ toast('Enter an expense title','err'); return; }
+  if(!Number.isFinite(amount) || amount<=0){ toast('Enter a valid expense amount','err'); return; }
+  try{
+    const record=await api.post('/api/operational-expenses',{title,category,amount,notes,expenseAt:operationalExpenseTimestamp()});
+    S.operationalExpenses=Array.isArray(S.operationalExpenses)?S.operationalExpenses:[];
+    S.operationalExpenses.unshift(record);
+    S.exid=(parseInt(S.exid,10)||1)+1;
+    if(g('opx-title')) g('opx-title').value='';
+    if(g('opx-category')) g('opx-category').value='';
+    if(g('opx-category-custom')) g('opx-category-custom').value='';
+    if(g('opx-amount')) g('opx-amount').value='';
+    if(g('opx-notes')) g('opx-notes').value='';
+    if(g('opx-date')) g('opx-date').value=todayISO();
+    rOperationalExpenses();
+    toast('Operational expense recorded','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
+
 // ─── STOCK ALERTS (from Inventory app on port 8001) ──────────────────────────
 let stockAlerts = [];   // populated by pollStockAlerts()
 let inventorySnapshot = [];
@@ -3888,12 +4100,13 @@ async function rUsersSettings(){
     body.innerHTML=`<div style="font-size:12.5px;color:var(--red)">Could not load users: ${esc(e.message)}</div>`;
   }
 }
-const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',customers:'Customers',settings:'Settings'};
+const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',expenses:'Expenses',customers:'Customers',settings:'Settings'};
 const USER_CARD_LABELS={revenue:'Revenue',profit:'Profit',momChange:'MoM Change',analytics:'Analytics',avgOrderValue:'Avg Order Value',inventoryMoved:'Inventory Moved',customers:'Customers',alerts:'Alerts'};
 const USER_ACTION_LABELS={
   customers:{create:'Create customers',edit:'Edit customers',delete:'Delete customers'},
   orders:{create:'Create orders',edit:'Edit orders',delete:'Delete orders'},
   distribution:{create:'Create batches',edit:'Edit batches',delete:'Delete batches',complete:'Complete batches'},
+  expenses:{create:'Record expenses'},
   products:{create:'Create products',edit:'Edit products',delete:'Delete products'},
   settings:{view:'View settings',manage:'Manage settings'},
   marketing:{view:'View marketing',generate:'Generate AI marketing'},
@@ -4420,13 +4633,15 @@ async function loadApplicationData(){
   applyTheme(S?.uiPreferences?.theme||'light');
   if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
   if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
+  if(!Array.isArray(S.operationalExpenses)) S.operationalExpenses=[];
   setCustomerFiltersExpanded(false);
   ensureUserManagementUi();
   applyPermissionUI();
-  updBadge(); rDash(); populateProdSelect(); setDefaultDate(); resetCompositionBuilder(); refreshVariantBuilderUI();
+  updBadge(); rDash(); populateProdSelect(); setDefaultDate(); setOperationalExpenseDateDefault(); resetCompositionBuilder(); refreshVariantBuilderUI();
   ensureFullDataLoaded().then(()=>{
     if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
     if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
+    if(!Array.isArray(S.operationalExpenses)) S.operationalExpenses=[];
     AUTH_STATE=S?.authContext||AUTH_STATE;
     enterAppMode();
     applyPermissionUI();

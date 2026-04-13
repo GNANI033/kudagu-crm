@@ -120,27 +120,34 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
    SIDEBAR — desktop/tablet
 ══════════════════════════════════════════════════════════════════════════ */
 .sidebar {
-  width: 216px; flex-shrink: 0; background: var(--surface);
+  width: 204px; flex-shrink: 0; background: var(--surface);
   border-right: 1px solid var(--border);
   display: flex; flex-direction: column;
   position: fixed; top: 0; left: 0; bottom: 0; z-index: 100;
 }
-.sb-logo { padding: 22px 20px 18px; border-bottom: 1px solid var(--border); }
-.sb-brand { font-family: 'Syne', sans-serif; font-size: 15px; font-weight: 800; color: var(--text); letter-spacing: -.01em; line-height: 1; }
+.sb-logo { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
+.sb-brand { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 800; color: var(--text); letter-spacing: -.01em; line-height: 1; }
 .sb-brand span { color: var(--text-3); font-weight: 400; }
-.sb-tag { font-size: 10.5px; color: var(--text-3); margin-top: 3px; letter-spacing: .05em; text-transform: uppercase; }
-.sb-nav { padding: 10px 8px; flex: 1; overflow-y: auto; }
-.sb-sect { font-size: 10px; font-weight: 700; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; padding: 10px 10px 5px; margin-top: 4px; }
+.sb-tag { font-size: 10px; color: var(--text-3); margin-top: 2px; letter-spacing: .05em; text-transform: uppercase; }
+.sb-nav {
+  padding: 8px 8px 10px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sb-nav::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.sb-sect { font-size: 9.5px; font-weight: 700; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; padding: 8px 10px 4px; margin-top: 2px; }
 .nb {
-  display: flex; align-items: center; gap: 9px; padding: 8px 10px;
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
   border-radius: var(--r-sm); cursor: pointer; color: var(--text-2);
-  font-size: 13px; font-weight: 500; transition: all .15s;
+  font-size: 12.5px; font-weight: 500; transition: all .15s;
   border: none; background: none; width: 100%; text-align: left; position: relative;
-  min-height: 36px;
+  min-height: 34px;
 }
 .nb:hover { background: var(--surface-2); color: var(--text); }
 .nb.active { background: var(--accent); color: #fff; }
-.nb-ic { width: 15px; text-align: center; font-size: 13px; flex-shrink: 0; line-height: 1; }
+.nb-ic { width: 15px; text-align: center; font-size: 12px; flex-shrink: 0; line-height: 1; }
 .n-badge {
   margin-left: auto; background: var(--red); color: #fff;
   font-size: 10px; font-weight: 700; min-width: 17px; height: 17px;
@@ -175,14 +182,12 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
    MAIN CONTENT
 ══════════════════════════════════════════════════════════════════════════ */
 .main { margin-left: 0; flex: 1; width: 100%; max-width: 100%; padding: 36px 40px; min-width: 0; }
+@media (min-width: 1024px) {
+  .main { margin-left: 204px; max-width: calc(100% - 204px); }
+}
 .view { display: none; animation: fadeUp .2s ease; min-width: 0; }
 .view.active { display: block; }
 @keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
-
-/* Desktop-only sidebar offset */
-@media (min-width: 1024px) {
-  .main { margin-left: 216px; max-width: calc(100% - 216px); }
-}
 
 /* ─── PAGE HEADER ───────────────────────────────────────────────────────── */
 .ph { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 26px; }
@@ -853,6 +858,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
     <button class="nb" onclick="nav('marketing')"><span class="nb-ic">✦</span><span>Marketing</span></button>
     <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
+    <button class="nb" onclick="nav('expenses')"><span class="nb-ic">₹</span><span>Expenses</span></button>
     <div class="sb-sect">People</div>
     <button class="nb" onclick="nav('customers')"><span class="nb-ic">◉</span><span>Customers</span></button>
     <div class="sb-sect">Config</div>
@@ -1057,6 +1063,52 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     </div>
   </div>
 
+  <!-- OPERATIONAL EXPENSES -->
+  <div class="view" id="view-expenses">
+    <div class="ph">
+      <div><div class="ph-title">Operational Expenses</div><div class="ph-sub" id="opx-sub">Track non-order operating spend</div></div>
+    </div>
+    <div class="stats-merged" id="opx-stats" style="margin-bottom:14px"></div>
+    <div class="two">
+      <div class="card">
+        <div class="ch"><div class="ct">Record Expense</div></div>
+        <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+          <div class="fr">
+            <div class="fg">
+              <label>Expense Title <span class="req">*</span></label>
+              <input id="opx-title" type="text" placeholder="e.g. Courier fuel reimbursement">
+            </div>
+            <div class="fg">
+              <label>Category</label>
+              <select id="opx-category" onchange="toggleOperationalExpenseCategoryInput()"></select>
+              <input id="opx-category-custom" type="text" placeholder="Enter new category" style="display:none;margin-top:8px">
+            </div>
+          </div>
+          <div class="fr">
+            <div class="fg">
+              <label>Amount <span class="req">*</span></label>
+              <div class="input-prefix"><span>₹</span><input id="opx-amount" type="number" min="0" step="0.01" placeholder="0"></div>
+            </div>
+            <div class="fg">
+              <label>Expense Date</label>
+              <input id="opx-date" type="date">
+              <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Recorded time and user are captured automatically.</div>
+            </div>
+          </div>
+          <div class="fg">
+            <label>Notes</label>
+            <textarea id="opx-notes" rows="4" placeholder="Add vendor, reason, receipt reference, or any internal note"></textarea>
+          </div>
+          <button class="btn btn-p btn-full" id="opx-save-btn" onclick="saveOperationalExpense()">Record Expense</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ch"><div class="ct">Recent Expenses</div></div>
+        <div class="cb" id="opx-body"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- MARKETING -->
   <div class="view" id="view-marketing">
     <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Group campaigns with AI template + semi-automated WhatsApp flow</div></div></div>
@@ -1218,6 +1270,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
         <button class="smenu-item" data-panel="wa-messages" onclick="sPanel('wa-messages')">WA Messages</button>
         <button class="smenu-item" data-panel="marketing-ai" onclick="sPanel('marketing-ai')">Marketing AI</button>
         <button class="smenu-item" data-panel="shipping" onclick="sPanel('shipping')">Shipping</button>
+        <button class="smenu-item" data-panel="faq" onclick="sPanel('faq')">FAQ / Help</button>
       </div>
       <div>
         <div class="settings-panel active" id="sp-products"><div id="prod-list-container"></div></div>
@@ -1424,6 +1477,82 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
             </div>
           </div>
         </div>
+        <div class="settings-panel" id="sp-faq">
+          <div class="card">
+            <div class="ch"><div class="ct">FAQ / Help</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:18px">
+              <div style="font-size:12.5px;color:var(--text-3)">Use this page as a quick guide to the main settings areas and the keyboard shortcuts available in the CRM.</div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Keyboard Shortcuts</div>
+                <div class="user-check-grid">
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="font-weight:700"><code>R</code> Record Sale</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Opens the sale form and focuses customer search.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="font-weight:700"><code>A</code> Add Customer</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Opens the add-customer popup directly.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="font-weight:700"><code>S</code> Settings</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Jumps straight to the Settings page.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="font-weight:700"><code>Enter</code> in Customer Search</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">While recording a sale, picks the top customer suggestion without needing the mouse.</div>
+                    </div>
+                  </div>
+                </div>
+                <div style="font-size:12px;color:var(--text-3)">Shortcuts work only when you are not typing inside a field or modal.</div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Settings Explained</div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Products / Services</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Create products, define variants, set sale prices, add per-pack expenses, configure reorder cycles, and link inventory composition.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Appearance</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Changes the overall visual theme of the CRM for day or night usage.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">WA Messages</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Controls the WhatsApp templates used for reorder reminders, with optional product-specific custom messages.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Marketing AI</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Lets you set the AI endpoint, model, and prompt rules used for marketing draft generation.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Shipping</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Stores sender details, courier rules, tracking templates, and shipped-message settings for shipping labels.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Quick Workflow Tips</div>
+                <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2);font-size:12.5px;color:var(--text-3);line-height:1.65">
+                  Use <code>R</code> from the dashboard when you want to log a sale quickly.
+                  <br><br>
+                  In the sale form, type the customer name and press <code>Enter</code> to select the top suggestion instantly.
+                  <br><br>
+                  Keep product variant pricing and reorder-cycle settings updated, because those values affect summaries and follow-up timing across the CRM.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -1453,6 +1582,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   <button class="bnav-item" id="bnav-distribution" onclick="nav('distribution')">
     <span class="bnav-icon">◫</span>
     <span>Dist</span>
+  </button>
+  <button class="bnav-item" id="bnav-expenses" onclick="nav('expenses')">
+    <span class="bnav-icon">₹</span>
+    <span>Spend</span>
   </button>
   <button class="bnav-item" id="bnav-customers" onclick="nav('customers')">
     <span class="bnav-icon">◉</span>
