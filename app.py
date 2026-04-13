@@ -2052,6 +2052,18 @@ async def serve_index():
     return FileResponse(str(index))
 
 
+@app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+async def healthcheck():
+    return JSONResponse(
+        {"ok": True, "service": "crm"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Robots-Tag": "noindex, nofollow",
+        },
+    )
+
+
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     data = read_data()

@@ -139,6 +139,7 @@ Note: internet data charges and any third-party AI provider/API usage costs stil
 Main routes:
 
 - `GET /` -> CRM web app
+- `GET /healthz` -> minimal health check for uptime monitoring
 - `GET /api/data` -> full application state
 - `PUT /api/data` -> replace full state
 - `GET /api/bootstrap` -> initial dashboard bootstrap
@@ -158,6 +159,7 @@ Main routes:
 ## API Overview (Inventory Service)
 
 - `GET /` -> Inventory web app
+- `GET /healthz` -> minimal health check for uptime monitoring
 - `GET /api/stock` -> stock snapshot (used by CRM alerts)
 - `GET /api/data`, `PUT /api/data`
 - `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}`
@@ -177,6 +179,9 @@ Main routes:
 - Use a reverse proxy (Nginx/Caddy) in front of the app(s).
 - Terminate TLS at the proxy.
 - Restrict access with Basic Auth, SSO, VPN, or IP allowlists.
+- Exempt only the health endpoints from proxy auth if your uptime monitor cannot send credentials:
+  CRM -> `https://your-domain/healthz`
+  Inventory behind `/inventory/` -> `https://your-domain/inventory/healthz`
 - Back up SQLite files regularly.
 - Run each app under a process manager (systemd, supervisord, container runtime).
 

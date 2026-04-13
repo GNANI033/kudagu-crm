@@ -297,6 +297,19 @@ async def index():
         raise HTTPException(404, "index.html not found in inventory/static/")
     return FileResponse(str(idx))
 
+
+@app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+async def healthcheck():
+    return JSONResponse(
+        {"ok": True, "service": "inventory"},
+        headers={
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
+            "X-Robots-Tag": "noindex, nofollow",
+        },
+    )
+
+
 # ── Public stock summary (consumed by CRM) ────────────────────────────────────
 @app.get("/api/stock")
 async def get_stock():
