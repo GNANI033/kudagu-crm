@@ -9,7 +9,6 @@
 // ─── CONSTANTS ───────────────────────────────────────────────────────────────
 const DEFAULT_SIZES = ['100g','250g','500g','1kg'];
 const VL  = {'100g':'100g','250g':'250g','500g':'500g','1kg':'1 kg'};
-const W   = {'100g':7,'250g':10,'500g':14,'1kg':30,'1l':30,'1pcs':7};
 const SIZE_GRAMS = {'100g':100,'250g':250,'500g':500,'1kg':1000};
 
 const CHANNELS = [
@@ -384,10 +383,9 @@ function variantToGrams(v){
   }
   return 0;
 }
-function variantCycleDays(v){
+function defaultVariantCycleDays(v){
   const raw=String(v||'').trim();
   if(!raw) return 10;
-  if(Number.isFinite(W[raw])) return W[raw];
   const m=raw.toLowerCase().match(/^([0-9]*\.?[0-9]+)\s*(kg|g|l|ml|pcs)\s*$/i);
   if(!m) return 10;
   const n=parseFloat(m[1]||0);
@@ -416,6 +414,17 @@ function variantCycleDays(v){
     return 30;
   }
   return 10;
+}
+function variantCycleDays(pidOrProduct,v){
+  const prod=typeof pidOrProduct==='string'
+    ? (S?.products||[]).find(p=>p.id===pidOrProduct)
+    : pidOrProduct;
+  const variant=v;
+  const raw=String(variant||'').trim();
+  const pricing=(prod&&prod.pricing&&prod.pricing[raw])||null;
+  const configured=parseInt(pricing?.reorderCycleDays,10);
+  if(Number.isFinite(configured) && configured>0) return configured;
+  return defaultVariantCycleDays(raw);
 }
 function variantIdToken(v){
   return encodeURIComponent(String(v||''));
@@ -2197,7 +2206,7 @@ function populateProdSelect(){
 }
 function onProdChange(){ const pid=g('ps').value;selV=null;if(!pid){g('vr-row').innerHTML='';refreshSum();return;}
   const prod=S.products.find(p=>p.id===pid);
-  g('vr-row').innerHTML=(prod.sizes||DEFAULT_SIZES).map(sz=>`<button class="vb" data-v="${sz}" onclick="pickV('${sz}')"><span class="vs">${VL[sz]||sz}</span><span class="vh">~${variantCycleDays(sz)}d cycle</span></button>`).join('');
+  g('vr-row').innerHTML=(prod.sizes||DEFAULT_SIZES).map(sz=>`<button class="vb" data-v="${sz}" onclick="pickV('${sz}')"><span class="vs">${VL[sz]||sz}</span><span class="vh">~${variantCycleDays(prod,sz)}d cycle</span></button>`).join('');
   refreshSum();
 }
 function pickV(v){ selV=v;document.querySelectorAll('.vb').forEach(b=>b.classList.remove('on'));const b=document.querySelector(`[data-v="${v}"]`);if(b)b.classList.add('on');refreshSum(); }
@@ -2223,7 +2232,7 @@ function refreshSum(){
   if(!selC||!pid||!selV){box.style.display='none';return;}
   box.style.display='block';
   const prod=S.products.find(p=>p.id===pid);
-  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV),ad=variantCycleDays(selV)*qty;
+  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV),ad=variantCycleDays(prod,selV)*qty;
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
   let priceRows='';
@@ -3118,7 +3127,7 @@ function getAlerts(){
     const cust=S.customers.find(c=>c.id==cid);if(!cust)return;
     const n=orders.length;let ad,mode,avg=null;
     if(n>=5){const gaps=[];for(let i=0;i<Math.min(n-1,5);i++)gaps.push((orders[i].at-orders[i+1].at)/864e5);avg=Math.round(gaps.reduce((a,b)=>a+b,0)/gaps.length);ad=Math.round(avg*.9);mode='smart';}
-    else{ad=variantCycleDays(last.variant)*last.qty;mode='def';}
+    else{ad=variantCycleDays(last.prodId,last.variant)*last.qty;mode='def';}
     const dl=ad-(now-last.at)/864e5;
     const key=`${cust.id}:${last.id}`;
     if(dl<=3 && !closedSet.has(key))alerts.push({cust,last,dl:Math.round(dl),mode,avg,n});
@@ -4116,10 +4125,11 @@ function buildSizePanel(p,sz,isActive){
   const tk=variantIdToken(sz);
   const pr=(p.pricing&&p.pricing[sz])||{salePrices:{retail:0,website:0,whatsapp:0},expenses:[]};
   const sp=pr.salePrices||{retail:0,website:0,whatsapp:0};
+  const reorderCycleDays=parseInt(pr.reorderCycleDays,10)>0?parseInt(pr.reorderCycleDays,10):defaultVariantCycleDays(sz);
   const exRows=(pr.expenses||[]).map((e,i)=>buildExpRow(p.id,sz,i,e.name,e.cost)).join('');
   const tc=(pr.expenses||[]).reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
   const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${tk}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
-  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div id="expenses-${p.id}-${tk}">${exRows}</div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
+  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="fr" style="margin-bottom:18px"><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label">Cost / Expenses per pack</div><div id="expenses-${p.id}-${tk}">${exRows}</div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
 }
 function buildMarginHTML(pid,sz,tc,sp){
   const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0;if(!price)return'';const margin=price-tc,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label}</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
@@ -4132,7 +4142,7 @@ function getExpRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let i=0;w
 function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const exp=getExpRows(pid,sz);const tc=exp.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tc,sp); }
 function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-${pid}-${tk}`);const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,'','');c.appendChild(d.firstChild);calcMargin(pid,sz); }
 function removeExpRow(pid,sz,idx){ const tk=variantIdToken(sz);const el=g(`er-${pid}-${tk}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
-async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}prod.pricing[sz]={salePrices,expenses:getExpRows(pid,sz)};try{await api.put(`/api/products/${pid}`,{pricing:prod.pricing});toast(`Saved ${prod.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
+async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}prod.pricing[sz]={salePrices,expenses:getExpRows(pid,sz),reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
 function getCompositionRows(){
   const rows=[];
   document.querySelectorAll('#np-comp-rows .comp-row').forEach((row)=>{

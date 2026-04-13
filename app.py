@@ -67,7 +67,7 @@ DASHBOARD_CACHE_LOCK = threading.RLock()
 DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 AUTH_COOKIE_NAME = "kudagu_crm_session"
 PASSWORD_HASH_ITERATIONS = 310_000
 AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
@@ -240,6 +240,105 @@ def _normalize_product_access(values: Any, known_products: list[dict]) -> list[s
         seen.add(pid)
         out.append(pid)
     return out
+
+
+def _default_variant_cycle_days(variant: Any) -> int:
+    raw = str(variant or "").strip().lower()
+    if not raw:
+        return 10
+    match = re.match(r"^([0-9]*\.?[0-9]+)\s*(kg|g|l|ml|pcs)\s*$", raw)
+    if not match:
+        return 10
+    try:
+        qty = float(match.group(1) or 0)
+    except (TypeError, ValueError):
+        return 10
+    unit = str(match.group(2) or "").lower()
+    if qty <= 0:
+        return 10
+    if unit in {"kg", "g"}:
+        grams = qty * 1000 if unit == "kg" else qty
+        if grams <= 120:
+            return 7
+        if grams <= 300:
+            return 10
+        if grams <= 600:
+            return 14
+        if grams <= 1200:
+            return 30
+        return 45
+    if unit in {"l", "ml"}:
+        ml = qty * 1000 if unit == "l" else qty
+        if ml <= 120:
+            return 7
+        if ml <= 300:
+            return 10
+        if ml <= 600:
+            return 14
+        if ml <= 1200:
+            return 30
+        return 45
+    if unit == "pcs":
+        if qty <= 1:
+            return 7
+        if qty <= 3:
+            return 14
+        if qty <= 6:
+            return 21
+        return 30
+    return 10
+
+
+def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> dict:
+    if not isinstance(pricing, dict):
+        pricing = {}
+    normalized: dict[str, dict] = {}
+    size_values = [str(s or "").strip() for s in (sizes or []) if str(s or "").strip()]
+    for size, raw_row in pricing.items():
+        key = str(size or "").strip()
+        if not key:
+            continue
+        row = raw_row if isinstance(raw_row, dict) else {}
+        sale_prices = row.get("salePrices") or {}
+        if "salePrice" in row and "salePrices" not in row:
+            old = row.get("salePrice")
+            sale_prices = {"retail": old, "website": old, "whatsapp": old}
+        normalized_row = {
+            "salePrices": {
+                "retail": _safe_float((sale_prices or {}).get("retail")),
+                "website": _safe_float((sale_prices or {}).get("website")),
+                "whatsapp": _safe_float((sale_prices or {}).get("whatsapp")),
+            },
+            "expenses": [],
+            "reorderCycleDays": _default_variant_cycle_days(key),
+        }
+        expenses = row.get("expenses") or []
+        if isinstance(expenses, list):
+            normalized_row["expenses"] = [
+                {
+                    "name": str(e.get("name") or "").strip(),
+                    "cost": _safe_float(e.get("cost")),
+                }
+                for e in expenses
+                if isinstance(e, dict) and (str(e.get("name") or "").strip() or _safe_float(e.get("cost")) > 0)
+            ]
+        reorder_cycle_days = row.get("reorderCycleDays")
+        try:
+            reorder_cycle_days = int(float(reorder_cycle_days))
+        except (TypeError, ValueError):
+            reorder_cycle_days = normalized_row["reorderCycleDays"]
+        normalized_row["reorderCycleDays"] = reorder_cycle_days if reorder_cycle_days > 0 else normalized_row["reorderCycleDays"]
+        normalized[key] = normalized_row
+    for size in size_values:
+        normalized.setdefault(
+            size,
+            {
+                "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
+                "expenses": [],
+                "reorderCycleDays": _default_variant_cycle_days(size),
+            },
+        )
+    return normalized
 
 
 def _normalize_username(value: Any) -> str:
@@ -461,7 +560,12 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
         ]
     if not _has_financial_access(user):
         for product in safe.get("products", []):
-            product["pricing"] = {}
+            pricing = product.get("pricing") or {}
+            product["pricing"] = {
+                str(size): {"reorderCycleDays": _safe_float((row or {}).get("reorderCycleDays"))}
+                for size, row in pricing.items()
+                if isinstance(row, dict)
+            }
         for order in safe.get("orders", []):
             order["discount"] = None
             order["commission"] = None
@@ -755,15 +859,7 @@ def migrate(data: dict) -> dict:
         if "pricing" not in p:
             p["pricing"] = {}
         p["composition"] = _normalize_composition(p.get("composition", []))
-        for sz, pr in p["pricing"].items():
-            if isinstance(pr, dict):
-                if "salePrice" in pr and "salePrices" not in pr:
-                    old = pr.pop("salePrice")
-                    pr["salePrices"] = {"retail": old, "website": old, "whatsapp": old}
-                if "salePrices" not in pr:
-                    pr["salePrices"] = {"retail": 0, "website": 0, "whatsapp": 0}
-                if "expenses" not in pr:
-                    pr["expenses"] = []
+        p["pricing"] = _normalize_product_pricing(p.get("pricing", {}), p.get("sizes", []))
 
     # Ensure all orders have required fields
     for o in data["orders"]:
@@ -2756,7 +2852,7 @@ async def add_product(request: Request):
         "name":    body["name"],
         "sizes":   body["sizes"],
         "waTpl":   body.get("waTpl", ""),
-        "pricing": body.get("pricing", {}),
+        "pricing": _normalize_product_pricing(body.get("pricing", {}), body.get("sizes", [])),
         "composition": _normalize_composition(body.get("composition", [])),
     }
     data["products"].append(product)
@@ -2777,9 +2873,14 @@ async def update_product(product_id: str, request: Request):
     if idx is None:
         raise HTTPException(status_code=404, detail="Product not found")
     # Merge — only update provided keys
-    for key in ("name", "sizes", "waTpl", "pricing"):
+    for key in ("name", "sizes", "waTpl"):
         if key in body:
             data["products"][idx][key] = body[key]
+    if "pricing" in body or "sizes" in body:
+        data["products"][idx]["pricing"] = _normalize_product_pricing(
+            body.get("pricing", data["products"][idx].get("pricing", {})),
+            data["products"][idx].get("sizes", []),
+        )
     if "composition" in body:
         data["products"][idx]["composition"] = _normalize_composition(body.get("composition", []))
     write_data(data)
