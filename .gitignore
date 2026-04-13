@@ -12,3 +12,4 @@ data.json
 *.sqlite-journal
 __pycache__/
 inventory/__pycache__/
+ui_prefs.json
