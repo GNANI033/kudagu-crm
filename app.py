@@ -54,6 +54,7 @@ DB_FILE = BASE_DIR / "data.sqlite3"
 LEGACY_DATA_FILE = BASE_DIR / "data.json"
 STATE_KEY = "root"
 STATIC_DIR = BASE_DIR / "static"
+ASSETS_DIR = BASE_DIR / "assets"
 UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
@@ -2041,6 +2042,8 @@ if not STATIC_DIR.exists():
     STATIC_DIR.mkdir(parents=True)
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
 
 
 # ── Index route — serves the SPA ──────────────────────────────────────────
