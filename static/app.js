@@ -2255,12 +2255,11 @@ function rCustomers(){
         ${c.email?`<div class="cmr"><span class="cmi">@</span>${esc(c.email)}</div>`:''}
         ${c.address?`<div class="cmr" style="font-size:11.5px"><span class="cmi">⌂</span>${esc(c.address)}</div>`:''}
         ${c.notes?`<div class="cmr" style="font-size:11.5px"><span class="cmi">✎</span>${esc(c.notes)}</div>`:''}
+        ${tags.length?`<div class="cmr" style="font-size:11.5px;display:block"><span class="cmi">#</span><span style="display:inline-flex;gap:6px;flex-wrap:wrap;vertical-align:top;max-width:calc(100% - 18px)">${tags.map(tag=>`<span class="pill pn" style="font-size:11px;padding:4px 8px">${esc(tag)}</span>`).join('')}</span></div>`:''}
       </div>
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
         <span class="pill pn">${orderTag}</span>
-        ${tags.slice(0,2).map(tag=>`<span class="pill pn">${esc(tag)}</span>`).join('')}
-        ${tags.length>2?`<span class="pill pn">+${tags.length-2} tags</span>`:''}
         ${oc>=5?`<span class="pill pg">Smart alerts on</span>`:`<span class="pill pn">${oc}/5 for smart</span>`}
       </div>
     </div>`;
