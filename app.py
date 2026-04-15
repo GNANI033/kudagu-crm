@@ -1295,6 +1295,9 @@ def _parse_excel_contacts(file_bytes: bytes) -> list[dict]:
         area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
         email = _guess_row_value(row, ["email", "mail", "emailid"])
         address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        notes = _guess_row_value(row, ["notes", "note", "remarks", "comment"])
+        tags_raw = _guess_row_value(row, ["tags", "tag", "producttags", "customertags"])
+        source = _guess_row_value(row, ["source"])
         contacts.append(
             {
                 "name": name.strip(),
@@ -1302,6 +1305,9 @@ def _parse_excel_contacts(file_bytes: bytes) -> list[dict]:
                 "area": area.strip(),
                 "email": email.strip(),
                 "address": address.strip(),
+                "notes": notes.strip(),
+                "productTags": _normalize_customer_product_tags(re.split(r"[,\n;|]+", tags_raw)) if tags_raw else [],
+                "source": source.strip() or "bulk_import",
             }
         )
     return contacts
@@ -1319,6 +1325,9 @@ def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
         area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
         email = _guess_row_value(row, ["email", "mail", "emailid"])
         address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        notes = _guess_row_value(row, ["notes", "note", "remarks", "comment"])
+        tags_raw = _guess_row_value(row, ["tags", "tag", "producttags", "customertags"])
+        source = _guess_row_value(row, ["source"])
         contacts.append(
             {
                 "name": name.strip(),
@@ -1326,6 +1335,9 @@ def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
                 "area": area.strip(),
                 "email": email.strip(),
                 "address": address.strip(),
+                "notes": notes.strip(),
+                "productTags": _normalize_customer_product_tags(re.split(r"[,\n;|]+", tags_raw)) if tags_raw else [],
+                "source": source.strip() or "bulk_import",
             }
         )
     return contacts
@@ -2550,8 +2562,9 @@ async def import_customers(request: Request):
             area=area,
             email=row.get("email", ""),
             address=row.get("address", ""),
+            notes=row.get("notes", ""),
             at=int(time.time() * 1000),
-            source="bulk_import",
+            source=row.get("source", "bulk_import"),
             import_batch_id=import_batch_id,
             created_by_user=ctx.get("user"),
             product_tags=row.get("productTags", []),
@@ -2572,6 +2585,76 @@ async def import_customers(request: Request):
         "skipped": skipped,
         "customers": created,
     }
+
+
+@app.post("/api/customers/export")
+async def export_customers(request: Request):
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excel export requires openpyxl: {exc}") from exc
+    body = await request.json()
+    data = read_data()
+    _require_admin(request, data)
+    customer_ids_raw = body.get("customerIds")
+    if not isinstance(customer_ids_raw, list) or not customer_ids_raw:
+        raise HTTPException(status_code=400, detail="customerIds is required.")
+    selected_ids: list[int] = []
+    for raw in customer_ids_raw:
+        try:
+            cid = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0:
+            selected_ids.append(cid)
+    if not selected_ids:
+        raise HTTPException(status_code=400, detail="No valid customerIds provided.")
+
+    selected = [c for c in data.get("customers", []) if int(c.get("id") or 0) in set(selected_ids)]
+    if not selected:
+        raise HTTPException(status_code=404, detail="No matching customers found.")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Customers"
+    headers = [
+        "Name",
+        "Phone",
+        "Area",
+        "Email",
+        "Address",
+        "Notes",
+        "Tags",
+        "Source",
+    ]
+    ws.append(headers)
+    for customer in selected:
+        ws.append(
+            [
+                str(customer.get("name") or "").strip(),
+                str(customer.get("phone") or "").strip(),
+                str(customer.get("area") or "").strip(),
+                str(customer.get("email") or "").strip(),
+                str(customer.get("address") or "").strip(),
+                str(customer.get("notes") or "").strip(),
+                ", ".join(_normalize_customer_product_tags(customer.get("productTags", []))),
+                str(customer.get("source") or "manual").strip(),
+            ]
+        )
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 2, 12), 40)
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="customers-export-{ts}.xlsx"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 @app.delete("/api/customers/{customer_id}")

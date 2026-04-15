@@ -69,6 +69,7 @@ let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
 const CUSTOMERS_PAGE_SIZE = 24;
 let MARKETING_TAG_FILTERS = [];
+let CUSTOMER_EXPORT_SELECTION = [];
 let _lastActionEl = null;
 let _lastActionAt = 0;
 let _uiReqDepth = 0;
@@ -2077,6 +2078,109 @@ async function fileToBase64(file){
   const ab=await file.arrayBuffer();
   return bytesToBase64(new Uint8Array(ab));
 }
+function selectedCustomerExportIds(){
+  return CUSTOMER_EXPORT_SELECTION.map((id)=>parseInt(id,10)).filter((id)=>Number.isFinite(id)&&id>0);
+}
+function setCustomerExportSelection(ids){
+  CUSTOMER_EXPORT_SELECTION=Array.from(new Set((ids||[]).map((id)=>parseInt(id,10)).filter((id)=>Number.isFinite(id)&&id>0)));
+}
+function toggleCustomerExportSelection(id, checked){
+  const numeric=parseInt(id,10);
+  if(!Number.isFinite(numeric) || numeric<=0) return;
+  if(checked) setCustomerExportSelection([...CUSTOMER_EXPORT_SELECTION, numeric]);
+  else setCustomerExportSelection(CUSTOMER_EXPORT_SELECTION.filter((row)=>row!==numeric));
+}
+function syncCustomerExportButton(){
+  const btn=g('customers-export-btn');
+  if(btn) btn.style.display=hasActionAccess('users','manage')?'':'none';
+}
+function visibleCustomersForExport(){
+  const customers=getMarketingGroupCustomers();
+  return !CUSTOMER_NAME_SEARCH
+    ? customers
+    : customers.filter(c=>String(c.name||'').toLowerCase().includes(CUSTOMER_NAME_SEARCH));
+}
+function openCustomerExportModal(){
+  if(!hasActionAccess('users','manage')){ toast('Only admins can export customers','err'); return; }
+  const customers=visibleCustomersForExport();
+  if(!customers.length){ toast('No customers available to export in this view','err'); return; }
+  setCustomerExportSelection(selectedCustomerExportIds().filter((id)=>customers.some((c)=>Number(c.id)===id)));
+  openModal(`
+    <div class="modal-title">Export Customers</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap">
+        <div style="font-size:12.5px;color:var(--text-2)">Choose customers to export as Excel. This file can be imported back into the app.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button type="button" class="btn btn-s btn-sm" onclick="selectAllCustomerExports(true)">Select All</button>
+          <button type="button" class="btn btn-s btn-sm" onclick="selectAllCustomerExports(false)">Clear</button>
+        </div>
+      </div>
+      <div id="customer-export-list" style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:12px;padding:10px"></div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-p" style="flex:1" onclick="downloadSelectedCustomersExcel()">Download Excel</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>`,'lg');
+  renderCustomerExportList();
+}
+function renderCustomerExportList(){
+  const host=g('customer-export-list');
+  if(!host) return;
+  const customers=visibleCustomersForExport();
+  const selected=new Set(selectedCustomerExportIds());
+  host.innerHTML=customers.map((c)=>`
+    <label class="user-check-item" style="width:100%;justify-content:space-between">
+      <span style="display:flex;align-items:flex-start;gap:10px">
+        <input type="checkbox" ${selected.has(Number(c.id))?'checked':''} onchange="toggleCustomerExportSelection(${Number(c.id)}, this.checked)">
+        <span>
+          <div style="font-weight:700">${esc(c.name||'')}</div>
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(c.phone||'')} · ${esc(c.area||'')}</div>
+        </span>
+      </span>
+    </label>`).join('');
+}
+function selectAllCustomerExports(selectAll){
+  const customers=visibleCustomersForExport();
+  setCustomerExportSelection(selectAll ? customers.map((c)=>c.id) : []);
+  renderCustomerExportList();
+}
+async function downloadSelectedCustomersExcel(){
+  const ids=selectedCustomerExportIds();
+  if(!ids.length){ toast('Select at least one customer','err'); return; }
+  try{
+    const res=await fetch('/api/customers/export',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({customerIds:ids}),
+      credentials:'same-origin',
+    });
+    if(!res.ok){
+      const raw=await res.text();
+      let message=raw||`${res.status}`;
+      try{
+        const parsed=JSON.parse(raw);
+        if(parsed?.detail) message=String(parsed.detail);
+      }catch(_){}
+      throw new Error(message);
+    }
+    const blob=await res.blob();
+    const disposition=res.headers.get('Content-Disposition')||'';
+    const match=/filename=\"?([^\";]+)\"?/i.exec(disposition);
+    const fileName=match?.[1]||'customers-export.xlsx';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    closeModal();
+    toast('Customer export downloaded','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
 function openBulkImportModal(){
   openModal(`
     <div class="modal-title">Bulk Import Customers</div>
@@ -2240,6 +2344,7 @@ function openCustomerAnalytics(cid){
 
 function rCustomers(){
   const grid=g('cg');
+  syncCustomerExportButton();
   if(!MKT_GROUPS.length) loadMarketingGroups();
   refreshMarketingAreas();
   refreshMarketingProductTags();
