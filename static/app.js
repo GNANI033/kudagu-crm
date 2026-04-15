@@ -68,6 +68,7 @@ let ORDER_PAGES = { active: 1, completed: 1 };
 let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
 const CUSTOMERS_PAGE_SIZE = 24;
+let MARKETING_TAG_FILTERS = [];
 let _lastActionEl = null;
 let _lastActionAt = 0;
 let _uiReqDepth = 0;
@@ -1563,7 +1564,12 @@ function captureCurrentMarketingFilters(){
 function setMarketingFilters(f){
   if(g('mkt-f-has-orders')) g('mkt-f-has-orders').value=f?.hasOrders||'any';
   if(g('mkt-f-area')) g('mkt-f-area').value=f?.area||'any';
-  if(g('mkt-f-product-tag')) g('mkt-f-product-tag').value=f?.productTag||'any';
+  MARKETING_TAG_FILTERS = normalizeCustomerProductTags(
+    Array.isArray(f?.productTags)
+      ? f.productTags
+      : (f?.productTag && f.productTag !== 'any' ? [f.productTag] : [])
+  );
+  refreshMarketingProductTags();
   if(g('mkt-f-channel')) g('mkt-f-channel').value=f?.channel||'any';
   if(g('mkt-f-aov-mode')) g('mkt-f-aov-mode').value=f?.aovMode||'any';
   if(g('mkt-f-aov-value')) g('mkt-f-aov-value').value=(f?.aovValue ?? '')===0 ? '' : String(f?.aovValue ?? '');
@@ -1722,7 +1728,7 @@ function getMarketingFilters(){
   return {
     hasOrders:(g('mkt-f-has-orders')?.value||'any'),
     area:(g('mkt-f-area')?.value||'any'),
-    productTag:(g('mkt-f-product-tag')?.value||'any'),
+    productTags:[...MARKETING_TAG_FILTERS],
     channel:(g('mkt-f-channel')?.value||'any'),
     aovMode:(g('mkt-f-aov-mode')?.value||'any'),
     aovValue:parseFloat(g('mkt-f-aov-value')?.value||0)||0,
@@ -1745,7 +1751,10 @@ function getMarketingGroupCustomers(){
     if(f.hasOrders==='no' && hasOrders) return false;
     if(f.area!=='any' && String(c.area||'')!==f.area) return false;
     const productTags=normalizeCustomerProductTags(c.productTags||[]);
-    if(f.productTag!=='any' && !productTags.some(tag=>tag.toLowerCase()===String(f.productTag||'').toLowerCase())) return false;
+    if(Array.isArray(f.productTags) && f.productTags.length){
+      const selected=new Set(f.productTags.map(tag=>String(tag||'').toLowerCase()));
+      if(!productTags.some(tag=>selected.has(String(tag||'').toLowerCase()))) return false;
+    }
     if(f.channel!=='any'){
       const anyCh=orders.some(o=>String(o.channel||'').toLowerCase()===f.channel);
       if(!anyCh) return false;
@@ -1772,18 +1781,50 @@ function refreshMarketingAreas(){
   if(areas.includes(cur)) el.value=cur; else el.value='any';
 }
 function refreshMarketingProductTags(){
-  const el=g('mkt-f-product-tag');
-  if(!el) return;
+  const host=g('mkt-f-product-tag-picker');
+  if(!host) return;
   syncCustomerProductTagCatalog();
-  const cur=el.value||'any';
   const tags=getCustomerProductTagCatalog();
-  el.innerHTML=['<option value="any">All tags</option>',...tags.map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`)].join('');
-  if(tags.includes(cur)) el.value=cur; else el.value='any';
+  const available=tags.filter(tag=>!MARKETING_TAG_FILTERS.some(sel=>sel.toLowerCase()===tag.toLowerCase()));
+  host.innerHTML=`
+    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+      <select id="mkt-f-product-tag-select" style="flex:1;min-width:180px" onchange="addMarketingFilterTag(this.value);this.value=''">
+        <option value="">All tags</option>
+        ${available.map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`).join('')}
+      </select>
+      ${MARKETING_TAG_FILTERS.length?'<button type="button" class="btn btn-s btn-sm" onclick="clearMarketingFilterTags()">Clear</button>':''}
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+      ${MARKETING_TAG_FILTERS.length
+        ? MARKETING_TAG_FILTERS.map((tag,idx)=>`<span class="pill pn" style="display:inline-flex;align-items:center;gap:6px">${esc(tag)} <button type="button" class="btn btn-g btn-xs" style="min-height:auto;padding:1px 6px" onclick="removeMarketingFilterTag(${idx})">×</button></span>`).join('')
+        : '<span style="font-size:12px;color:var(--text-3)">No tag filter selected.</span>'}
+    </div>`;
+}
+function addMarketingFilterTag(tag){
+  const clean=String(tag||'').trim();
+  if(!clean) return;
+  MARKETING_TAG_FILTERS=normalizeCustomerProductTags([...MARKETING_TAG_FILTERS, clean]);
+  CUSTOMER_PAGE=1;
+  refreshMarketingProductTags();
+  refreshMarketingGroup();
+}
+function removeMarketingFilterTag(idx){
+  MARKETING_TAG_FILTERS=MARKETING_TAG_FILTERS.filter((_,i)=>i!==idx);
+  CUSTOMER_PAGE=1;
+  refreshMarketingProductTags();
+  refreshMarketingGroup();
+}
+function clearMarketingFilterTags(){
+  MARKETING_TAG_FILTERS=[];
+  CUSTOMER_PAGE=1;
+  refreshMarketingProductTags();
+  refreshMarketingGroup();
 }
 function buildMarketingGroupSummary(customers){
   const f=getMarketingFilters();
   const avgAov=customers.length?customers.reduce((s,c)=>s+avgOrderValueForCustomer(c.id),0)/customers.length:0;
-  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, tag=${f.productTag}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
+  const tagsLabel=Array.isArray(f.productTags) && f.productTags.length ? f.productTags.join(', ') : 'any';
+  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, tags=${tagsLabel}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
 }
 function refreshMarketingGroup(){
   const customers=getMarketingGroupCustomers();
