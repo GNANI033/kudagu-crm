@@ -72,6 +72,10 @@ SCHEMA_VERSION = 3
 AUTH_COOKIE_NAME = "kudagu_crm_session"
 PASSWORD_HASH_ITERATIONS = 310_000
 AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
+AUTH_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+AUTH_RATE_LIMIT_MAX_ATTEMPTS = 10
+AUTH_THROTTLE_LOCK = threading.Lock()
+AUTH_THROTTLE_STATE: dict[str, list[float]] = {}
 
 PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
 DASHBOARD_CARD_KEYS = (
@@ -450,20 +454,67 @@ def _delete_session(data: dict, token: str) -> None:
     data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if s.get("tokenHash") != hashed]
 
 
-def _set_auth_cookie(response: Response, token: str) -> None:
+def _delete_sessions_for_user(data: dict, user_id: int) -> None:
+    data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if int(s.get("userId") or 0) != int(user_id)]
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    forwarded_ssl = str(request.headers.get("x-forwarded-ssl") or "").strip().lower()
+    if forwarded_ssl in {"on", "1", "true", "yes"}:
+        return True
+    return str(request.url.scheme or "").lower() == "https"
+
+
+def _set_auth_cookie(response: Response, token: str, request: Request) -> None:
     response.set_cookie(
         AUTH_COOKIE_NAME,
         token,
         max_age=AUTH_SESSION_TTL_SECONDS,
         httponly=True,
         samesite="lax",
-        secure=False,
+        secure=_request_is_https(request),
         path="/",
     )
 
 
 def _clear_auth_cookie(response: Response) -> None:
     response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+
+
+def _auth_rate_limit_key(request: Request, username: Any) -> str:
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_host = forwarded_for or str((request.client.host if request.client else "") or "unknown")
+    return f"{client_host}::{_normalize_username(username)}"
+
+
+def _enforce_auth_rate_limit(request: Request, username: Any) -> str:
+    key = _auth_rate_limit_key(request, username)
+    now = time.time()
+    with AUTH_THROTTLE_LOCK:
+        attempts = [ts for ts in AUTH_THROTTLE_STATE.get(key, []) if now - ts <= AUTH_RATE_LIMIT_WINDOW_SECONDS]
+        AUTH_THROTTLE_STATE[key] = attempts
+        if len(attempts) >= AUTH_RATE_LIMIT_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication attempts. Please wait 15 minutes and try again.",
+            )
+    return key
+
+
+def _record_auth_failure(rate_limit_key: str) -> None:
+    now = time.time()
+    with AUTH_THROTTLE_LOCK:
+        attempts = [ts for ts in AUTH_THROTTLE_STATE.get(rate_limit_key, []) if now - ts <= AUTH_RATE_LIMIT_WINDOW_SECONDS]
+        attempts.append(now)
+        AUTH_THROTTLE_STATE[rate_limit_key] = attempts
+
+
+def _clear_auth_failures(rate_limit_key: str) -> None:
+    with AUTH_THROTTLE_LOCK:
+        AUTH_THROTTLE_STATE.pop(rate_limit_key, None)
 
 
 def _find_user_by_id(data: dict, user_id: Any) -> dict | None:
@@ -576,15 +627,38 @@ def _ensure_product_scope(user: dict | None, data: dict, product_id: Any) -> Non
         raise HTTPException(status_code=403, detail="Access denied for this product.")
 
 
-def _ensure_customer_scope(user: dict | None, data: dict, customer_id: Any) -> None:
+def _customer_owner_user_id(customer: dict | None) -> int:
+    if not isinstance(customer, dict):
+        return 0
+    try:
+        return int(customer.get("createdByUserId") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _visible_customer_ids_for_user(user: dict | None, data: dict) -> set[int] | None:
     allowed = _allowed_product_ids_for_user(user, data)
     if allowed is None:
-        return
+        return None
     visible_customer_ids = {
         int(o.get("cid") or 0)
         for o in data.get("orders", [])
         if int(o.get("cid") or 0) > 0 and str(o.get("prodId") or "") in allowed
     }
+    current_user_id = int((user or {}).get("id") or 0)
+    if current_user_id > 0:
+        visible_customer_ids.update(
+            int(c.get("id") or 0)
+            for c in data.get("customers", [])
+            if int(c.get("id") or 0) > 0 and _customer_owner_user_id(c) == current_user_id
+        )
+    return visible_customer_ids
+
+
+def _ensure_customer_scope(user: dict | None, data: dict, customer_id: Any) -> None:
+    visible_customer_ids = _visible_customer_ids_for_user(user, data)
+    if visible_customer_ids is None:
+        return
     try:
         cid = int(customer_id or 0)
     except (TypeError, ValueError):
@@ -600,7 +674,7 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
         safe["products"] = [p for p in safe.get("products", []) if str(p.get("id")) in allowed_product_ids]
         safe["orders"] = [o for o in safe.get("orders", []) if str(o.get("prodId")) in allowed_product_ids]
         safe["distributorBatches"] = [b for b in safe.get("distributorBatches", []) if str(b.get("prodId")) in allowed_product_ids]
-        allowed_customer_ids = {int(o.get("cid") or 0) for o in safe.get("orders", []) if int(o.get("cid") or 0) > 0}
+        allowed_customer_ids = _visible_customer_ids_for_user(user, data) or set()
         safe["customers"] = [c for c in safe.get("customers", []) if int(c.get("id") or 0) in allowed_customer_ids]
         safe["closedFollowUps"] = [
             r for r in safe.get("closedFollowUps", [])
@@ -1010,6 +1084,12 @@ def migrate(data: dict) -> dict:
         if "notes" not in c:
             c["notes"] = ""
         c["phone"] = _normalize_customer_phone(c.get("phone"))
+        try:
+            c["createdByUserId"] = int(c.get("createdByUserId") or 0)
+        except (TypeError, ValueError):
+            c["createdByUserId"] = 0
+        c["createdByUsername"] = str(c.get("createdByUsername") or "").strip()
+        c["createdByName"] = str(c.get("createdByName") or c.get("createdByUsername") or "").strip()
 
     normalized_users: list[dict] = []
     highest_uid = int(data.get("uid", 1) or 1)
@@ -1087,7 +1167,9 @@ def _build_customer(
     at: Any = None,
     source: str = "manual",
     import_batch_id: str = "",
+    created_by_user: dict | None = None,
 ) -> dict:
+    creator = created_by_user or {}
     return {
         "id": cid,
         "name": str(name or "").strip(),
@@ -1099,6 +1181,9 @@ def _build_customer(
         "at": at,
         "source": _normalize_customer_source(source),
         "importBatchId": str(import_batch_id or "").strip(),
+        "createdByUserId": int(creator.get("id") or 0),
+        "createdByUsername": str(creator.get("username") or "").strip(),
+        "createdByName": str(creator.get("displayName") or creator.get("username") or "").strip(),
     }
 
 
@@ -2085,14 +2170,18 @@ async def auth_setup(request: Request):
         raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
     body = await request.json()
     username = _normalize_username(body.get("username"))
+    rate_limit_key = _enforce_auth_rate_limit(request, username)
     password = str(body.get("password") or "")
     display_name = str(body.get("displayName") or username).strip() or username
     if len(username) < 3:
+        _record_auth_failure(rate_limit_key)
         raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
     if len(password) < 8:
+        _record_auth_failure(rate_limit_key)
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
     data = read_data()
     if any(str(u.get("role") or "admin") == "admin" for u in data.get("users", [])):
+        _record_auth_failure(rate_limit_key)
         raise HTTPException(status_code=400, detail="Initial setup is already complete.")
     user = _normalize_user_record(
         {"id": data.get("uid", 1), "username": username, "displayName": display_name, "role": "admin"},
@@ -2115,7 +2204,8 @@ async def auth_setup(request: Request):
             },
         }
     )
-    _set_auth_cookie(response, token)
+    _clear_auth_failures(rate_limit_key)
+    _set_auth_cookie(response, token, request)
     return response
 
 
@@ -2125,12 +2215,15 @@ async def auth_login(request: Request):
         raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
     body = await request.json()
     username = _normalize_username(body.get("username"))
+    rate_limit_key = _enforce_auth_rate_limit(request, username)
     password = str(body.get("password") or "")
     data = read_data()
     if not data.get("users"):
+        _record_auth_failure(rate_limit_key)
         raise HTTPException(status_code=403, detail="Initial setup is required before sign in.")
     user = _find_user_by_username(data, username)
     if not user or not _verify_password(password, str(user.get("passwordHash") or "")):
+        _record_auth_failure(rate_limit_key)
         raise HTTPException(status_code=401, detail="Invalid username or password.")
     token = _create_session(data, int(user["id"]))
     write_data(data)
@@ -2146,7 +2239,8 @@ async def auth_login(request: Request):
             },
         }
     )
-    _set_auth_cookie(response, token)
+    _clear_auth_failures(rate_limit_key)
+    _set_auth_cookie(response, token, request)
     return response
 
 
@@ -2234,6 +2328,7 @@ async def change_user_password(user_id: int, request: Request):
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
     user["passwordHash"] = _password_hash(password)
     user["updatedAt"] = int(time.time() * 1000)
+    _delete_sessions_for_user(data, int(user_id))
     write_data(data)
     return {"ok": True}
 
@@ -2319,7 +2414,12 @@ async def put_data(request: Request):
     _require_admin(request, data)
     if "products" not in body:
         raise HTTPException(status_code=400, detail="Missing 'products' key")
-    write_data(body)
+    merged = copy.deepcopy(data)
+    for key, value in body.items():
+        if key in {"users", "authSessions", "authContext"}:
+            continue
+        merged[key] = value
+    write_data(merged)
     return {"ok": True}
 
 
@@ -2345,6 +2445,7 @@ async def add_customer(request: Request):
         at=body.get("at"),
         source=body.get("source", "manual"),
         import_batch_id=body.get("importBatchId", ""),
+        created_by_user=ctx.get("user"),
     )
     data["customers"].append(customer)
     data["cid"] += 1
@@ -2437,6 +2538,7 @@ async def import_customers(request: Request):
             at=int(time.time() * 1000),
             source="bulk_import",
             import_batch_id=import_batch_id,
+            created_by_user=ctx.get("user"),
         )
         data["customers"].append(customer)
         created.append(customer)
@@ -2482,6 +2584,12 @@ async def add_order(request: Request):
     _ensure_page_access(ctx.get("user"), "sales")
     _ensure_action_access(ctx.get("user"), "orders", "create")
     _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
+    try:
+        customer_id = int(body.get("cid") or 0)
+    except (TypeError, ValueError):
+        customer_id = 0
+    if customer_id > 0:
+        _ensure_customer_scope(ctx.get("user"), data, customer_id)
     channel = body["channel"]
     default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
     order = {
@@ -2527,6 +2635,13 @@ async def update_order(order_id: int, request: Request):
     _ensure_product_scope(ctx.get("user"), data, data["orders"][idx].get("prodId"))
     if "prodId" in body:
         _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
+    if "cid" in body:
+        try:
+            next_customer_id = int(body.get("cid") or 0)
+        except (TypeError, ValueError):
+            next_customer_id = 0
+        if next_customer_id > 0:
+            _ensure_customer_scope(ctx.get("user"), data, next_customer_id)
     prev = copy.deepcopy(data["orders"][idx])
     for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution"):
         if key in body:

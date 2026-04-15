@@ -209,7 +209,7 @@ async function handleAuthFailure(){
   }catch(_){}
 }
 async function parseApiResponse(r){
-  if(r.status===401 || r.status===403){
+  if(r.status===401){
     await handleAuthFailure();
   }
   if(!r.ok){
