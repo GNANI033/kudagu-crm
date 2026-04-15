@@ -238,13 +238,18 @@ const THEME_OPTIONS = {
   solarized: 'Solarized',
   dracula: 'Dracula',
 };
+const THEME_STORAGE_KEY = 'kudagu-theme';
 function normalizeTheme(theme){
   const key=String(theme||'').trim().toLowerCase();
   return THEME_OPTIONS[key] ? key : 'light';
 }
+function persistTheme(theme){
+  try{ localStorage.setItem(THEME_STORAGE_KEY, normalizeTheme(theme)); }catch(_){}
+}
 function applyTheme(theme){
   const next=normalizeTheme(theme);
   document.documentElement.setAttribute('data-theme', next);
+  persistTheme(next);
   if(!S) S={};
   S.uiPreferences={...(S.uiPreferences||{}), theme: next};
   rThemeSettings();
@@ -553,6 +558,7 @@ async function getJSONWithTimeout(path, timeoutMs=1500){
 function emptyState(){
   return {
     customers: [],
+    customerProductTags: [],
     orders: [],
     products: [],
     distributorBatches: [],
@@ -570,6 +576,96 @@ function emptyState(){
     uiPreferences: { theme: 'light' },
     authContext: { ...AUTH_STATE },
   };
+}
+
+function normalizeCustomerProductTags(values){
+  const arr=Array.isArray(values)?values:[values];
+  const out=[];
+  const seen=new Set();
+  arr.forEach((raw)=>{
+    const name=String(raw||'').replace(/\s+/g,' ').trim();
+    if(!name) return;
+    const key=name.toLowerCase();
+    if(seen.has(key)) return;
+    seen.add(key);
+    out.push(name);
+  });
+  return out;
+}
+function getCustomerProductTagCatalog(){
+  return normalizeCustomerProductTags(S?.customerProductTags||[]);
+}
+function syncCustomerProductTagCatalog(extraTags=[]){
+  if(!S) S=emptyState();
+  const combined=[
+    ...(S.customerProductTags||[]),
+    ...((S.customers||[]).flatMap(c=>normalizeCustomerProductTags(c?.productTags||[]))),
+    ...normalizeCustomerProductTags(extraTags),
+  ];
+  S.customerProductTags=normalizeCustomerProductTags(combined);
+}
+const CUSTOMER_TAG_PICKERS={};
+function ensureCustomerTagPicker(prefix, initialTags=[]){
+  CUSTOMER_TAG_PICKERS[prefix]={selected:normalizeCustomerProductTags(initialTags), addingNew:false};
+  renderCustomerTagPicker(prefix);
+}
+function getCustomerTagPickerState(prefix){
+  if(!CUSTOMER_TAG_PICKERS[prefix]) CUSTOMER_TAG_PICKERS[prefix]={selected:[],addingNew:false};
+  return CUSTOMER_TAG_PICKERS[prefix];
+}
+function renderCustomerTagPicker(prefix){
+  const host=g(`${prefix}-tag-picker`);
+  if(!host) return;
+  const state=getCustomerTagPickerState(prefix);
+  const catalog=getCustomerProductTagCatalog().filter(tag=>!state.selected.some(sel=>sel.toLowerCase()===tag.toLowerCase()));
+  host.innerHTML=`
+    <div style="display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">
+      <select id="${prefix}-tag-select" style="flex:1;min-width:180px">
+        <option value="">Select existing tag...</option>
+        ${catalog.map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`).join('')}
+      </select>
+      <button type="button" class="btn btn-s btn-sm" onclick="addSelectedCustomerTag('${prefix}')">Add</button>
+      <button type="button" class="btn btn-g btn-sm" onclick="toggleNewCustomerTagInput('${prefix}')">${state.addingNew?'Hide':'Create New'}</button>
+    </div>
+    <div id="${prefix}-tag-new-wrap" style="display:${state.addingNew?'flex':'none'};gap:8px;align-items:flex-start;flex-wrap:wrap;margin-top:8px">
+      <input id="${prefix}-tag-new" type="text" placeholder="Type a new tag" style="flex:1;min-width:180px">
+      <button type="button" class="btn btn-p btn-sm" onclick="createCustomerTag('${prefix}')">Create Tag</button>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+      ${state.selected.length?state.selected.map((tag,idx)=>`<span class="pill pn" style="display:inline-flex;align-items:center;gap:6px">${esc(tag)} <button type="button" class="btn btn-g btn-xs" style="min-height:auto;padding:1px 6px" onclick="removeCustomerTag('${prefix}',${idx})">×</button></span>`).join(''):'<span style="font-size:12px;color:var(--text-3)">No tags selected.</span>'}
+    </div>`;
+}
+function addSelectedCustomerTag(prefix){
+  const sel=g(`${prefix}-tag-select`);
+  const tag=String(sel?.value||'').trim();
+  if(!tag) return;
+  const state=getCustomerTagPickerState(prefix);
+  state.selected=normalizeCustomerProductTags([...state.selected, tag]);
+  syncCustomerProductTagCatalog([tag]);
+  renderCustomerTagPicker(prefix);
+}
+function toggleNewCustomerTagInput(prefix){
+  const state=getCustomerTagPickerState(prefix);
+  state.addingNew=!state.addingNew;
+  renderCustomerTagPicker(prefix);
+}
+function createCustomerTag(prefix){
+  const input=g(`${prefix}-tag-new`);
+  const tag=String(input?.value||'').replace(/\s+/g,' ').trim();
+  if(!tag){ toast('Enter a tag name','err'); return; }
+  const state=getCustomerTagPickerState(prefix);
+  state.selected=normalizeCustomerProductTags([...state.selected, tag]);
+  state.addingNew=false;
+  syncCustomerProductTagCatalog([tag]);
+  renderCustomerTagPicker(prefix);
+}
+function removeCustomerTag(prefix, idx){
+  const state=getCustomerTagPickerState(prefix);
+  state.selected=state.selected.filter((_,i)=>i!==idx);
+  renderCustomerTagPicker(prefix);
+}
+function getSelectedCustomerTags(prefix){
+  return normalizeCustomerProductTags(getCustomerTagPickerState(prefix).selected);
 }
 function firstAccessiblePage(){
   const pages=['dashboard','sales','orders','alerts','marketing','distribution','expenses','customers','settings'];
@@ -748,6 +844,7 @@ async function fetchFullData(){
   AUTH_STATE=S?.authContext||AUTH_STATE;
   FULL_DATA_READY = true;
   DASH_BOOTSTRAP_METRICS = null;
+  applyTheme(S?.uiPreferences?.theme||'light');
   return S;
 }
 function ensureFullDataLoaded(){
@@ -1466,6 +1563,7 @@ function captureCurrentMarketingFilters(){
 function setMarketingFilters(f){
   if(g('mkt-f-has-orders')) g('mkt-f-has-orders').value=f?.hasOrders||'any';
   if(g('mkt-f-area')) g('mkt-f-area').value=f?.area||'any';
+  if(g('mkt-f-product-tag')) g('mkt-f-product-tag').value=f?.productTag||'any';
   if(g('mkt-f-channel')) g('mkt-f-channel').value=f?.channel||'any';
   if(g('mkt-f-aov-mode')) g('mkt-f-aov-mode').value=f?.aovMode||'any';
   if(g('mkt-f-aov-value')) g('mkt-f-aov-value').value=(f?.aovValue ?? '')===0 ? '' : String(f?.aovValue ?? '');
@@ -1624,6 +1722,7 @@ function getMarketingFilters(){
   return {
     hasOrders:(g('mkt-f-has-orders')?.value||'any'),
     area:(g('mkt-f-area')?.value||'any'),
+    productTag:(g('mkt-f-product-tag')?.value||'any'),
     channel:(g('mkt-f-channel')?.value||'any'),
     aovMode:(g('mkt-f-aov-mode')?.value||'any'),
     aovValue:parseFloat(g('mkt-f-aov-value')?.value||0)||0,
@@ -1645,6 +1744,8 @@ function getMarketingGroupCustomers(){
     if(f.hasOrders==='yes' && !hasOrders) return false;
     if(f.hasOrders==='no' && hasOrders) return false;
     if(f.area!=='any' && String(c.area||'')!==f.area) return false;
+    const productTags=normalizeCustomerProductTags(c.productTags||[]);
+    if(f.productTag!=='any' && !productTags.some(tag=>tag.toLowerCase()===String(f.productTag||'').toLowerCase())) return false;
     if(f.channel!=='any'){
       const anyCh=orders.some(o=>String(o.channel||'').toLowerCase()===f.channel);
       if(!anyCh) return false;
@@ -1670,10 +1771,19 @@ function refreshMarketingAreas(){
   el.innerHTML=['<option value="any">All areas</option>',...areas.map(a=>`<option value="${esc(a)}">${esc(a)}</option>`)].join('');
   if(areas.includes(cur)) el.value=cur; else el.value='any';
 }
+function refreshMarketingProductTags(){
+  const el=g('mkt-f-product-tag');
+  if(!el) return;
+  syncCustomerProductTagCatalog();
+  const cur=el.value||'any';
+  const tags=getCustomerProductTagCatalog();
+  el.innerHTML=['<option value="any">All tags</option>',...tags.map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`)].join('');
+  if(tags.includes(cur)) el.value=cur; else el.value='any';
+}
 function buildMarketingGroupSummary(customers){
   const f=getMarketingFilters();
   const avgAov=customers.length?customers.reduce((s,c)=>s+avgOrderValueForCustomer(c.id),0)/customers.length:0;
-  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
+  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, tag=${f.productTag}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
 }
 function refreshMarketingGroup(){
   const customers=getMarketingGroupCustomers();
@@ -1706,6 +1816,7 @@ function handleCustomerNameSearch(value){
 }
 function rMarketingView(){
   refreshMarketingAreas();
+  refreshMarketingProductTags();
   loadMarketingGroups();
   refreshMarketingGroupsUI();
   loadMarketingState();
@@ -1975,6 +2086,11 @@ function openAddCustomerModal(){
         <div class="fg"><label>Area / Locality <span class="req">*</span></label><input id="fa" type="text" placeholder="e.g. Jayanagar, Bangalore"></div>
         <div class="fg"><label>Email <span style="color:var(--text-3);font-weight:400">(optional)</span></label><input id="fe" type="email" placeholder="ravi@email.com"></div>
       </div>
+      <div class="fg">
+        <label>Add Tags <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+        <div id="customer-add-tag-picker"></div>
+        <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Use tags to filter and group customers. You can select from existing tags or create new ones here.</div>
+      </div>
       <div class="fg"><label>Address <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="fx" rows="2" placeholder="Full delivery address…"></textarea></div>
       <div class="fg"><label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="fnotes" rows="2" placeholder="Any customer-specific notes…"></textarea></div>
       <div style="display:flex;gap:8px;margin-top:4px">
@@ -1982,6 +2098,7 @@ function openAddCustomerModal(){
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
     </div>`,'lg');
+  ensureCustomerTagPicker('customer-add',[]);
 }
 
 async function saveC(){
@@ -1989,8 +2106,9 @@ async function saveC(){
   if(!name||!phone||!area){toast('Name, phone & area required','err');return;}
   if(!/^\d{10}$/.test(phone)){toast('Phone must be 10 digits','err');return;}
   try{
-    const c=await api.post('/api/customers',{name,phone,area,email:g('fe').value.trim(),address:g('fx').value.trim(),notes:g('fnotes').value.trim(),at:Date.now()});
+    const c=await api.post('/api/customers',{name,phone,area,email:g('fe').value.trim(),address:g('fx').value.trim(),notes:g('fnotes').value.trim(),productTags:getSelectedCustomerTags('customer-add'),at:Date.now()});
     S.customers.push(c); S.cid=c.id+1;
+    syncCustomerProductTagCatalog(c.productTags||[]);
     closeModal();
     toast(name+' added','ok'); rCustomers();
   }catch(e){toast('Error: '+e.message,'err');}
@@ -1999,6 +2117,7 @@ async function saveC(){
 function openCustomerAnalytics(cid){
   const c=S.customers.find(x=>x.id===cid);
   if(!c) return;
+  const tags=normalizeCustomerProductTags(c.productTags||[]);
   const orders=getCustomerOrders(cid);
   const completed=orders.filter(isCompleted);
   const totalOrders=orders.length;
@@ -2053,6 +2172,10 @@ function openCustomerAnalytics(cid){
         <strong>${esc(chLabel)}</strong>
       </div>
       <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
+        <span style="color:var(--text-3)">Tags</span>
+        <strong style="text-align:right">${esc(tags.join(', ')||'None')}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);font-size:12px">
         <span style="color:var(--text-3)">Top Item</span>
         <strong style="text-align:right">${esc(topProductLabel)}</strong>
       </div>
@@ -2078,6 +2201,7 @@ function rCustomers(){
   const grid=g('cg');
   if(!MKT_GROUPS.length) loadMarketingGroups();
   refreshMarketingAreas();
+  refreshMarketingProductTags();
   const totalCustomers=(S.customers||[]).length;
   const customers=getMarketingGroupCustomers();
   const filteredCustomers=!CUSTOMER_NAME_SEARCH
@@ -2114,6 +2238,7 @@ function rCustomers(){
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const orderTag=oc>0?'Order recorded':'No order yet';
+    const tags=normalizeCustomerProductTags(c.productTags||[]);
     return`<div class="cc" onclick="openCustomerAnalytics(${c.id})" style="cursor:pointer">
       <div class="cc-top">
         <div class="cav">${ini}</div>
@@ -2134,6 +2259,8 @@ function rCustomers(){
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
         <span class="pill pn">${orderTag}</span>
+        ${tags.slice(0,2).map(tag=>`<span class="pill pn">${esc(tag)}</span>`).join('')}
+        ${tags.length>2?`<span class="pill pn">+${tags.length-2} tags</span>`:''}
         ${oc>=5?`<span class="pill pg">Smart alerts on</span>`:`<span class="pill pn">${oc}/5 for smart</span>`}
       </div>
     </div>`;
@@ -2175,6 +2302,10 @@ function openEditCustomer(cid){
         <div class="fg"><label>Area / Locality <span class="req">*</span></label><input id="ec-area" value="${esc(c.area)}"></div>
         <div class="fg"><label>Email</label><input id="ec-email" type="email" value="${esc(c.email||'')}"></div>
       </div>
+      <div class="fg">
+        <label>Add Tags <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+        <div id="customer-edit-tag-picker"></div>
+      </div>
       <div class="fg"><label>Address</label><textarea id="ec-address" rows="2">${esc(c.address||'')}</textarea></div>
       <div class="fg"><label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="ec-notes" rows="2">${esc(c.notes||'')}</textarea></div>
       <div style="display:flex;gap:8px;margin-top:4px">
@@ -2183,6 +2314,7 @@ function openEditCustomer(cid){
       </div>
       ${hasActionAccess('customers','delete')?`<hr style="margin:4px 0"><button class="btn btn-danger btn-full" onclick="confirmDeleteCustomer(${cid})">Delete Customer</button>`:''}
     </div>`,'lg');
+  ensureCustomerTagPicker('customer-edit',c.productTags||[]);
 }
 
 async function submitEditCustomer(cid){
@@ -2190,8 +2322,9 @@ async function submitEditCustomer(cid){
   if(!name||!phone||!area){toast('Name, phone & area required','err');return;}
   if(!/^\d{10}$/.test(phone)){toast('Phone must be 10 digits','err');return;}
   try{
-    const updated=await api.put(`/api/customers/${cid}`,{name,phone,area,email:g('ec-email').value.trim(),address:g('ec-address').value.trim(),notes:g('ec-notes').value.trim()});
+    const updated=await api.put(`/api/customers/${cid}`,{name,phone,area,email:g('ec-email').value.trim(),address:g('ec-address').value.trim(),notes:g('ec-notes').value.trim(),productTags:getSelectedCustomerTags('customer-edit')});
     const idx=S.customers.findIndex(c=>c.id===cid); if(idx>=0) S.customers[idx]=updated;
+    syncCustomerProductTagCatalog(updated.productTags||[]);
     S.orders.forEach(o=>{if(o.cid===cid){o.cname=name;o.cphone=phone;o.carea=area;}});
     closeModal(); toast(name+' updated','ok'); rCustomers();
   }catch(e){toast('Error: '+e.message,'err');}
@@ -4617,7 +4750,8 @@ async function loadApplicationData(){
     DASH_BOOTSTRAP_METRICS=boot?.dashboardMetrics||null;
     FEATURE_CONFIG=boot?.featureConfig||FEATURE_CONFIG;
     AUTH_STATE=S?.authContext||AUTH_STATE;
-    FULL_DATA_READY=false;
+    FULL_DATA_READY=true;
+    FULL_DATA_PROMISE=null;
   }catch(_){
     S=emptyState();
   }
@@ -4638,18 +4772,6 @@ async function loadApplicationData(){
   ensureUserManagementUi();
   applyPermissionUI();
   updBadge(); rDash(); populateProdSelect(); setDefaultDate(); setOperationalExpenseDateDefault(); resetCompositionBuilder(); refreshVariantBuilderUI();
-  ensureFullDataLoaded().then(()=>{
-    if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
-    if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
-    if(!Array.isArray(S.operationalExpenses)) S.operationalExpenses=[];
-    AUTH_STATE=S?.authContext||AUTH_STATE;
-    enterAppMode();
-    applyPermissionUI();
-    rerenderActiveView();
-    updBadge();
-  }).catch((err)=>{
-    toast('Full data load failed: '+(err?.message||'Unknown error'),'err');
-  });
   pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
   if(!window.__inventoryPollStarted){
     window.__inventoryPollStarted=true;

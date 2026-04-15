@@ -104,6 +104,7 @@ ACTION_KEYS: dict[str, tuple[str, ...]] = {
 # ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
 DEFAULT_DATA: dict = {
     "customers": [],
+    "customerProductTags": [],
     "orders": [],
     "distributorBatches": [],
     "distributionChannels": [],
@@ -1055,6 +1056,8 @@ def migrate(data: dict) -> dict:
     seeded_channels = list(data.get("distributionChannels", []))
     seeded_channels.extend([b.get("distributorName", "") for b in data["distributorBatches"]])
     data["distributionChannels"] = _normalize_distribution_channels(seeded_channels)
+    if "customerProductTags" not in data or not isinstance(data.get("customerProductTags"), list):
+        data["customerProductTags"] = []
 
     cleaned_closed: list[dict] = []
     for row in data.get("closedFollowUps", []):
@@ -1084,12 +1087,14 @@ def migrate(data: dict) -> dict:
         if "notes" not in c:
             c["notes"] = ""
         c["phone"] = _normalize_customer_phone(c.get("phone"))
+        c["productTags"] = _normalize_customer_product_tags(c.get("productTags", []))
         try:
             c["createdByUserId"] = int(c.get("createdByUserId") or 0)
         except (TypeError, ValueError):
             c["createdByUserId"] = 0
         c["createdByUsername"] = str(c.get("createdByUsername") or "").strip()
         c["createdByName"] = str(c.get("createdByName") or c.get("createdByUsername") or "").strip()
+    _add_customer_product_tags(data, [tag for c in data["customers"] for tag in c.get("productTags", [])])
 
     normalized_users: list[dict] = []
     highest_uid = int(data.get("uid", 1) or 1)
@@ -1138,6 +1143,29 @@ def _normalize_distribution_channels(values: Any) -> list[str]:
     return out
 
 
+def _normalize_customer_product_tags(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        name = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _add_customer_product_tags(data: dict, tags: Any) -> None:
+    existing = list(data.get("customerProductTags", []))
+    existing.extend(_normalize_customer_product_tags(tags))
+    data["customerProductTags"] = _normalize_customer_product_tags(existing)
+
+
 def _add_distribution_channel(data: dict, channel_name: Any) -> None:
     existing = list(data.get("distributionChannels", []))
     existing.append(channel_name)
@@ -1168,6 +1196,7 @@ def _build_customer(
     source: str = "manual",
     import_batch_id: str = "",
     created_by_user: dict | None = None,
+    product_tags: Any = None,
 ) -> dict:
     creator = created_by_user or {}
     return {
@@ -1181,6 +1210,7 @@ def _build_customer(
         "at": at,
         "source": _normalize_customer_source(source),
         "importBatchId": str(import_batch_id or "").strip(),
+        "productTags": _normalize_customer_product_tags(product_tags),
         "createdByUserId": int(creator.get("id") or 0),
         "createdByUsername": str(creator.get("username") or "").strip(),
         "createdByName": str(creator.get("displayName") or creator.get("username") or "").strip(),
@@ -2361,35 +2391,15 @@ async def get_data(request: Request):
 
 @app.get("/api/bootstrap")
 async def get_bootstrap(request: Request):
-    """
-    Return a lightweight bootstrap payload for faster first paint.
-    Full data should be loaded by calling /api/data after initial render.
-    """
+    """Return the full initial app state for first paint."""
     data = read_data()
     ctx = _require_signed_in(request, data)
     filtered = _filtered_data_for_user(data, ctx.get("user"))
-    bootstrap_state = {
-        "customers": [],
-        "orders": [],
-        "distributorBatches": [],
-        "closedFollowUps": [],
-        "operationalExpenses": filtered.get("operationalExpenses", []),
-        "products": filtered.get("products", []),
-        "distributionChannels": filtered.get("distributionChannels", []),
-        "cid": filtered.get("cid", 1),
-        "oid": filtered.get("oid", 1),
-        "dbid": filtered.get("dbid", 1),
-        "exid": filtered.get("exid", 1),
-        "pid": filtered.get("pid", 1),
-        "waDefaultTpl": filtered.get("waDefaultTpl", DEFAULT_DATA["waDefaultTpl"]),
-        "shippingProfile": filtered.get("shippingProfile", copy.deepcopy(DEFAULT_DATA["shippingProfile"])),
-        "marketingSettings": filtered.get("marketingSettings", copy.deepcopy(DEFAULT_DATA["marketingSettings"])),
-        "uiPreferences": read_ui_preferences(),
-    }
-    metrics_source = _filtered_data_for_user(data, ctx.get("user"))
+    bootstrap_state = _client_safe_data(filtered, request, auth_source_data=data)
+    metrics_source = filtered
     return JSONResponse(
         {
-            "state": _client_safe_data(bootstrap_state, request, auth_source_data=data),
+            "state": bootstrap_state,
             "dashboardMetrics": _sanitize_dashboard_metrics_for_user(
                 _compute_dashboard_metrics(metrics_source),
                 ctx.get("user"),
@@ -2446,8 +2456,10 @@ async def add_customer(request: Request):
         source=body.get("source", "manual"),
         import_batch_id=body.get("importBatchId", ""),
         created_by_user=ctx.get("user"),
+        product_tags=body.get("productTags", []),
     )
     data["customers"].append(customer)
+    _add_customer_product_tags(data, customer.get("productTags", []))
     data["cid"] += 1
     write_data(data)
     return customer
@@ -2471,6 +2483,9 @@ async def update_customer(customer_id: int, request: Request):
                 data["customers"][idx][key] = _normalize_customer_phone(body[key])
             else:
                 data["customers"][idx][key] = body[key]
+    if "productTags" in body:
+        data["customers"][idx]["productTags"] = _normalize_customer_product_tags(body.get("productTags", []))
+        _add_customer_product_tags(data, data["customers"][idx]["productTags"])
     # Also update denormalised customer fields on all their orders
     if "name" in body or "phone" in body or "area" in body:
         for o in data["orders"]:
@@ -2539,9 +2554,11 @@ async def import_customers(request: Request):
             source="bulk_import",
             import_batch_id=import_batch_id,
             created_by_user=ctx.get("user"),
+            product_tags=row.get("productTags", []),
         )
         data["customers"].append(customer)
         created.append(customer)
+        _add_customer_product_tags(data, customer.get("productTags", []))
         existing_phone_set.add(phone)
         data["cid"] += 1
 

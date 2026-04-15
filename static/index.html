@@ -1211,6 +1211,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
               <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
             </div>
             <div class="fg">
+              <label>Tag</label>
+              <select id="mkt-f-product-tag" onchange="refreshMarketingGroup()"><option value="any">All tags</option></select>
+            </div>
+            <div class="fg">
               <label>Order Type</label>
               <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
                 <option value="any">Any</option>
@@ -1612,6 +1616,14 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260412-06"></script>
+<script>
+try {
+  const key = 'kudagu-theme';
+  const allowed = new Set(['light', 'dark', 'nord', 'solarized', 'dracula']);
+  const raw = String(localStorage.getItem(key) || '').trim().toLowerCase();
+  if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
+} catch (_) {}
+</script>
+<script src="/static/app.js?v=20260415-01"></script>
 </body>
 </html>
