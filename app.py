@@ -2866,9 +2866,6 @@ def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Batch not found")
 
     batch = data["distributorBatches"][idx]
-    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
-    if "prodId" in body:
-        _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
     removed_order_id = None
     try:
         linked_order_id = int(batch.get("orderId") or 0)
@@ -3148,6 +3145,31 @@ async def inventory_stock(request: Request):
     if allowed_inventory_ids is not None:
         stock = [item for item in stock if str(item.get("id") or "") in allowed_inventory_ids]
     return stock
+
+
+@app.get("/api/inventory/products")
+async def inventory_products_feed():
+    """
+    Internal feed for the inventory/admin app.
+    Returns the CRM product catalog with recipe composition so inventory can
+    compute finished-goods availability for ecommerce/admin usage.
+    """
+    data = read_data()
+    products: list[dict] = []
+    for product in data.get("products", []) or []:
+        if not isinstance(product, dict):
+            continue
+        products.append(
+            {
+                "id": str(product.get("id") or ""),
+                "name": str(product.get("name") or "").strip(),
+                "sizes": [str(size or "").strip() for size in (product.get("sizes") or []) if str(size or "").strip()],
+                "composition": _normalize_composition(product.get("composition", [])),
+                "pricing": _normalize_product_pricing(product.get("pricing", {}), product.get("sizes", [])),
+                "waTpl": str(product.get("waTpl") or ""),
+            }
+        )
+    return {"products": products, "updatedAt": int(time.time() * 1000)}
 
 
 @app.delete("/api/orders/{order_id}")

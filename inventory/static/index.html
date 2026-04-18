@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>Kudagu Kaapi — Inventory</title>
+<title>Kudagu Kaapi — Inventory Admin</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Instrument+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -178,6 +178,22 @@ label{font-size:12px;font-weight:600;color:var(--text-2);letter-spacing:.02em}
 input,select,textarea{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 12px;color:var(--text);font-family:'Instrument Sans',sans-serif;font-size:15px;outline:none;transition:border-color .15s,box-shadow .15s;width:100%;-webkit-appearance:none;appearance:none}
 input:focus,select:focus,textarea:focus{border-color:var(--text);box-shadow:0 0 0 3px rgba(17,17,16,.08)}
 input::placeholder,textarea::placeholder{color:var(--text-3)}
+input[type="checkbox"]{
+  width:18px;
+  height:18px;
+  padding:0;
+  border-radius:5px;
+  border:1px solid var(--border-s);
+  background:var(--surface);
+  accent-color:var(--accent);
+  -webkit-appearance:auto;
+  appearance:auto;
+  cursor:pointer;
+  flex:0 0 auto;
+}
+input[type="checkbox"]:focus{
+  box-shadow:0 0 0 3px rgba(17,17,16,.08);
+}
 select{background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23a0a09a'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 12px center;padding-right:32px}
 select option{background:var(--surface);color:var(--text)}
 textarea{resize:vertical}
@@ -271,7 +287,7 @@ html[data-theme="dracula"] .btn-p:hover{background:#d7dce2;color:#111315}
 <aside class="sidebar">
   <div class="sb-logo">
     <div class="sb-brand">Kudagu<span>.</span></div>
-    <div class="sb-tag">Inventory</div>
+    <div class="sb-tag">Inventory Admin</div>
   </div>
   <nav class="sb-nav">
     <div class="sb-sect">Overview</div>
@@ -280,10 +296,11 @@ html[data-theme="dracula"] .btn-p:hover{background:#d7dce2;color:#111315}
     <button class="nb" onclick="nav('movements')"><span class="nb-ic">↕</span><span>Movements</span></button>
     <div class="sb-sect">Config</div>
     <button class="nb" onclick="nav('products')"><span class="nb-ic">≡</span><span>Products</span></button>
+    <button class="nb" onclick="nav('finished')"><span class="nb-ic">◫</span><span>Finished Products</span></button>
     <button class="nb" onclick="nav('settings')"><span class="nb-ic">⚙</span><span>Settings</span></button>
   </nav>
   <div class="sb-foot">
-    <strong>Inventory Manager</strong>
+    <strong>Inventory Admin</strong>
   </div>
 </aside>
 
@@ -329,10 +346,21 @@ html[data-theme="dracula"] .btn-p:hover{background:#d7dce2;color:#111315}
   <!-- PRODUCTS (config) -->
   <div class="view" id="view-products">
     <div class="ph">
-      <div><div class="ph-title">Products</div><div class="ph-sub">Manage products and low-stock thresholds</div></div>
+      <div><div class="ph-title">Raw Inventory Products</div><div class="ph-sub">Manage raw ingredients and low-stock thresholds</div></div>
       <button class="btn btn-p btn-sm" onclick="openAddProductModal()">+ Add Product</button>
     </div>
     <div class="card"><div id="prod-config-list"></div></div>
+  </div>
+
+  <div class="view" id="view-finished">
+    <div class="ph">
+      <div>
+        <div class="ph-title">Finished Products</div>
+        <div class="ph-sub" id="finished-products-sub">CRM products for website/admin management</div>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="syncFinishedProducts()">Sync From CRM</button>
+    </div>
+    <div class="prod-grid" id="finished-products-grid"></div>
   </div>
 
   <div class="view" id="view-settings">
@@ -402,6 +430,6 @@ html[data-theme="dracula"] .btn-p:hover{background:#d7dce2;color:#111315}
   <div class="modal-box" id="modal-box"></div>
 </div>
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260411-1"></script>
+<script src="/static/app.js?v=20260417-1"></script>
 </body>
 </html>

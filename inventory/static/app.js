@@ -97,12 +97,13 @@ function nav(p){
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
   g('view-'+p).classList.add('active');
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,stock:1,movements:2,products:3,settings:4};
+  const IDX={dashboard:0,stock:1,movements:2,products:3,finished:4,settings:5};
   if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
   if(p==='dashboard')  rDash();
   if(p==='stock')      rStock();
   if(p==='movements')  rMovements();
   if(p==='products')   rProducts();
+  if(p==='finished')   rFinishedProducts();
   if(p==='settings')   rThemeSettings();
 }
 
@@ -115,6 +116,26 @@ function allMovements(){
 
 function totalStockKg(){
   return S.products.reduce((s,p)=>s+(p.stock||0),0)/1000;
+}
+
+function finishedProducts(){
+  return Array.isArray(S?.finishedProducts) ? S.finishedProducts : [];
+}
+
+function findFinishedProduct(id){
+  return finishedProducts().find(p=>p.crmProductId===id);
+}
+
+function advertisedVariantCount(row){
+  return Array.isArray(row?.advertisedVariants) ? row.advertisedVariants.length : 0;
+}
+
+function variantWebsitePrice(variant){
+  return Number(variant?.pricing?.salePrices?.website||0);
+}
+
+function money(v){
+  return `Rs ${Number(v||0).toFixed(0)}`;
 }
 
 function totalMovedThisMonth(type){
@@ -575,10 +596,207 @@ async function doDeleteProduct(pid){
   }catch(e){toast('Error: '+e.message,'err');}
 }
 
+// ─── FINISHED PRODUCTS ───────────────────────────────────────────────────────
+let _finishedProductImageDataUrl='';
+
+function rFinishedProducts(){
+  const rows=finishedProducts();
+  const el=g('finished-products-grid');
+  const stat=g('finished-products-sub');
+  if(stat){
+    stat.textContent=`${rows.length} CRM product${rows.length!==1?'s':''} synced for website/admin use`;
+  }
+  if(!rows.length){
+    el.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="et">No finished products yet</div><div class="es">Sync CRM products to start managing website-ready product details.</div></div>`;
+    return;
+  }
+  el.innerHTML=rows.map(row=>{
+    const variants=(row.variants||[]).map(v=>`
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-top:1px solid var(--border)">
+        <div>
+          <div style="font-weight:600">${esc(v.variant)}</div>
+          <div style="font-size:11.5px;color:var(--text-3)">Website price ${money(variantWebsitePrice(v))} · Uses only 50% of ingredient stock</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${v.availableUnits}</div>
+          <div style="font-size:11px;color:var(--text-3)">units possible</div>
+        </div>
+      </div>`).join('');
+    return `
+      <div class="prod-card" style="cursor:pointer" onclick="openFinishedProductModal('${row.crmProductId}')">
+        ${row.imageDataUrl?`<div style="margin-bottom:12px"><img src="${row.imageDataUrl}" alt="${esc(row.imageAltText||row.name)}" style="width:100%;height:180px;object-fit:cover;border-radius:var(--r-sm);border:1px solid var(--border)"></div>`:''}
+        <div class="pc-header">
+          <div>
+            <div class="pc-name">${esc(row.name)}</div>
+            <div class="pc-threshold">${row.isPublished?'Visible to website API':'Hidden from website API'}</div>
+          </div>
+          <div class="pc-stock">
+            <div class="pc-stock-val">${advertisedVariantCount(row)}</div>
+            <div class="pc-stock-lbl">advertised variants</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
+          <span class="pill ${row.isPublished?'pg':'pn'}">${row.isPublished?'Published':'Draft'}</span>
+          <span class="pill pn">${(row.sizes||[]).length} variant${(row.sizes||[]).length!==1?'s':''}</span>
+          <span class="pill pb">${advertisedVariantCount(row)} on website</span>
+        </div>
+        <div style="font-size:12.5px;color:var(--text-2);min-height:40px">${esc(row.description||'Add a website-ready description and usage notes for this product.')}</div>
+        <div style="margin-top:12px">${variants}</div>
+      </div>`;
+  }).join('');
+}
+
+function openFinishedProductModal(id){
+  const row=findFinishedProduct(id); if(!row) return;
+  _finishedProductImageDataUrl=row.imageDataUrl||'';
+  const advertised=new Set(Array.isArray(row.advertisedVariants)?row.advertisedVariants:[]);
+  const variantSelectors=(row.variants||[]).map(v=>`
+      <label style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--r-sm);background:var(--surface-2)">
+        <span>
+          <span style="font-weight:600;display:block">${esc(v.variant)}</span>
+          <span style="font-size:11.5px;color:var(--text-3)">${v.availableUnits} units · Website price ${money(variantWebsitePrice(v))}</span>
+        </span>
+        <input type="checkbox" class="fp-variant-toggle" value="${esc(v.variant)}" ${advertised.has(v.variant)?'checked':''} style="width:16px;height:16px">
+      </label>`).join('');
+  const variants=(row.variants||[]).map(v=>{
+    const ingredients=(v.ingredients||[]).map(item=>`
+      <tr>
+        <td style="padding:8px 10px;border-top:1px solid var(--border)">${esc(item.inventoryProductName||item.inventoryProductId)}</td>
+        <td style="padding:8px 10px;border-top:1px solid var(--border);text-align:right">${fGrams(item.usableStockGrams)}</td>
+        <td style="padding:8px 10px;border-top:1px solid var(--border);text-align:right">${fGrams(item.requiredPerUnitGrams)}</td>
+        <td style="padding:8px 10px;border-top:1px solid var(--border);text-align:right">${item.possibleUnits}</td>
+      </tr>`).join('');
+    return `
+      <div class="card" style="margin-top:12px">
+        <div class="ch"><div class="ct">${esc(v.variant)} availability</div><div class="pill pb">${v.availableUnits} units</div></div>
+        <div class="cb" style="padding-top:12px">
+          <div style="font-size:12px;color:var(--text-3);margin-bottom:8px">Calculated from 50% of current raw stock to keep safety reserve for other sales.</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px">
+            <thead>
+              <tr>
+                <th style="text-align:left;padding:0 10px 8px 10px;color:var(--text-3);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em">Ingredient</th>
+                <th style="text-align:right;padding:0 10px 8px 10px;color:var(--text-3);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em">Usable Stock</th>
+                <th style="text-align:right;padding:0 10px 8px 10px;color:var(--text-3);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em">Needed / Unit</th>
+                <th style="text-align:right;padding:0 10px 8px 10px;color:var(--text-3);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em">Units</th>
+              </tr>
+            </thead>
+            <tbody>${ingredients||`<tr><td colspan="4" style="padding:8px 10px;color:var(--text-3)">No recipe linked in CRM.</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }).join('');
+  openModal(`
+    <div class="modal-title">${esc(row.name)}</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;margin-bottom:16px">
+      <span class="pill ${row.isPublished?'pg':'pn'}">${row.isPublished?'Published to website API':'Draft only'}</span>
+      <span class="pill pn">${(row.variants||[]).length} variant${(row.variants||[]).length!==1?'s':''}</span>
+      <span class="pill pb">${advertisedVariantCount(row)} advertised</span>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:14px">
+      <div class="fg">
+        <label>Product Image</label>
+        <div id="fp-image-preview-wrap" style="${row.imageDataUrl?'':'display:none;'}">
+          <img id="fp-image-preview" src="${row.imageDataUrl||''}" alt="${esc(row.imageAltText||row.name)}" style="width:100%;height:220px;object-fit:cover;border-radius:var(--r-sm);border:1px solid var(--border);margin-bottom:8px">
+        </div>
+        <input type="file" id="fp-image-file" accept="image/*" onchange="handleFinishedProductImage(event)">
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="btn btn-s btn-sm" type="button" onclick="clearFinishedProductImage()">Remove Image</button>
+          <div style="font-size:11.5px;color:var(--text-3)">This image will be returned to the website API.</div>
+        </div>
+      </div>
+      <div class="fg">
+        <label>Image Alt Text</label>
+        <input id="fp-image-alt" type="text" value="${esc(row.imageAltText||row.name)}" placeholder="Accessible text for the product image">
+      </div>
+      <div class="fg">
+        <label>Product Description</label>
+        <textarea id="fp-description" rows="4" placeholder="Describe the product for the website and admin team.">${esc(row.description||'')}</textarea>
+      </div>
+      <div class="fg">
+        <label>How To Make / Use</label>
+        <textarea id="fp-usage" rows="4" placeholder="Add brewing instructions, serving notes, or usage guidance.">${esc(row.usageInstructions||'')}</textarea>
+      </div>
+      <div class="fg">
+        <label>Admin Notes</label>
+        <textarea id="fp-prep" rows="3" placeholder="Optional internal notes about preparation, packing, or handling.">${esc(row.preparationNotes||'')}</textarea>
+      </div>
+      <label style="display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text)">
+        <input type="checkbox" id="fp-published" ${row.isPublished?'checked':''} style="width:16px;height:16px">
+        Publish this product to the website-facing API
+      </label>
+      <div class="fg">
+        <label>Variants To Advertise</label>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          ${variantSelectors||`<div style="font-size:12px;color:var(--text-3)">No CRM variants available.</div>`}
+        </div>
+        <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Only selected variants will be returned by the website API with their stock levels.</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="saveFinishedProduct('${row.crmProductId}')">Save Details</button>
+        <button class="btn btn-s" onclick="closeModal()">Close</button>
+      </div>
+    </div>
+    ${variants}`);
+}
+
+function handleFinishedProductImage(event){
+  const file=event?.target?.files?.[0];
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=()=>{
+    _finishedProductImageDataUrl=String(reader.result||'');
+    const preview=g('fp-image-preview');
+    const wrap=g('fp-image-preview-wrap');
+    if(preview){
+      preview.src=_finishedProductImageDataUrl;
+      preview.alt=g('fp-image-alt')?.value||'Product image';
+    }
+    if(wrap) wrap.style.display='';
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearFinishedProductImage(){
+  _finishedProductImageDataUrl='';
+  const preview=g('fp-image-preview');
+  const wrap=g('fp-image-preview-wrap');
+  const input=g('fp-image-file');
+  if(preview) preview.src='';
+  if(wrap) wrap.style.display='none';
+  if(input) input.value='';
+}
+
+async function saveFinishedProduct(id){
+  const description=g('fp-description')?.value||'';
+  const usageInstructions=g('fp-usage')?.value||'';
+  const preparationNotes=g('fp-prep')?.value||'';
+  const isPublished=!!g('fp-published')?.checked;
+  const advertisedVariants=[...document.querySelectorAll('.fp-variant-toggle:checked')].map(el=>el.value);
+  const imageAltText=g('fp-image-alt')?.value||'';
+  try{
+    const updated=await api.put(`/api/finished-products/${id}`,{description,usageInstructions,preparationNotes,isPublished,advertisedVariants,imageDataUrl:_finishedProductImageDataUrl,imageAltText});
+    const idx=finishedProducts().findIndex(row=>row.crmProductId===id);
+    if(idx>=0) S.finishedProducts[idx]=updated;
+    closeModal();
+    toast('Finished product saved','ok');
+    rFinishedProducts();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+
+async function syncFinishedProducts(){
+  try{
+    await api.post('/api/finished-products/sync',{});
+    S.finishedProducts=await api.get('/api/finished-products');
+    toast('CRM products synced','ok');
+    rFinishedProducts();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+
 // ─── BOOT ────────────────────────────────────────────────────────────────────
 async function init(){
   try{ S=await api.get('/api/data'); }
   catch(err){ g('toasts').innerHTML=`<div class="toast err">Cannot reach server: ${err.message}</div>`; return; }
+  if(!Array.isArray(S.finishedProducts)) S.finishedProducts=[];
   applyTheme(S?.uiPreferences?.theme||'light');
   rDash();
 }

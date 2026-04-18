@@ -26,9 +26,12 @@ import copy
 import sqlite3
 import time
 import threading
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from urllib import request as urlrequest
+from urllib import error as urlerror
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -41,16 +44,18 @@ LEGACY_DATA_FILE = BASE_DIR / "data.json"
 STATE_KEY = "root"
 STATIC_DIR = BASE_DIR / "static"
 UI_PREFS_FILE = BASE_DIR.parent / "ui_prefs.json"
+CRM_URL = os.environ.get("CRM_URL", "http://localhost:8000")
 DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
 
 # ── Default seed data ────────────────────────────────────────────────────────
 DEFAULT_DATA: dict = {
     "products": [],   # { id, name, unit:"g", lowStockThreshold:500, stock:0, movements:[] }
+    "finishedProducts": [],  # { crmProductId, name, sizes, composition, description, usageInstructions, ... }
     "pid": 1,
     # movements shape: { id, productId, type:"in"|"out"|"adjustment", grams, note, at }
     "mid": 1,
@@ -228,6 +233,7 @@ def write_ui_preferences(incoming: dict) -> dict:
 
 def migrate(data: dict) -> dict:
     if "products" not in data: data["products"] = []
+    if "finishedProducts" not in data: data["finishedProducts"] = []
     if "pid" not in data: data["pid"] = len(data["products"]) + 1
     if "mid" not in data: data["mid"] = 1
     for p in data["products"]:
@@ -241,7 +247,229 @@ def migrate(data: dict) -> dict:
             for m in p["movements"]
         )
         p["stock"] = max(0, total)
+    normalized_finished: list[dict] = []
+    for row in data["finishedProducts"]:
+        if not isinstance(row, dict):
+            continue
+        normalized_finished.append(_normalize_finished_product(row))
+    data["finishedProducts"] = normalized_finished
     return data
+
+
+def _normalize_finished_product(row: dict) -> dict:
+    sizes = [str(size or "").strip() for size in (row.get("sizes") or []) if str(size or "").strip()]
+    advertised_raw = row.get("advertisedVariants")
+    if isinstance(advertised_raw, list):
+        advertised_variants = []
+        for size in advertised_raw:
+            normalized = str(size or "").strip()
+            if normalized and normalized in sizes and normalized not in advertised_variants:
+                advertised_variants.append(normalized)
+    else:
+        advertised_variants = list(sizes)
+    composition = []
+    pricing_raw = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    normalized_pricing: dict[str, dict] = {}
+    for size in sizes:
+        pricing_row = pricing_raw.get(size) if isinstance(pricing_raw.get(size), dict) else {}
+        sale_prices = pricing_row.get("salePrices") if isinstance(pricing_row.get("salePrices"), dict) else {}
+        normalized_pricing[size] = {
+            "salePrices": {
+                "retail": float(sale_prices.get("retail") or 0),
+                "website": float(sale_prices.get("website") or 0),
+                "whatsapp": float(sale_prices.get("whatsapp") or 0),
+            }
+        }
+    for item in row.get("composition", []) or []:
+        if not isinstance(item, dict):
+            continue
+        inv_id = str(item.get("inventoryProductId") or "").strip()
+        inv_name = str(item.get("inventoryProductName") or "").strip()
+        try:
+            pct = float(item.get("percentage") or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if not inv_id or pct <= 0:
+            continue
+        composition.append(
+            {
+                "inventoryProductId": inv_id,
+                "inventoryProductName": inv_name,
+                "percentage": pct,
+            }
+        )
+    return {
+        "crmProductId": str(row.get("crmProductId") or row.get("id") or "").strip(),
+        "name": str(row.get("name") or "").strip(),
+        "sizes": sizes,
+        "advertisedVariants": advertised_variants,
+        "pricing": normalized_pricing,
+        "composition": composition,
+        "description": str(row.get("description") or "").strip(),
+        "usageInstructions": str(row.get("usageInstructions") or "").strip(),
+        "preparationNotes": str(row.get("preparationNotes") or "").strip(),
+        "imageDataUrl": str(row.get("imageDataUrl") or "").strip(),
+        "imageAltText": str(row.get("imageAltText") or "").strip(),
+        "isPublished": bool(row.get("isPublished", True)),
+        "crmUpdatedAt": row.get("crmUpdatedAt"),
+        "syncedAt": row.get("syncedAt"),
+    }
+
+
+def _variant_to_grams(variant: str) -> float:
+    raw = str(variant or "").strip().lower()
+    if not raw:
+        return 0.0
+    if raw.endswith("kg"):
+        try:
+            return float(raw[:-2].strip()) * 1000.0
+        except ValueError:
+            return 0.0
+    if raw.endswith("g"):
+        try:
+            return float(raw[:-1].strip())
+        except ValueError:
+            return 0.0
+    if raw.endswith("l"):
+        try:
+            return float(raw[:-1].strip()) * 1000.0
+        except ValueError:
+            return 0.0
+    if raw.endswith("ml"):
+        try:
+            return float(raw[:-2].strip())
+        except ValueError:
+            return 0.0
+    return 0.0
+
+
+def _fetch_crm_products() -> list[dict]:
+    req = urlrequest.Request(f"{CRM_URL.rstrip('/')}/api/inventory/products", method="GET")
+    try:
+        with urlrequest.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {}
+            products = parsed.get("products", []) if isinstance(parsed, dict) else []
+            return products if isinstance(products, list) else []
+    except (urlerror.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return []
+
+
+def _sync_finished_products_from_crm(data: dict) -> tuple[dict, bool]:
+    crm_products = _fetch_crm_products()
+    if not crm_products:
+        return data, False
+
+    existing_by_id = {
+        str(row.get("crmProductId") or ""): _normalize_finished_product(row)
+        for row in data.get("finishedProducts", []) or []
+        if isinstance(row, dict) and str(row.get("crmProductId") or "").strip()
+    }
+    synced_rows: list[dict] = []
+    changed = False
+    now_ms = int(time.time() * 1000)
+
+    for raw in crm_products:
+        if not isinstance(raw, dict):
+            continue
+        crm_id = str(raw.get("id") or "").strip()
+        if not crm_id:
+            continue
+        previous = existing_by_id.get(crm_id, {})
+        merged = _normalize_finished_product(
+            {
+                "crmProductId": crm_id,
+                "name": raw.get("name", ""),
+                "sizes": raw.get("sizes", []),
+                "pricing": raw.get("pricing", {}),
+                "composition": raw.get("composition", []),
+                "advertisedVariants": previous.get("advertisedVariants", raw.get("sizes", [])),
+                "description": previous.get("description", ""),
+                "usageInstructions": previous.get("usageInstructions", ""),
+                "preparationNotes": previous.get("preparationNotes", ""),
+                "imageDataUrl": previous.get("imageDataUrl", ""),
+                "imageAltText": previous.get("imageAltText", ""),
+                "isPublished": previous.get("isPublished", True),
+                "crmUpdatedAt": now_ms,
+                "syncedAt": now_ms,
+            }
+        )
+        if previous != merged:
+            changed = True
+        synced_rows.append(merged)
+
+    old_ids = {str(row.get("crmProductId") or "") for row in data.get("finishedProducts", []) or [] if isinstance(row, dict)}
+    new_ids = {row["crmProductId"] for row in synced_rows}
+    if old_ids != new_ids:
+        changed = True
+    data["finishedProducts"] = synced_rows
+    return data, changed
+
+
+def _finished_product_availability(data: dict, row: dict) -> dict:
+    by_inventory_id = {
+        str(product.get("id") or ""): product
+        for product in data.get("products", []) or []
+        if isinstance(product, dict)
+    }
+    sizes = [str(size or "").strip() for size in (row.get("sizes") or []) if str(size or "").strip()]
+    composition = row.get("composition", []) or []
+    variant_rows: list[dict] = []
+    total_units = 0
+
+    for size in sizes:
+        variant_grams = _variant_to_grams(size)
+        limiting_units: float | None = None
+        ingredient_rows: list[dict] = []
+        for item in composition:
+            inv_id = str(item.get("inventoryProductId") or "").strip()
+            source = by_inventory_id.get(inv_id) or {}
+            stock_grams = float(source.get("stock") or 0)
+            usable_stock_grams = stock_grams * 0.5
+            required_grams = variant_grams * (float(item.get("percentage") or 0) / 100.0)
+            possible_units = int(usable_stock_grams // required_grams) if required_grams > 0 else 0
+            if limiting_units is None:
+                limiting_units = possible_units
+            else:
+                limiting_units = min(limiting_units, possible_units)
+            ingredient_rows.append(
+                {
+                    "inventoryProductId": inv_id,
+                    "inventoryProductName": str(item.get("inventoryProductName") or source.get("name") or "").strip(),
+                    "stockGrams": round(stock_grams, 2),
+                    "usableStockGrams": round(usable_stock_grams, 2),
+                    "requiredPerUnitGrams": round(required_grams, 2),
+                    "percentage": float(item.get("percentage") or 0),
+                    "possibleUnits": max(0, possible_units),
+                }
+            )
+        units = max(0, int(limiting_units or 0)) if composition and variant_grams > 0 else 0
+        total_units += units
+        variant_rows.append(
+            {
+                "variant": size,
+                "variantGrams": round(variant_grams, 2),
+                "availableUnits": units,
+                "pricing": (row.get("pricing") or {}).get(size, {"salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0}}),
+                "ingredients": ingredient_rows,
+            }
+        )
+
+    return {
+        **row,
+        "availableUnitsTotal": total_units,
+        "availabilityBasis": "50_percent_of_raw_inventory",
+        "variants": variant_rows,
+        "websiteVariants": [variant for variant in variant_rows if variant.get("variant") in set(row.get("advertisedVariants", []))],
+    }
+
+
+def _hydrated_finished_products(data: dict) -> list[dict]:
+    return [
+        _finished_product_availability(data, row)
+        for row in data.get("finishedProducts", []) or []
+        if isinstance(row, dict) and str(row.get("crmProductId") or "").strip()
+    ]
 
 def compute_analytics(p: dict) -> dict:
     """Compute dashboard metrics for a single product."""
@@ -334,9 +562,13 @@ async def get_stock():
 @app.get("/api/data")
 async def get_data():
     data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    if changed:
+        write_data(data)
     # Attach analytics to each product
     for p in data["products"]:
         p["analytics"] = compute_analytics(p)
+    data["finishedProducts"] = _hydrated_finished_products(data)
     data["uiPreferences"] = read_ui_preferences()
     return JSONResponse(data)
 
@@ -357,6 +589,119 @@ async def put_data(request: Request):
     body = await request.json()
     write_data(body)
     return {"ok": True}
+
+
+@app.post("/api/finished-products/sync")
+async def sync_finished_products():
+    data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    if not changed and data.get("finishedProducts"):
+        return {"ok": True, "changed": False, "count": len(data.get("finishedProducts", []))}
+    if changed:
+        write_data(data)
+    return {"ok": True, "changed": changed, "count": len(data.get("finishedProducts", []))}
+
+
+@app.get("/api/finished-products")
+async def get_finished_products():
+    data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    if changed:
+        write_data(data)
+    return JSONResponse(_hydrated_finished_products(data))
+
+
+@app.put("/api/finished-products/{crm_product_id}")
+async def update_finished_product(crm_product_id: str, request: Request):
+    body = await request.json()
+    data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    idx = next((i for i, row in enumerate(data.get("finishedProducts", [])) if row.get("crmProductId") == crm_product_id), None)
+    if idx is None:
+        raise HTTPException(404, "Finished product not found")
+    row = _normalize_finished_product(
+        {
+            **data["finishedProducts"][idx],
+            "advertisedVariants": body.get("advertisedVariants", data["finishedProducts"][idx].get("advertisedVariants", [])),
+            "description": body.get("description", data["finishedProducts"][idx].get("description", "")),
+            "usageInstructions": body.get("usageInstructions", data["finishedProducts"][idx].get("usageInstructions", "")),
+            "preparationNotes": body.get("preparationNotes", data["finishedProducts"][idx].get("preparationNotes", "")),
+            "imageDataUrl": body.get("imageDataUrl", data["finishedProducts"][idx].get("imageDataUrl", "")),
+            "imageAltText": body.get("imageAltText", data["finishedProducts"][idx].get("imageAltText", "")),
+            "isPublished": body.get("isPublished", data["finishedProducts"][idx].get("isPublished", True)),
+            "syncedAt": int(time.time() * 1000),
+        }
+    )
+    data["finishedProducts"][idx] = row
+    write_data(data)
+    if changed:
+        data = read_data()
+    return JSONResponse(_finished_product_availability(data, row))
+
+
+@app.get("/api/website/finished-products")
+async def website_finished_products():
+    """
+    Public website-ready feed for ecommerce integrations.
+    Only published finished products are exposed, with computed availability.
+    """
+    data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    if changed:
+        write_data(data)
+    rows = [
+        row
+        for row in _hydrated_finished_products(data)
+        if row.get("isPublished") and row.get("websiteVariants")
+    ]
+    website_rows = []
+    for row in rows:
+        website_rows.append(
+            {
+                "crmProductId": row.get("crmProductId"),
+                "name": row.get("name"),
+                "description": row.get("description"),
+                "usageInstructions": row.get("usageInstructions"),
+                "preparationNotes": row.get("preparationNotes"),
+                "imageDataUrl": row.get("imageDataUrl"),
+                "imageAltText": row.get("imageAltText"),
+                "availabilityBasis": row.get("availabilityBasis"),
+                "advertisedVariants": row.get("advertisedVariants", []),
+                "variants": row.get("websiteVariants", []),
+            }
+        )
+    return JSONResponse(website_rows)
+
+
+@app.get("/api/website/finished-products/{crm_product_id}")
+async def website_finished_product_detail(crm_product_id: str):
+    data = read_data()
+    data, changed = _sync_finished_products_from_crm(data)
+    if changed:
+        write_data(data)
+    row = next(
+        (
+            item for item in _hydrated_finished_products(data)
+            if item.get("crmProductId") == crm_product_id and item.get("isPublished") and item.get("websiteVariants")
+        ),
+        None,
+    )
+    if row is None:
+        raise HTTPException(404, "Finished product not found")
+    return JSONResponse(
+        {
+            "crmProductId": row.get("crmProductId"),
+            "name": row.get("name"),
+            "description": row.get("description"),
+            "usageInstructions": row.get("usageInstructions"),
+            "preparationNotes": row.get("preparationNotes"),
+            "imageDataUrl": row.get("imageDataUrl"),
+            "imageAltText": row.get("imageAltText"),
+            "availabilityBasis": row.get("availabilityBasis"),
+            "advertisedVariants": row.get("advertisedVariants", []),
+            "variants": row.get("websiteVariants", []),
+        }
+    )
 
 # ── Products ──────────────────────────────────────────────────────────────────
 @app.post("/api/products")
