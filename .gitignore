@@ -10,6 +10,7 @@ data.json
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal
+*.env
 __pycache__/
 inventory/__pycache__/
 ui_prefs.json

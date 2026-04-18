@@ -111,12 +111,28 @@ The CRM supports these environment variables:
 - `INVENTORY_URL` (default: `http://localhost:8001`)
 - `MAX_IMPORT_BYTES` (default: `5242880`, i.e. 5 MB)
 - `ALLOW_PRIVATE_AI_BASE_URL` (default: disabled)
+- `SERVICE_API_KEYS` (**required**) comma-separated API keys accepted on all `/api/*` routes
+- `SERVICE_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to the first `SERVICE_API_KEYS` value
+- `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `CRM_UI_TRUSTED_ORIGINS` (optional) comma-separated first-party CRM UI origins that can access `/api/*` without API key
+- `UI_TRUSTED_ORIGINS` (optional fallback) shared first-party origin allowlist if per-service keys above are not set
+- `UI_PROXY_SHARED_SECRET` (recommended in production) requires proxy-set `X-UI-Proxy-Key` header for first-party browser free-pass
 
 Example:
 
 ```bash
-HOST=0.0.0.0 INVENTORY_URL=http://localhost:8001 python app.py
+HOST=0.0.0.0 INVENTORY_URL=http://localhost:8001 SERVICE_API_KEYS=replace_with_very_long_random_key python app.py
 ```
+
+The Inventory service supports:
+
+- `CRM_URL` (default: `http://localhost:8000`)
+- `SERVICE_API_KEYS` (**required**) must match keys trusted by CRM/website callers
+- `SERVICE_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to the first `SERVICE_API_KEYS` value
+- `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `INVENTORY_UI_TRUSTED_ORIGINS` (optional) comma-separated first-party Inventory UI origins that can access `/api/*` without API key
+- `UI_TRUSTED_ORIGINS` (optional fallback) shared first-party origin allowlist if per-service keys above are not set
+- `UI_PROXY_SHARED_SECRET` (recommended in production) requires proxy-set `X-UI-Proxy-Key` header for first-party browser free-pass
 
 ## Marketing AI + WhatsApp Workflow
 
@@ -169,8 +185,24 @@ Main routes:
 
 ## Security Notes
 
-- This project currently has no built-in authentication or RBAC.
-- Do not expose it directly to the public internet without a secure reverse proxy and auth layer.
+- API key authentication is enforced for all `/api/*` routes in both CRM and Inventory.
+- Accepted headers: `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+- `SERVICE_API_KEYS` is mandatory and each key should be 32+ characters.
+- First-party browser UI origins listed in `UI_TRUSTED_ORIGINS` are allowed without API key so internal CRM/Inventory dashboards continue to work.
+- For hardened deployments, set `UI_PROXY_SHARED_SECRET` and configure reverse proxy to inject `X-UI-Proxy-Key` only for trusted UI traffic.
+- Cross-origin callers (for example website on `:5000`) and server-to-server callers must send API key.
+- Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
+
+Example nginx snippet (CRM):
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-UI-Proxy-Key "replace_with_same_UI_PROXY_SHARED_SECRET";
+}
+```
 - Marketing AI API keys are stored in app state; deploy with trusted access controls.
 - If using `ALLOW_PRIVATE_AI_BASE_URL=1`, ensure only trusted users can modify AI settings.
 
