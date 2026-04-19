@@ -2902,6 +2902,16 @@ def _parse_local_date_bounds(date_value: str) -> tuple[int, int] | None:
         return None
 
 
+def _safe_order_datetime_text(at_value: Any) -> str:
+    try:
+        at_ms = int(_safe_float(at_value))
+        if at_ms <= 0:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(at_ms / 1000))
+    except Exception:
+        return ""
+
+
 @app.post("/api/orders/export-completed")
 async def export_completed_orders(request: Request):
     data = read_data()
@@ -2967,10 +2977,15 @@ async def export_completed_orders(request: Request):
         ]
     )
     for order in rows:
-        at_ms = int(_safe_float(order.get("at")))
-        order_date = time.strftime("%Y-%m-%d %H:%M", time.localtime(at_ms / 1000)) if at_ms > 0 else ""
-        revenue = _order_revenue(products_by_id, order)
-        profit = _order_profit(products_by_id, order, gateway_pct)
+        order_date = _safe_order_datetime_text(order.get("at"))
+        try:
+            revenue = _order_revenue(products_by_id, order)
+        except Exception:
+            revenue = 0.0
+        try:
+            profit = _order_profit(products_by_id, order, gateway_pct)
+        except Exception:
+            profit = None
         writer.writerow(
             [
                 int(_safe_float(order.get("id"))),
