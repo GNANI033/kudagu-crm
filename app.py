@@ -2922,7 +2922,7 @@ async def export_completed_orders(request: Request):
     except Exception:
         body = {}
 
-    scoped_data = _filter_data_for_user(data, ctx.get("user"))
+    scoped_data = _filtered_data_for_user(data, ctx.get("user"))
     all_orders = scoped_data.get("orders", []) or []
     completed_orders = [o for o in all_orders if _order_is_completed(o)]
 
