@@ -2904,12 +2904,25 @@ def _parse_local_date_bounds(date_value: str) -> tuple[int, int] | None:
 
 def _safe_order_datetime_text(at_value: Any) -> str:
     try:
-        at_ms = int(_safe_float(at_value))
+        at_ms = _normalized_order_time_ms(at_value)
         if at_ms <= 0:
             return ""
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(at_ms / 1000))
     except Exception:
         return ""
+
+
+def _normalized_order_time_ms(raw_value: Any) -> int:
+    value = _safe_float(raw_value)
+    if value <= 0:
+        return 0
+    # Guard against mixed timestamp units across old/new records.
+    # >1e13 likely microseconds, <1e10 likely seconds, otherwise milliseconds.
+    if value > 10_000_000_000_000:
+        value = value / 1000.0
+    elif value < 10_000_000_000:
+        value = value * 1000.0
+    return int(value)
 
 
 @app.post("/api/orders/export-completed")
@@ -2927,17 +2940,26 @@ async def export_completed_orders(request: Request):
     completed_orders = [o for o in all_orders if _order_is_completed(o)]
 
     range_key = str((body or {}).get("range") or "last_7_days").strip().lower()
+    aliases = {
+        "last 7 days": "last_7_days",
+        "last 1 month": "last_1_month",
+        "all completed orders": "all",
+    }
+    range_key = aliases.get(range_key, range_key)
     if range_key not in {"last_7_days", "last_1_month", "custom", "all"}:
         raise HTTPException(status_code=400, detail="Invalid range. Use last_7_days, last_1_month, custom, or all.")
 
     now_ms = int(time.time() * 1000)
+    day_ms = 24 * 60 * 60 * 1000
+    today_start_ms = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)) * 1000)
+    tomorrow_start_ms = today_start_ms + day_ms
     filtered_orders = completed_orders
     if range_key == "last_7_days":
-        start_ms = now_ms - (7 * 24 * 60 * 60 * 1000)
-        filtered_orders = [o for o in completed_orders if _safe_float(o.get("at")) >= start_ms]
+        start_ms = today_start_ms - (6 * day_ms)
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
     elif range_key == "last_1_month":
-        start_ms = now_ms - (30 * 24 * 60 * 60 * 1000)
-        filtered_orders = [o for o in completed_orders if _safe_float(o.get("at")) >= start_ms]
+        start_ms = today_start_ms - (29 * day_ms)
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
     elif range_key == "custom":
         start_date = str((body or {}).get("startDate") or "").strip()
         end_date = str((body or {}).get("endDate") or "").strip()
@@ -2951,11 +2973,11 @@ async def export_completed_orders(request: Request):
         end_exclusive_ms = end_bounds[1]
         if end_exclusive_ms <= start_ms:
             raise HTTPException(status_code=400, detail="endDate must be same day or after startDate.")
-        filtered_orders = [o for o in completed_orders if start_ms <= _safe_float(o.get("at")) < end_exclusive_ms]
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < end_exclusive_ms]
 
     products_by_id = {p.get("id"): p for p in (scoped_data.get("products", []) or []) if isinstance(p, dict)}
     gateway_pct = _payment_gateway_commission_pct(scoped_data)
-    rows = sorted(filtered_orders, key=lambda o: int(_safe_float(o.get("at"))), reverse=True)
+    rows = sorted(filtered_orders, key=lambda o: _normalized_order_time_ms(o.get("at")), reverse=True)
 
     csv_output = StringIO()
     writer = csv.writer(csv_output)
