@@ -2181,6 +2181,98 @@ async function downloadSelectedCustomersExcel(){
     toast('Error: '+e.message,'err');
   }
 }
+function completedOrdersForExport(){
+  return (S.orders||[]).filter((o)=>isCompleted(o));
+}
+function daysAgoISO(days){
+  const d=new Date();
+  d.setDate(d.getDate()-Math.max(0,parseInt(days||0,10)||0));
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function openCompletedOrdersExportModal(){
+  const done=completedOrdersForExport();
+  if(!done.length){ toast('No completed orders to export','err'); return; }
+  openModal(`
+    <div class="modal-title">Export Completed Orders</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
+      <div class="fg">
+        <label>Date Range</label>
+        <select id="orders-export-range" onchange="onCompletedOrdersExportRangeChange()">
+          <option value="last_7_days">Last 7 days</option>
+          <option value="last_1_month">Last 1 month</option>
+          <option value="custom">Custom date range</option>
+          <option value="all">All completed orders</option>
+        </select>
+      </div>
+      <div id="orders-export-custom-row" style="display:none;gap:10px">
+        <div class="fg" style="flex:1">
+          <label>From</label>
+          <input id="orders-export-start" type="date" value="${daysAgoISO(6)}" onclick="openNativePicker('orders-export-start')">
+        </div>
+        <div class="fg" style="flex:1">
+          <label>To</label>
+          <input id="orders-export-end" type="date" value="${todayISO()}" onclick="openNativePicker('orders-export-end')">
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text-3)">Only orders marked as <strong>Completed</strong> will be exported.</div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-p" style="flex:1" onclick="downloadCompletedOrdersExport()">Download CSV</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+}
+function onCompletedOrdersExportRangeChange(){
+  const range=g('orders-export-range')?.value||'last_7_days';
+  const row=g('orders-export-custom-row');
+  if(!row) return;
+  row.style.display=range==='custom'?'flex':'none';
+}
+async function downloadCompletedOrdersExport(){
+  const range=(g('orders-export-range')?.value||'last_7_days');
+  const payload={range};
+  if(range==='custom'){
+    const startDate=(g('orders-export-start')?.value||'').trim();
+    const endDate=(g('orders-export-end')?.value||'').trim();
+    if(!startDate || !endDate){ toast('Select both start and end date','err'); return; }
+    if(startDate>endDate){ toast('End date must be same day or after start date','err'); return; }
+    payload.startDate=startDate;
+    payload.endDate=endDate;
+  }
+  try{
+    const res=await fetch('/api/orders/export-completed',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(payload),
+      credentials:'same-origin',
+    });
+    if(!res.ok){
+      const raw=await res.text();
+      let message=raw||`${res.status}`;
+      try{
+        const parsed=JSON.parse(raw);
+        if(parsed?.detail) message=String(parsed.detail);
+      }catch(_){}
+      throw new Error(message);
+    }
+    const blob=await res.blob();
+    const disposition=res.headers.get('Content-Disposition')||'';
+    const match=/filename=\"?([^\";]+)\"?/i.exec(disposition);
+    const fileName=match?.[1]||'completed-orders-export.csv';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url;
+    a.download=fileName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    closeModal();
+    toast('Completed orders export downloaded','ok');
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
 function openBulkImportModal(){
   openModal(`
     <div class="modal-title">Bulk Import Customers</div>
@@ -2631,7 +2723,11 @@ function rOrders(){
   g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed';
   const body=g('ob');
   if(!S.orders.length){body.innerHTML=`<div class="empty"><div class="ei">📋</div><div class="et">No orders yet</div><div class="es">Record your first sale</div></div>`;return;}
-  body.innerHTML=buildOrderTable(active,'Active Orders',false,'active')+buildOrderTable(done,'Completed Orders',true,'completed');
+  body.innerHTML=`
+    <div style="display:flex;justify-content:flex-end;padding:12px 12px 0 12px">
+      <button class="btn btn-s btn-sm" onclick="openCompletedOrdersExportModal()" ${done.length?'':'disabled'}>Export Completed Orders</button>
+    </div>
+  `+buildOrderTable(active,'Active Orders',false,'active')+buildOrderTable(done,'Completed Orders',true,'completed');
 }
 
 function buildOrderTable(orders,title,collapsible,bucket){

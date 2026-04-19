@@ -34,7 +34,7 @@ import secrets
 import hashlib
 import hmac
 from contextlib import asynccontextmanager
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
 from urllib import error as urlerror
@@ -2887,6 +2887,114 @@ async def add_order(request: Request):
     _reconcile_order_inventory(data, 0, prev_order=None, force=True)
     write_data(data)
     return _filtered_order_response(data, ctx.get("user"), order["id"])
+
+
+def _parse_local_date_bounds(date_value: str) -> tuple[int, int] | None:
+    try:
+        parts = [int(p) for p in str(date_value or "").split("-")]
+        if len(parts) != 3:
+            return None
+        year, month, day = parts
+        start_sec = time.mktime((year, month, day, 0, 0, 0, 0, 0, -1))
+        end_sec = start_sec + 86400
+        return int(start_sec * 1000), int(end_sec * 1000)
+    except Exception:
+        return None
+
+
+@app.post("/api/orders/export-completed")
+async def export_completed_orders(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    scoped_data = _filter_data_for_user(data, ctx.get("user"))
+    all_orders = scoped_data.get("orders", []) or []
+    completed_orders = [o for o in all_orders if _order_is_completed(o)]
+
+    range_key = str((body or {}).get("range") or "last_7_days").strip().lower()
+    if range_key not in {"last_7_days", "last_1_month", "custom", "all"}:
+        raise HTTPException(status_code=400, detail="Invalid range. Use last_7_days, last_1_month, custom, or all.")
+
+    now_ms = int(time.time() * 1000)
+    filtered_orders = completed_orders
+    if range_key == "last_7_days":
+        start_ms = now_ms - (7 * 24 * 60 * 60 * 1000)
+        filtered_orders = [o for o in completed_orders if _safe_float(o.get("at")) >= start_ms]
+    elif range_key == "last_1_month":
+        start_ms = now_ms - (30 * 24 * 60 * 60 * 1000)
+        filtered_orders = [o for o in completed_orders if _safe_float(o.get("at")) >= start_ms]
+    elif range_key == "custom":
+        start_date = str((body or {}).get("startDate") or "").strip()
+        end_date = str((body or {}).get("endDate") or "").strip()
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="startDate and endDate are required for custom range.")
+        start_bounds = _parse_local_date_bounds(start_date)
+        end_bounds = _parse_local_date_bounds(end_date)
+        if start_bounds is None or end_bounds is None:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        start_ms = start_bounds[0]
+        end_exclusive_ms = end_bounds[1]
+        if end_exclusive_ms <= start_ms:
+            raise HTTPException(status_code=400, detail="endDate must be same day or after startDate.")
+        filtered_orders = [o for o in completed_orders if start_ms <= _safe_float(o.get("at")) < end_exclusive_ms]
+
+    products_by_id = {p.get("id"): p for p in (scoped_data.get("products", []) or []) if isinstance(p, dict)}
+    gateway_pct = _payment_gateway_commission_pct(scoped_data)
+    rows = sorted(filtered_orders, key=lambda o: int(_safe_float(o.get("at"))), reverse=True)
+
+    csv_output = StringIO()
+    writer = csv.writer(csv_output)
+    writer.writerow(
+        [
+            "Order ID",
+            "Order Date",
+            "Customer Name",
+            "Customer Phone",
+            "Area",
+            "Product / Service",
+            "Variant",
+            "Qty",
+            "Channel",
+            "Payment Method",
+            "Revenue",
+            "Profit",
+            "Status",
+        ]
+    )
+    for order in rows:
+        at_ms = int(_safe_float(order.get("at")))
+        order_date = time.strftime("%Y-%m-%d %H:%M", time.localtime(at_ms / 1000)) if at_ms > 0 else ""
+        revenue = _order_revenue(products_by_id, order)
+        profit = _order_profit(products_by_id, order, gateway_pct)
+        writer.writerow(
+            [
+                int(_safe_float(order.get("id"))),
+                order_date,
+                str(order.get("cname") or "").strip(),
+                str(order.get("cphone") or "").strip(),
+                str(order.get("carea") or "").strip(),
+                str(order.get("prod") or "").strip(),
+                str(order.get("variant") or "").strip(),
+                _safe_float(order.get("qty")) or 1,
+                str(order.get("channel") or "").strip(),
+                str(order.get("paymentMethod") or "").strip(),
+                round(revenue, 2),
+                "" if profit is None else round(profit, 2),
+                "completed",
+            ]
+        )
+
+    payload = csv_output.getvalue().encode("utf-8")
+    stream = BytesIO(payload)
+    stream.seek(0)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="completed-orders-export-{ts}.csv"'}
+    return StreamingResponse(stream, media_type="text/csv; charset=utf-8", headers=headers)
 
 
 @app.put("/api/orders/{order_id}")
