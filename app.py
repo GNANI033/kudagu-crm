@@ -1556,9 +1556,11 @@ def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
 
 
 def _order_revenue(products_by_id: dict, order: dict) -> float:
-    realized = _safe_float(order.get("realizedRevenue"))
-    if realized >= 0:
-        return realized
+    raw_realized = order.get("realizedRevenue")
+    if raw_realized is not None and str(raw_realized).strip() != "":
+        realized = _safe_float(raw_realized)
+        if realized >= 0:
+            return realized
     unit = _sale_price_for_order(products_by_id, order)
     qty = _safe_float(order.get("qty")) or 1.0
     return unit * qty
