@@ -14,3 +14,4 @@ data.json
 __pycache__/
 inventory/__pycache__/
 ui_prefs.json
+app_config.py
