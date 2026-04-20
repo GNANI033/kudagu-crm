@@ -171,6 +171,11 @@ Main routes:
 - `POST /api/inventory/sync-completed-orders`
 - `POST /api/marketing/draft`
 - `POST /api/marketing/template`
+- `POST /api/website/auth/signup` (create website customer account + sync CRM customer)
+- `POST /api/website/auth/login` (verify website credentials via CRM)
+- `GET /api/website/users/{id}`, `PUT /api/website/users/{id}` (profile sync)
+- `POST /api/website/orders/sync` (upsert website order into CRM orders)
+- `GET /api/website/orders?websiteUserId={id}` (website-safe customer order history)
 
 ## API Overview (Inventory Service)
 
@@ -191,6 +196,7 @@ Main routes:
 - First-party browser UI origins listed in `UI_TRUSTED_ORIGINS` are allowed without API key so internal CRM/Inventory dashboards continue to work.
 - For hardened deployments, set `UI_PROXY_SHARED_SECRET` and configure reverse proxy to inject `X-UI-Proxy-Key` only for trusted UI traffic.
 - Cross-origin callers (for example website on `:5000`) and server-to-server callers must send API key.
+- Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
 - Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
 
 Example nginx snippet (CRM):

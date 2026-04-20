@@ -126,7 +126,7 @@ DASHBOARD_CACHE_LOCK = threading.RLock()
 DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 AUTH_COOKIE_NAME = "kudagu_crm_session"
 PASSWORD_HASH_ITERATIONS = 310_000
 AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
@@ -246,6 +246,7 @@ DEFAULT_DATA: dict = {
     "operationalExpenses": [],
     "closedFollowUps": [],
     "users": [],
+    "websiteUsers": [],
     "authSessions": [],
     "cid": 1,
     "oid": 1,
@@ -253,6 +254,7 @@ DEFAULT_DATA: dict = {
     "exid": 1,
     "pid": 6,
     "uid": 1,
+    "wuid": 1,
     "waDefaultTpl": (
         "Hi {{customer_name}}, your last order was on {{last_order_date}}. "
         "Would you like to order {{product_name}} ({{variant}}) again? "
@@ -834,6 +836,7 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
     elif not _user_can_view_page(user, "expenses"):
         safe["operationalExpenses"] = []
     safe.pop("users", None)
+    safe.pop("websiteUsers", None)
     safe.pop("authSessions", None)
     return safe
 
@@ -907,6 +910,33 @@ def _normalize_user_record(raw: dict, data: dict, *, preserve_password_hash: str
         record["allowedProductIds"] = []
         record["permissions"] = _normalize_permissions("admin")
     return record
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "") -> dict:
+    email = _normalize_email(raw.get("email"))
+    phone = _normalize_customer_phone(raw.get("phone"))
+    if not email and not phone:
+        raise HTTPException(status_code=400, detail="Website user requires email or phone.")
+    now_ms = int(time.time() * 1000)
+    return {
+        "id": int(raw.get("id") or 0),
+        "email": email,
+        "phone": phone,
+        "name": str(raw.get("name") or "").strip(),
+        "area": str(raw.get("area") or "").strip(),
+        "address": str(raw.get("address") or "").strip(),
+        "notes": str(raw.get("notes") or "").strip(),
+        "customerId": int(raw.get("customerId") or 0),
+        "passwordHash": preserve_password_hash,
+        "isActive": bool(raw.get("isActive", True)),
+        "createdAt": int(raw.get("createdAt") or now_ms),
+        "updatedAt": now_ms,
+        "lastLoginAt": int(raw.get("lastLoginAt") or 0),
+    }
 
 # ── Data helpers ────────────────────────────────────────────────────────────
 def _connect_db() -> sqlite3.Connection:
@@ -1064,10 +1094,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "authSessions"):
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid", "dbid", "uid", "exid"):
+    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -1156,6 +1186,8 @@ def migrate(data: dict) -> dict:
             o["realizedRevenue"] = None
         if "distribution" not in o or not isinstance(o.get("distribution"), dict):
             o["distribution"] = {}
+        if "websiteOrderId" not in o:
+            o["websiteOrderId"] = ""
         # Migrate old delivered/payment_received → completed
         if o["status"] in ("delivered", "payment_received"):
             o["status"] = "completed"
@@ -1252,6 +1284,27 @@ def migrate(data: dict) -> dict:
         normalized_users.append(merged)
     data["users"] = normalized_users
     data["uid"] = max(highest_uid, int(data.get("uid", 1) or 1))
+
+    normalized_website_users: list[dict] = []
+    highest_wuid = int(data.get("wuid", 1) or 1)
+    for idx, raw_user in enumerate(data.get("websiteUsers", []) or [], start=1):
+        if not isinstance(raw_user, dict):
+            continue
+        password_hash = str(raw_user.get("passwordHash") or "").strip()
+        if not password_hash:
+            continue
+        merged = _normalize_website_user_record(
+            {
+                **raw_user,
+                "id": int(raw_user.get("id") or idx),
+                "createdAt": int(raw_user.get("createdAt") or int(time.time() * 1000)),
+            },
+            preserve_password_hash=password_hash,
+        )
+        highest_wuid = max(highest_wuid, int(merged["id"]) + 1)
+        normalized_website_users.append(merged)
+    data["websiteUsers"] = normalized_website_users
+    data["wuid"] = max(highest_wuid, int(data.get("wuid", 1) or 1))
     _prune_expired_sessions(data)
 
     return data
@@ -1309,6 +1362,8 @@ def _add_distribution_channel(data: dict, channel_name: Any) -> None:
 
 def _normalize_customer_source(value: Any) -> str:
     raw = str(value or "").strip().lower()
+    if raw in ("website", "web", "site"):
+        return "website"
     return "bulk_import" if raw in ("bulk_import", "bulk", "import") else "manual"
 
 
@@ -1349,6 +1404,108 @@ def _build_customer(
         "createdByUserId": int(creator.get("id") or 0),
         "createdByUsername": str(creator.get("username") or "").strip(),
         "createdByName": str(creator.get("displayName") or creator.get("username") or "").strip(),
+    }
+
+
+def _website_user_public_payload(user: dict) -> dict:
+    return {
+        "id": int(user.get("id") or 0),
+        "email": _normalize_email(user.get("email")),
+        "phone": _normalize_customer_phone(user.get("phone")),
+        "name": str(user.get("name") or "").strip(),
+        "area": str(user.get("area") or "").strip(),
+        "address": str(user.get("address") or "").strip(),
+        "notes": str(user.get("notes") or "").strip(),
+        "customerId": int(user.get("customerId") or 0),
+        "isActive": bool(user.get("isActive", True)),
+        "createdAt": int(user.get("createdAt") or 0),
+        "updatedAt": int(user.get("updatedAt") or 0),
+        "lastLoginAt": int(user.get("lastLoginAt") or 0),
+    }
+
+
+def _find_website_user(data: dict, *, website_user_id: int = 0, email: str = "", phone: str = "") -> dict | None:
+    normalized_email = _normalize_email(email)
+    normalized_phone = _normalize_customer_phone(phone)
+    for row in data.get("websiteUsers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if website_user_id and int(row.get("id") or 0) == int(website_user_id):
+            return row
+        if normalized_email and _normalize_email(row.get("email")) == normalized_email:
+            return row
+        if normalized_phone and _normalize_customer_phone(row.get("phone")) == normalized_phone:
+            return row
+    return None
+
+
+def _upsert_customer_for_website_user(data: dict, user: dict) -> int:
+    phone = _normalize_customer_phone(user.get("phone"))
+    email = _normalize_email(user.get("email"))
+    idx = None
+    if phone:
+        idx = next((i for i, c in enumerate(data.get("customers", [])) if _normalize_customer_phone(c.get("phone")) == phone), None)
+    if idx is None and email:
+        idx = next((i for i, c in enumerate(data.get("customers", [])) if _normalize_email(c.get("email")) == email), None)
+
+    if idx is None:
+        customer = _build_customer(
+            int(data.get("cid") or 1),
+            user.get("name") or "Website Customer",
+            phone,
+            user.get("area") or "",
+            email=email,
+            address=user.get("address") or "",
+            notes=user.get("notes") or "",
+            at=int(time.time() * 1000),
+            source="website",
+            product_tags=[],
+        )
+        data.setdefault("customers", []).append(customer)
+        data["cid"] = int(data.get("cid") or 1) + 1
+        return int(customer["id"])
+
+    existing = data["customers"][idx]
+    existing["name"] = str(user.get("name") or existing.get("name") or "").strip()
+    if phone:
+        existing["phone"] = phone
+    if email:
+        existing["email"] = email
+    existing["area"] = str(user.get("area") or existing.get("area") or "").strip()
+    existing["address"] = str(user.get("address") or existing.get("address") or "").strip()
+    existing["notes"] = str(user.get("notes") or existing.get("notes") or "").strip()
+    existing["source"] = "website"
+    return int(existing.get("id") or 0)
+
+
+def _normalize_website_order_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"completed", "success", "delivered"}:
+        return "completed"
+    if raw in {"cancelled", "canceled", "failed"}:
+        return "cancelled"
+    if raw in {"active", "processing", "in_progress", "pending"}:
+        return "pending"
+    return "pending"
+
+
+def _website_safe_order_payload(order: dict) -> dict:
+    return {
+        "id": int(order.get("id") or 0),
+        "websiteOrderId": str(order.get("websiteOrderId") or "").strip(),
+        "customerId": int(order.get("cid") or 0),
+        "customerName": str(order.get("cname") or "").strip(),
+        "customerPhone": str(order.get("cphone") or "").strip(),
+        "customerArea": str(order.get("carea") or "").strip(),
+        "productId": str(order.get("prodId") or "").strip(),
+        "productName": str(order.get("prod") or "").strip(),
+        "variant": str(order.get("variant") or "").strip(),
+        "qty": float(order.get("qty") or 0),
+        "status": str(order.get("status") or "").strip(),
+        "channel": str(order.get("channel") or "website").strip(),
+        "paymentMethod": str(order.get("paymentMethod") or "").strip(),
+        "at": int(order.get("at") or 0),
+        "shipping": order.get("shipping", {}) if isinstance(order.get("shipping"), dict) else {},
     }
 
 
@@ -2364,6 +2521,270 @@ async def require_api_key_for_api_routes(request: Request, call_next):
     return await call_next(request)
 
 
+@app.post("/api/website/auth/signup")
+async def website_signup(request: Request):
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    email = _normalize_email(body.get("email"))
+    phone = _normalize_customer_phone(body.get("phone"))
+    if not email and not phone:
+        raise HTTPException(status_code=400, detail="Email or phone is required.")
+    data = read_data()
+    if _find_website_user(data, email=email, phone=phone):
+        raise HTTPException(status_code=409, detail="Website user already exists.")
+    now_ms = int(time.time() * 1000)
+    website_user = _normalize_website_user_record(
+        {
+            "id": int(data.get("wuid") or 1),
+            "email": email,
+            "phone": phone,
+            "name": body.get("name") or "",
+            "area": body.get("area") or "",
+            "address": body.get("address") or "",
+            "notes": body.get("notes") or "",
+            "customerId": 0,
+            "isActive": True,
+            "createdAt": now_ms,
+            "lastLoginAt": now_ms,
+        },
+        preserve_password_hash=_password_hash(password),
+    )
+    customer_id = _upsert_customer_for_website_user(data, website_user)
+    website_user["customerId"] = customer_id
+    data.setdefault("websiteUsers", []).append(website_user)
+    data["wuid"] = int(data.get("wuid") or 1) + 1
+    write_data(data)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(website_user),
+        "customer": {
+            "id": customer_id,
+            "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or website_user.get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or website_user.get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or website_user.get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or website_user.get("address") or "").strip(),
+        },
+    }
+
+
+@app.post("/api/website/auth/login")
+async def website_login(request: Request):
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required.")
+    email = _normalize_email(body.get("email") or body.get("identifier"))
+    phone = _normalize_customer_phone(body.get("phone") or body.get("identifier"))
+    data = read_data()
+    user = _find_website_user(data, email=email, phone=phone)
+    if not user or not _verify_password(password, str(user.get("passwordHash") or "")):
+        raise HTTPException(status_code=401, detail="Invalid website credentials.")
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(status_code=403, detail="Website user is inactive.")
+    user["lastLoginAt"] = int(time.time() * 1000)
+    user["updatedAt"] = int(time.time() * 1000)
+    customer_id = _upsert_customer_for_website_user(data, user)
+    user["customerId"] = customer_id
+    write_data(data)
+    return {"ok": True, "user": _website_user_public_payload(user)}
+
+
+@app.get("/api/website/users/{website_user_id}")
+async def website_user_detail(website_user_id: int):
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == int(user.get("customerId") or 0)), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(user),
+        "customer": {
+            "id": int((customer or {}).get("id") or 0),
+            "name": str((customer or {}).get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or "").strip(),
+        },
+    }
+
+
+@app.put("/api/website/users/{website_user_id}")
+async def website_user_sync_profile(website_user_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    next_email = _normalize_email(body.get("email", user.get("email")))
+    next_phone = _normalize_customer_phone(body.get("phone", user.get("phone")))
+    if not next_email and not next_phone:
+        raise HTTPException(status_code=400, detail="Email or phone is required.")
+    for row in data.get("websiteUsers", []):
+        if not isinstance(row, dict) or int(row.get("id") or 0) == int(website_user_id):
+            continue
+        if next_email and _normalize_email(row.get("email")) == next_email:
+            raise HTTPException(status_code=409, detail="Email already exists.")
+        if next_phone and _normalize_customer_phone(row.get("phone")) == next_phone:
+            raise HTTPException(status_code=409, detail="Phone already exists.")
+    user["email"] = next_email
+    user["phone"] = next_phone
+    user["name"] = str(body.get("name", user.get("name")) or "").strip()
+    user["area"] = str(body.get("area", user.get("area")) or "").strip()
+    user["address"] = str(body.get("address", user.get("address")) or "").strip()
+    user["notes"] = str(body.get("notes", user.get("notes")) or "").strip()
+    if "isActive" in body:
+        user["isActive"] = bool(body.get("isActive"))
+    user["updatedAt"] = int(time.time() * 1000)
+    user["customerId"] = _upsert_customer_for_website_user(data, user)
+    write_data(data)
+    return {"ok": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/orders/sync")
+async def website_sync_order(request: Request):
+    body = await request.json()
+    website_order_id = str(body.get("websiteOrderId") or "").strip()
+    if not website_order_id:
+        raise HTTPException(status_code=400, detail="websiteOrderId is required.")
+    data = read_data()
+
+    try:
+        website_user_id = int(body.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    user = _find_website_user(
+        data,
+        website_user_id=website_user_id,
+        email=body.get("email"),
+        phone=body.get("phone"),
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found. Signup first.")
+
+    if isinstance(body.get("profile"), dict):
+        profile = body.get("profile") or {}
+        user["name"] = str(profile.get("name", user.get("name")) or "").strip()
+        user["area"] = str(profile.get("area", user.get("area")) or "").strip()
+        user["address"] = str(profile.get("address", user.get("address")) or "").strip()
+        user["notes"] = str(profile.get("notes", user.get("notes")) or "").strip()
+        next_email = _normalize_email(profile.get("email", user.get("email")))
+        next_phone = _normalize_customer_phone(profile.get("phone", user.get("phone")))
+        if next_email:
+            user["email"] = next_email
+        if next_phone:
+            user["phone"] = next_phone
+
+    customer_id = _upsert_customer_for_website_user(data, user)
+    user["customerId"] = customer_id
+    user["updatedAt"] = int(time.time() * 1000)
+
+    prod_id = str(body.get("prodId") or "").strip()
+    product = next((p for p in data.get("products", []) if str(p.get("id") or "") == prod_id), None)
+    if not product:
+        raise HTTPException(status_code=400, detail="prodId not found in CRM products.")
+    variant = str(body.get("variant") or "").strip()
+    if not variant:
+        raise HTTPException(status_code=400, detail="variant is required.")
+    qty = float(body.get("qty") or 0)
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="qty must be greater than 0.")
+    status = _normalize_website_order_status(body.get("status"))
+    at_ms = _normalized_order_time_ms(body.get("at") or int(time.time() * 1000))
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None) or {}
+
+    existing_idx = next(
+        (
+            i
+            for i, row in enumerate(data.get("orders", []))
+            if str(row.get("websiteOrderId") or "").strip() == website_order_id and str(row.get("channel") or "") == "website"
+        ),
+        None,
+    )
+    if existing_idx is None:
+        order = {
+            "id": int(data.get("oid") or 1),
+            "websiteOrderId": website_order_id,
+            "cid": customer_id,
+            "cname": str(customer.get("name") or user.get("name") or "").strip(),
+            "cphone": str(customer.get("phone") or user.get("phone") or "").strip(),
+            "carea": str(customer.get("area") or user.get("area") or "").strip(),
+            "prod": str(product.get("name") or "").strip(),
+            "prodId": prod_id,
+            "variant": variant,
+            "qty": qty,
+            "channel": "website",
+            "status": status,
+            "discount": float(body.get("discount", 0) or 0),
+            "commission": float(body.get("commission", 0) or 0),
+            "paymentMethod": str(body.get("paymentMethod") or "").strip(),
+            "at": at_ms,
+            "realizedRevenue": body.get("realizedRevenue"),
+            "distribution": {},
+            "inventorySynced": False,
+            "inventorySyncedAt": None,
+            "shipping": body.get("shipping", {}) if isinstance(body.get("shipping"), dict) else {},
+        }
+        data.setdefault("orders", []).insert(0, order)
+        data["oid"] = int(data.get("oid") or 1) + 1
+        _reconcile_order_inventory(data, 0, prev_order=None, force=True)
+    else:
+        prev = copy.deepcopy(data["orders"][existing_idx])
+        order = data["orders"][existing_idx]
+        order["cid"] = customer_id
+        order["cname"] = str(customer.get("name") or user.get("name") or "").strip()
+        order["cphone"] = str(customer.get("phone") or user.get("phone") or "").strip()
+        order["carea"] = str(customer.get("area") or user.get("area") or "").strip()
+        order["prod"] = str(product.get("name") or "").strip()
+        order["prodId"] = prod_id
+        order["variant"] = variant
+        order["qty"] = qty
+        order["status"] = status
+        order["paymentMethod"] = str(body.get("paymentMethod", order.get("paymentMethod")) or "").strip()
+        if "discount" in body:
+            order["discount"] = float(body.get("discount") or 0)
+        if "commission" in body:
+            order["commission"] = float(body.get("commission") or 0)
+        if "realizedRevenue" in body:
+            order["realizedRevenue"] = body.get("realizedRevenue")
+        if "shipping" in body and isinstance(body.get("shipping"), dict):
+            order["shipping"] = body.get("shipping")
+        order["at"] = at_ms
+        _reconcile_order_inventory(data, existing_idx, prev_order=prev, force=False)
+    write_data(data)
+    return {"ok": True, "order": _website_safe_order_payload(order), "user": _website_user_public_payload(user)}
+
+
+@app.get("/api/website/orders")
+async def website_orders(request: Request):
+    try:
+        website_user_id = int(request.query_params.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    email = request.query_params.get("email") or ""
+    phone = request.query_params.get("phone") or ""
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id, email=email, phone=phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    customer_id = int(user.get("customerId") or 0)
+    rows = [
+        _website_safe_order_payload(row)
+        for row in sorted(
+            data.get("orders", []),
+            key=lambda o: _normalized_order_time_ms(o.get("at")),
+            reverse=True,
+        )
+        if int(row.get("cid") or 0) == customer_id and str(row.get("channel") or "") == "website"
+    ]
+    return {"ok": True, "orders": rows}
+
+
 @app.get("/api/auth/status")
 async def auth_status(request: Request):
     data = read_data()
@@ -2608,7 +3029,7 @@ async def put_data(request: Request):
         raise HTTPException(status_code=400, detail="Missing 'products' key")
     merged = copy.deepcopy(data)
     for key, value in body.items():
-        if key in {"users", "authSessions", "authContext"}:
+        if key in {"users", "websiteUsers", "authSessions", "authContext"}:
             continue
         merged[key] = value
     write_data(merged)
