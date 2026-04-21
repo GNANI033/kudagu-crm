@@ -117,6 +117,9 @@ UI_TRUSTED_ORIGINS = {
 UI_PROXY_SHARED_SECRET = str(os.environ.get("UI_PROXY_SHARED_SECRET", "")).strip()
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
 SYNC_LOCK = threading.Lock()
+INVENTORY_BACKOFF_SECONDS = max(1, int(os.environ.get("INVENTORY_BACKOFF_SECONDS", "20")))
+INVENTORY_CIRCUIT_LOCK = threading.Lock()
+INVENTORY_CIRCUIT_UNTIL = 0.0
 MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
 DATA_LOCK = threading.RLock()
@@ -235,6 +238,25 @@ def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     if SERVICE_OUTBOUND_API_KEY:
         headers["X-API-Key"] = SERVICE_OUTBOUND_API_KEY
     return headers
+
+
+def _inventory_circuit_open() -> bool:
+    with INVENTORY_CIRCUIT_LOCK:
+        return time.time() < INVENTORY_CIRCUIT_UNTIL
+
+
+def _mark_inventory_failure(reason: str = "") -> None:
+    global INVENTORY_CIRCUIT_UNTIL
+    with INVENTORY_CIRCUIT_LOCK:
+        INVENTORY_CIRCUIT_UNTIL = time.time() + INVENTORY_BACKOFF_SECONDS
+    if reason:
+        print(f"[CRM] Inventory circuit open for {INVENTORY_BACKOFF_SECONDS}s: {reason}")
+
+
+def _mark_inventory_success() -> None:
+    global INVENTORY_CIRCUIT_UNTIL
+    with INVENTORY_CIRCUIT_LOCK:
+        INVENTORY_CIRCUIT_UNTIL = 0.0
 
 # ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
 DEFAULT_DATA: dict = {
@@ -2243,6 +2265,8 @@ def _couriers_from_templates(templates: Any) -> list[dict]:
 
 
 def _post_inventory_movement(product_id: str, grams: float, note: str, at: int) -> None:
+    if _inventory_circuit_open():
+        raise urlerror.URLError("Inventory service temporarily in backoff")
     payload = json.dumps(
         {"type": "out", "grams": grams, "note": note, "at": at}
     ).encode("utf-8")
@@ -2252,11 +2276,18 @@ def _post_inventory_movement(product_id: str, grams: float, note: str, at: int) 
         headers=_service_headers({"Content-Type": "application/json"}),
         method="POST",
     )
-    with urlrequest.urlopen(req, timeout=2.5):
-        return
+    try:
+        with urlrequest.urlopen(req, timeout=2.5):
+            _mark_inventory_success()
+            return
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        _mark_inventory_failure(str(exc))
+        raise
 
 
 def _post_inventory_replace_movements(movements: list[dict]) -> dict:
+    if _inventory_circuit_open():
+        raise urlerror.URLError("Inventory service temporarily in backoff")
     payload = json.dumps(
         {"notePrefix": "CRM Order #", "movements": movements}
     ).encode("utf-8")
@@ -2266,12 +2297,20 @@ def _post_inventory_replace_movements(movements: list[dict]) -> dict:
         headers=_service_headers({"Content-Type": "application/json"}),
         method="POST",
     )
-    with urlrequest.urlopen(req, timeout=20.0) as resp:
-        raw = resp.read().decode("utf-8")
-        return json.loads(raw) if raw else {"ok": True}
+    try:
+        with urlrequest.urlopen(req, timeout=20.0) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {"ok": True}
+            _mark_inventory_success()
+            return parsed
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
+        raise
 
 
 def _get_inventory_data() -> dict | None:
+    if _inventory_circuit_open():
+        return None
     req = urlrequest.Request(
         f"{INVENTORY_URL}/api/data",
         headers=_service_headers(),
@@ -2280,13 +2319,18 @@ def _get_inventory_data() -> dict | None:
     try:
         with urlrequest.urlopen(req, timeout=3.0) as resp:
             raw = resp.read().decode("utf-8")
-            return json.loads(raw)
+            parsed = json.loads(raw)
+            _mark_inventory_success()
+            return parsed
     except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
         print(f"[CRM] Inventory data fetch failed: {exc}")
         return None
 
 
 def _get_inventory_stock() -> list[dict] | None:
+    if _inventory_circuit_open():
+        return None
     req = urlrequest.Request(
         f"{INVENTORY_URL}/api/stock",
         headers=_service_headers(),
@@ -2296,13 +2340,17 @@ def _get_inventory_stock() -> list[dict] | None:
         with urlrequest.urlopen(req, timeout=3.0) as resp:
             raw = resp.read().decode("utf-8")
             parsed = json.loads(raw) if raw else []
+            _mark_inventory_success()
             return parsed if isinstance(parsed, list) else []
     except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
         print(f"[CRM] Inventory stock fetch failed: {exc}")
         return None
 
 
 def _delete_inventory_movement(product_id: str, movement_id: int) -> bool:
+    if _inventory_circuit_open():
+        return False
     req = urlrequest.Request(
         f"{INVENTORY_URL}/api/products/{product_id}/movements/{movement_id}",
         headers=_service_headers(),
@@ -2310,8 +2358,10 @@ def _delete_inventory_movement(product_id: str, movement_id: int) -> bool:
     )
     try:
         with urlrequest.urlopen(req, timeout=2.5):
+            _mark_inventory_success()
             return True
     except (urlerror.URLError, TimeoutError, OSError) as exc:
+        _mark_inventory_failure(str(exc))
         print(f"[CRM] Inventory movement delete failed: {exc}")
         return False
 

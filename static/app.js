@@ -223,6 +223,7 @@ async function parseApiResponse(r){
         message=parsed.detail.trim();
       }
     }catch(_){}
+    message=sanitizeUiErrorMessage(message, r.status);
     throw new Error(message);
   }
   return r.json();
@@ -298,7 +299,10 @@ async function postJSONWithTimeout(path, body, timeoutMs=45000){
       body: JSON.stringify(body||{}),
       signal: ctrl.signal,
     });
-    if(!r.ok){ const m=await r.text(); throw new Error(m||`POST ${path} → ${r.status}`); }
+    if(!r.ok){
+      const m=await r.text();
+      throw new Error(sanitizeUiErrorMessage(m||`POST ${path} → ${r.status}`, r.status));
+    }
     return r.json();
   }catch(e){
     if(e.name==='AbortError') throw new Error('Sync timed out. Please try again.');
@@ -548,7 +552,10 @@ async function getJSONWithTimeout(path, timeoutMs=1500){
   const t = setTimeout(()=>ctrl.abort(), timeoutMs);
   try{
     const r = await fetch(path,{ signal: ctrl.signal });
-    if(!r.ok) throw new Error(`GET ${path} → ${r.status}`);
+    if(!r.ok){
+      const m=await r.text();
+      throw new Error(sanitizeUiErrorMessage(m||`GET ${path} → ${r.status}`, r.status));
+    }
     return r.json();
   }catch(e){
     if(e.name==='AbortError') throw new Error(`GET ${path} timed out`);
@@ -556,6 +563,20 @@ async function getJSONWithTimeout(path, timeoutMs=1500){
   }finally{
     clearTimeout(t);
   }
+}
+function sanitizeUiErrorMessage(raw, status){
+  const txt=String(raw||'').trim();
+  const lower=txt.toLowerCase();
+  if(lower.includes('<!doctype html') || lower.includes('<html')){
+    if(lower.includes('netbird')){
+      return `Proxy upstream error (${status||502}). Please try again.`;
+    }
+    return `Upstream service error (${status||502}). Please try again.`;
+  }
+  if(txt.length>260){
+    return txt.slice(0,257)+'...';
+  }
+  return txt || `Request failed (${status||'error'})`;
 }
 function emptyState(){
   return {
