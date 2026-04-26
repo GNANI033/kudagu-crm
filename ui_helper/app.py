@@ -46,6 +46,12 @@ def _load_env_file(path: Path) -> None:
 BASE_DIR = Path(__file__).parent
 _load_env_file(BASE_DIR.parent / ".env")
 _load_env_file(BASE_DIR / ".env")
+_helper_env_file = str(os.environ.get("HELPER_ENV_FILE", "")).strip()
+if _helper_env_file:
+    helper_env_path = Path(_helper_env_file)
+    if not helper_env_path.is_absolute():
+        helper_env_path = (BASE_DIR.parent / helper_env_path).resolve()
+    _load_env_file(helper_env_path)
 
 HELPER_UPSTREAM_URL = str(os.environ.get("HELPER_UPSTREAM_URL", "")).strip().rstrip("/")
 HELPER_API_KEY = str(os.environ.get("HELPER_API_KEY", "")).strip()

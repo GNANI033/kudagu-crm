@@ -139,19 +139,31 @@ Browser users should access CRM/Inventory through helper instances, not directly
 CRM helper:
 
 ```bash
-HELPER_UPSTREAM_URL=http://127.0.0.1:8000 \
-HELPER_API_KEY=replace_with_service_key \
-HELPER_LISTEN_PORT=8100 \
-gunicorn -c ui_helper/gunicorn.helper.conf.py ui_helper.app:app
+gunicorn -c ui_helper/gunicorn.crm_helper.conf.py ui_helper.app:app
 ```
 
 Inventory helper:
 
 ```bash
-HELPER_UPSTREAM_URL=http://127.0.0.1:8001 \
-HELPER_API_KEY=replace_with_service_key \
-HELPER_LISTEN_PORT=8101 \
-gunicorn -c ui_helper/gunicorn.helper.conf.py ui_helper.app:app
+gunicorn -c ui_helper/gunicorn.inventory_helper.conf.py ui_helper.app:app
+```
+
+Create helper env files:
+
+- `ui_helper/.env.crm`
+
+```env
+HELPER_UPSTREAM_URL=http://127.0.0.1:8000
+HELPER_API_KEY=replace_with_service_key
+HELPER_TIMEOUT_SECONDS=30
+```
+
+- `ui_helper/.env.inventory`
+
+```env
+HELPER_UPSTREAM_URL=http://127.0.0.1:8001
+HELPER_API_KEY=replace_with_service_key
+HELPER_TIMEOUT_SECONDS=30
 ```
 
 ## Configuration
