@@ -2565,6 +2565,17 @@ async def healthcheck():
 
 
 @app.middleware("http")
+async def disable_ui_asset_caching(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path.startswith("/static/") or path.startswith("/assets/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
+@app.middleware("http")
 async def require_api_key_for_api_routes(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
         return await call_next(request)

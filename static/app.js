@@ -5006,6 +5006,7 @@ async function init(){
   await loadApplicationData();
 }
 async function loadApplicationData(){
+  let bootstrapError=null;
   try{
     const boot=await api.get('/api/bootstrap');
     S=boot?.state||emptyState();
@@ -5014,16 +5015,24 @@ async function loadApplicationData(){
     AUTH_STATE=S?.authContext||AUTH_STATE;
     FULL_DATA_READY=true;
     FULL_DATA_PROMISE=null;
-  }catch(_){
-    S=emptyState();
+  }catch(err){
+    bootstrapError=err;
+    FULL_DATA_READY=false;
+    FULL_DATA_PROMISE=null;
+  }
+  if(!S){
+    try{
+      await fetchFullData();
+    }catch(err){
+      S=emptyState();
+      const fallbackMsg=err?.message||bootstrapError?.message||'Unknown error';
+      toast('Cannot reach server: '+fallbackMsg,'err');
+      return;
+    }
   }
   if(authEnabled() && !authContext().authenticated){
     enterAuthMode();
     return;
-  }
-  if(!S){
-    try{ await fetchFullData(); }
-    catch(err){ toast('Cannot reach server: '+(err?.message||'Unknown error'),'err'); return; }
   }
   enterAppMode();
   applyTheme(S?.uiPreferences?.theme||'light');
