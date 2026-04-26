@@ -30,7 +30,6 @@ from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
 from urllib import error as urlerror
-from urllib import parse as urlparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -89,19 +88,6 @@ CORS_ALLOWED_ORIGINS = [
     )
     if origin
 ]
-UI_TRUSTED_ORIGINS = {
-    origin
-    for origin in (
-        str(part).strip()
-        for part in (
-            os.environ.get("INVENTORY_UI_TRUSTED_ORIGINS")
-            or os.environ.get("UI_TRUSTED_ORIGINS")
-            or "http://localhost:8001,http://127.0.0.1:8001"
-        ).split(",")
-    )
-    if origin
-}
-UI_PROXY_SHARED_SECRET = str(os.environ.get("UI_PROXY_SHARED_SECRET", "")).strip()
 DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
@@ -135,50 +121,6 @@ def _is_valid_service_api_key(value: str) -> bool:
     if not value:
         return False
     return any(hmac.compare_digest(value, known) for known in SERVICE_API_KEYS)
-
-
-def _origin_from_url(value: str) -> str:
-    try:
-        parsed = urlparse.urlsplit(value)
-    except ValueError:
-        return ""
-    if not parsed.scheme or not parsed.netloc:
-        return ""
-    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
-
-
-def _is_first_party_ui_request(request: Request) -> bool:
-    trusted = {o.rstrip("/") for o in UI_TRUSTED_ORIGINS}
-    trusted_hosts = {str(urlparse.urlsplit(item).netloc).lower() for item in trusted}
-    host = str(request.headers.get("host") or "").strip().lower()
-    if not host or host not in trusted_hosts:
-        return False
-
-    # If configured, require reverse proxy attestation for browser free-pass.
-    # This prevents direct clients from bypassing API keys by spoofing Origin.
-    if UI_PROXY_SHARED_SECRET:
-        proxy_header = str(request.headers.get("x-ui-proxy-key") or "").strip()
-        if not hmac.compare_digest(proxy_header, UI_PROXY_SHARED_SECRET):
-            return False
-
-    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").strip().lower()
-    if host in {"inventory.hopit-labs.com"} and forwarded_proto and forwarded_proto != "https":
-        return False
-
-    origin = str(request.headers.get("origin") or "").strip().rstrip("/")
-    if origin and origin in trusted:
-        return True
-
-    referer_origin = _origin_from_url(str(request.headers.get("referer") or "").strip())
-    if referer_origin and referer_origin in trusted:
-        return True
-
-    # Same-origin browser requests may omit Origin; rely on fetch metadata + host match.
-    sec_fetch_site = str(request.headers.get("sec-fetch-site") or "").strip().lower()
-    if sec_fetch_site in {"same-origin", "same-site", "none"}:
-        return True
-
-    return False
 
 
 def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -749,8 +691,6 @@ async def require_api_key_for_api_routes(request: Request, call_next):
     if not request.url.path.startswith("/api/"):
         return await call_next(request)
     if request.method.upper() == "OPTIONS":
-        return await call_next(request)
-    if _is_first_party_ui_request(request):
         return await call_next(request)
     if not SERVICE_API_KEYS:
         return JSONResponse(status_code=503, content={"detail": "API key auth is not configured."})

@@ -30,10 +30,11 @@ Kudagu CRM is designed for small teams across industries that need:
 
 ## Tech Stack
 
-- Backend: FastAPI, Uvicorn
+- Backend: FastAPI, Uvicorn, Gunicorn
 - Storage: SQLite (WAL mode)
 - PDF generation: ReportLab
 - Spreadsheet parsing: openpyxl
+- Proxy helper: FastAPI + httpx
 - Frontend: Vanilla HTML/CSS/JavaScript (served as static assets)
 
 ## Repository Structure
@@ -49,6 +50,9 @@ Kudagu CRM is designed for small teams across industries that need:
 |  |- static/
 |  |  |- index.html
 |  |  |- app.js
+|- ui_helper/
+|  |- app.py                  # Secure browser UI proxy
+|  |- gunicorn.helper.conf.py
 |- requirements.txt
 |- .gitignore
 ```
@@ -128,6 +132,28 @@ Notes:
 - Both services run with `4` workers using `uvicorn.workers.UvicornWorker`.
 - Gunicorn configs force `DISABLE_IN_MEMORY_CACHE=1` for worker-safe SQLite behavior.
 
+### 6) Run UI helper proxies (browser entrypoints)
+
+Browser users should access CRM/Inventory through helper instances, not directly to backend ports.
+
+CRM helper:
+
+```bash
+HELPER_UPSTREAM_URL=http://127.0.0.1:8000 \
+HELPER_API_KEY=replace_with_service_key \
+HELPER_LISTEN_PORT=8100 \
+gunicorn -c ui_helper/gunicorn.helper.conf.py ui_helper.app:app
+```
+
+Inventory helper:
+
+```bash
+HELPER_UPSTREAM_URL=http://127.0.0.1:8001 \
+HELPER_API_KEY=replace_with_service_key \
+HELPER_LISTEN_PORT=8101 \
+gunicorn -c ui_helper/gunicorn.helper.conf.py ui_helper.app:app
+```
+
 ## Configuration
 
 The CRM supports these environment variables:
@@ -140,9 +166,6 @@ The CRM supports these environment variables:
 - `SERVICE_API_KEYS` (**required**) comma-separated API keys accepted on all `/api/*` routes
 - `SERVICE_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to the first `SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
-- `CRM_UI_TRUSTED_ORIGINS` (optional) comma-separated first-party CRM UI origins that can access `/api/*` without API key
-- `UI_TRUSTED_ORIGINS` (optional fallback) shared first-party origin allowlist if per-service keys above are not set
-- `UI_PROXY_SHARED_SECRET` (recommended in production) requires proxy-set `X-UI-Proxy-Key` header for first-party browser free-pass
 
 Example:
 
@@ -157,9 +180,14 @@ The Inventory service supports:
 - `SERVICE_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to the first `SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
 - `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
-- `INVENTORY_UI_TRUSTED_ORIGINS` (optional) comma-separated first-party Inventory UI origins that can access `/api/*` without API key
-- `UI_TRUSTED_ORIGINS` (optional fallback) shared first-party origin allowlist if per-service keys above are not set
-- `UI_PROXY_SHARED_SECRET` (recommended in production) requires proxy-set `X-UI-Proxy-Key` header for first-party browser free-pass
+
+UI helper environment variables (per helper instance):
+
+- `HELPER_UPSTREAM_URL` (**required**) upstream service URL (CRM internal URL for CRM helper, Inventory internal URL for Inventory helper)
+- `HELPER_API_KEY` (**required**) API key injected by helper for upstream `/api/*` calls
+- `HELPER_LISTEN_HOST` (default: `0.0.0.0`)
+- `HELPER_LISTEN_PORT` (default: `9000`)
+- `HELPER_TIMEOUT_SECONDS` (default: `30`)
 
 ## Marketing AI + WhatsApp Workflow
 
@@ -181,7 +209,7 @@ Note: internet data charges and any third-party AI provider/API usage costs stil
 
 Main routes:
 
-- `GET /` -> CRM web app
+- `GET /` -> CRM web app (recommended to access via UI helper proxy)
 - `GET /healthz` -> minimal health check for uptime monitoring
 - `GET /api/data` -> full application state
 - `PUT /api/data` -> replace full state
@@ -206,7 +234,7 @@ Main routes:
 
 ## API Overview (Inventory Service)
 
-- `GET /` -> Inventory web app
+- `GET /` -> Inventory web app (recommended to access via UI helper proxy)
 - `GET /healthz` -> minimal health check for uptime monitoring
 - `GET /api/stock` -> stock snapshot (used by CRM alerts)
 - `GET /api/data`, `PUT /api/data`
@@ -220,20 +248,35 @@ Main routes:
 - API key authentication is enforced for all `/api/*` routes in both CRM and Inventory.
 - Accepted headers: `X-API-Key: <key>` or `Authorization: Bearer <key>`.
 - `SERVICE_API_KEYS` is mandatory and each key should be 32+ characters.
-- First-party browser UI origins listed in `UI_TRUSTED_ORIGINS` are allowed without API key so internal CRM/Inventory dashboards continue to work.
-- For hardened deployments, set `UI_PROXY_SHARED_SECRET` and configure reverse proxy to inject `X-UI-Proxy-Key` only for trusted UI traffic.
-- Cross-origin callers (for example website on `:5000`) and server-to-server callers must send API key.
+- Browser access should go through UI helper instances; do not expose CRM/Inventory backend ports publicly.
+- UI helper strips any client-supplied `X-API-Key` / `Authorization` and injects server-side key only for upstream `/api/*`.
+- Cross-origin callers and server-to-server callers must send API key.
 - Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
 - Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
 
-Example nginx snippet (CRM):
+Example Caddy snippets (public domains -> helper instances):
+
+```caddy
+crm.hopit-labs.com {
+    reverse_proxy 127.0.0.1:8100
+}
+
+inventory.hopit-labs.com {
+    reverse_proxy 127.0.0.1:8101
+}
+```
+
+Example nginx snippets:
 
 ```nginx
-location / {
-    proxy_pass http://127.0.0.1:8000;
-    proxy_set_header Host $host;
-    proxy_set_header X-Forwarded-Proto $scheme;
-    proxy_set_header X-UI-Proxy-Key "replace_with_same_UI_PROXY_SHARED_SECRET";
+server {
+    server_name crm.hopit-labs.com;
+    location / { proxy_pass http://127.0.0.1:8100; }
+}
+
+server {
+    server_name inventory.hopit-labs.com;
+    location / { proxy_pass http://127.0.0.1:8101; }
 }
 ```
 - Marketing AI API keys are stored in app state; deploy with trusted access controls.
@@ -241,14 +284,14 @@ location / {
 
 ## Production Deployment Notes
 
-- Use a reverse proxy (Nginx/Caddy) in front of the app(s).
+- Use a reverse proxy (Nginx/Caddy) in front of UI helper instances.
 - Terminate TLS at the proxy.
 - Restrict access with Basic Auth, SSO, VPN, or IP allowlists.
 - Exempt only the health endpoints from proxy auth if your uptime monitor cannot send credentials:
-  CRM -> `https://your-domain/healthz`
-  Inventory behind `/inventory/` -> `https://your-domain/inventory/healthz`
+  CRM helper -> `https://crm.your-domain/healthz`
+  Inventory helper -> `https://inventory.your-domain/healthz`
 - Back up SQLite files regularly.
-- Run each app under a process manager (systemd, supervisord, container runtime).
+- Run CRM, Inventory, and helper instances under a process manager (systemd, supervisord, container runtime).
 
 ## Development Workflow
 
