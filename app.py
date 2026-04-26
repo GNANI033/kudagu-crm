@@ -120,6 +120,7 @@ SYNC_LOCK = threading.Lock()
 INVENTORY_BACKOFF_SECONDS = max(1, int(os.environ.get("INVENTORY_BACKOFF_SECONDS", "20")))
 INVENTORY_CIRCUIT_LOCK = threading.Lock()
 INVENTORY_CIRCUIT_UNTIL = 0.0
+DISABLE_IN_MEMORY_CACHE = str(os.environ.get("DISABLE_IN_MEMORY_CACHE", "")).strip().lower() in ("1", "true", "yes", "on")
 MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
 DATA_LOCK = threading.RLock()
@@ -1091,10 +1092,12 @@ def read_data() -> dict:
     global DATA_CACHE
     _init_storage()
     with DATA_LOCK:
-        if DATA_CACHE is None:
-            with _connect_db() as conn:
+        with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                return copy.deepcopy(_load_state_from_db(conn))
+            if DATA_CACHE is None:
                 DATA_CACHE = _load_state_from_db(conn)
-        return copy.deepcopy(DATA_CACHE)
+            return copy.deepcopy(DATA_CACHE)
 
 
 def write_data(data: dict) -> None:
@@ -1103,11 +1106,17 @@ def write_data(data: dict) -> None:
     _init_storage()
     migrated = migrate(copy.deepcopy(data))
     with DATA_LOCK:
-        current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else {}
         with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                current = _load_state_from_db(conn)
+            else:
+                current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else _load_state_from_db(conn)
             _save_state_to_db(conn, current, migrated)
             _set_schema_version(conn, SCHEMA_VERSION)
-        DATA_CACHE = migrated
+        if DISABLE_IN_MEMORY_CACHE:
+            DATA_CACHE = None
+        else:
+            DATA_CACHE = migrated
     with DASHBOARD_CACHE_LOCK:
         DASHBOARD_METRICS_CACHE["expires_at"] = 0.0
         DASHBOARD_METRICS_CACHE["payload"] = None

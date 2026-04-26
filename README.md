@@ -103,6 +103,31 @@ Inventory runs at `http://localhost:8001`.
 
 Important: The CRM depends on the inventory service for stock visibility, low-stock alerts, and order-to-inventory movement sync. Run both services together in production.
 
+### 5) Production runtime with Gunicorn (4 workers)
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run CRM:
+
+```bash
+gunicorn -c gunicorn.crm.conf.py app:app
+```
+
+Run Inventory:
+
+```bash
+gunicorn -c inventory/gunicorn.inventory.conf.py inventory.app:app
+```
+
+Notes:
+
+- Both services run with `4` workers using `uvicorn.workers.UvicornWorker`.
+- Gunicorn configs force `DISABLE_IN_MEMORY_CACHE=1` for worker-safe SQLite behavior.
+
 ## Configuration
 
 The CRM supports these environment variables:
@@ -111,6 +136,7 @@ The CRM supports these environment variables:
 - `INVENTORY_URL` (default: `http://localhost:8001`)
 - `MAX_IMPORT_BYTES` (default: `5242880`, i.e. 5 MB)
 - `ALLOW_PRIVATE_AI_BASE_URL` (default: disabled)
+- `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
 - `SERVICE_API_KEYS` (**required**) comma-separated API keys accepted on all `/api/*` routes
 - `SERVICE_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to the first `SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
@@ -130,6 +156,7 @@ The Inventory service supports:
 - `SERVICE_API_KEYS` (**required**) must match keys trusted by CRM/website callers
 - `SERVICE_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to the first `SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
 - `INVENTORY_UI_TRUSTED_ORIGINS` (optional) comma-separated first-party Inventory UI origins that can access `/api/*` without API key
 - `UI_TRUSTED_ORIGINS` (optional fallback) shared first-party origin allowlist if per-service keys above are not set
 - `UI_PROXY_SHARED_SECRET` (recommended in production) requires proxy-set `X-UI-Proxy-Key` header for first-party browser free-pass

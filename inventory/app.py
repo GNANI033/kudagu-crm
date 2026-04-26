@@ -24,6 +24,7 @@ import time
 import threading
 import os
 import hmac
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -105,6 +106,7 @@ DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
 SCHEMA_VERSION = 2
+DISABLE_IN_MEMORY_CACHE = str(os.environ.get("DISABLE_IN_MEMORY_CACHE", "")).strip().lower() in ("1", "true", "yes", "on")
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
 
@@ -324,21 +326,29 @@ def read_data() -> dict:
     global DATA_CACHE
     _init_storage()
     with DATA_LOCK:
-        if DATA_CACHE is None:
-            with _connect_db() as conn:
+        with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                return copy.deepcopy(_load_state_from_db(conn))
+            if DATA_CACHE is None:
                 DATA_CACHE = _load_state_from_db(conn)
-        return copy.deepcopy(DATA_CACHE)
+            return copy.deepcopy(DATA_CACHE)
 
 def write_data(data: dict) -> None:
     global DATA_CACHE
     _init_storage()
     migrated = migrate(copy.deepcopy(data))
     with DATA_LOCK:
-        current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else {}
         with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                current = _load_state_from_db(conn)
+            else:
+                current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else _load_state_from_db(conn)
             _save_state_to_db(conn, current, migrated)
             _set_schema_version(conn, SCHEMA_VERSION)
-        DATA_CACHE = migrated
+        if DISABLE_IN_MEMORY_CACHE:
+            DATA_CACHE = None
+        else:
+            DATA_CACHE = migrated
 
 def read_ui_preferences() -> dict:
     with UI_PREFS_LOCK:
@@ -389,22 +399,64 @@ def migrate(data: dict) -> dict:
     return data
 
 
+def _format_unit_number(value: float) -> str:
+    rounded = round(float(value), 3)
+    if abs(rounded - round(rounded)) < 1e-9:
+        return str(int(round(rounded)))
+    return f"{rounded:.3f}".rstrip("0").rstrip(".")
+
+
+def _normalize_variant_label(value: str) -> str:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    compact = re.sub(r"\s+", "", raw)
+    m = re.match(r"^([0-9]*\.?[0-9]+)(kg|gm|g|ml|l)$", compact)
+    if not m:
+        return str(value or "").strip()
+    qty = float(m.group(1))
+    unit = m.group(2)
+    if unit == "gm":
+        unit = "g"
+    return f"{_format_unit_number(qty)}{unit}"
+
+
+def _normalized_size_list(values: list[Any]) -> list[str]:
+    normalized: list[str] = []
+    for size in values:
+        label = _normalize_variant_label(str(size or ""))
+        if label and label not in normalized:
+            normalized.append(label)
+    return normalized
+
+
 def _normalize_finished_product(row: dict) -> dict:
-    sizes = [str(size or "").strip() for size in (row.get("sizes") or []) if str(size or "").strip()]
+    sizes = _normalized_size_list(row.get("sizes") or [])
+    size_set = set(sizes)
+    pricing_raw = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+    pricing_by_size: dict[str, dict] = {}
+    for raw_size, raw_pricing in pricing_raw.items():
+        normalized_size = _normalize_variant_label(str(raw_size or ""))
+        if not normalized_size:
+            continue
+        if normalized_size not in size_set:
+            continue
+        if normalized_size not in pricing_by_size and isinstance(raw_pricing, dict):
+            pricing_by_size[normalized_size] = raw_pricing
+
     advertised_raw = row.get("advertisedVariants")
     if isinstance(advertised_raw, list):
         advertised_variants = []
         for size in advertised_raw:
-            normalized = str(size or "").strip()
+            normalized = _normalize_variant_label(str(size or ""))
             if normalized and normalized in sizes and normalized not in advertised_variants:
                 advertised_variants.append(normalized)
     else:
         advertised_variants = list(sizes)
     composition = []
-    pricing_raw = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
     normalized_pricing: dict[str, dict] = {}
     for size in sizes:
-        pricing_row = pricing_raw.get(size) if isinstance(pricing_raw.get(size), dict) else {}
+        pricing_row = pricing_by_size.get(size) if isinstance(pricing_by_size.get(size), dict) else {}
         sale_prices = pricing_row.get("salePrices") if isinstance(pricing_row.get("salePrices"), dict) else {}
         normalized_pricing[size] = {
             "salePrices": {
@@ -450,12 +502,17 @@ def _normalize_finished_product(row: dict) -> dict:
 
 
 def _variant_to_grams(variant: str) -> float:
-    raw = str(variant or "").strip().lower()
+    raw = _normalize_variant_label(variant).lower()
     if not raw:
         return 0.0
     if raw.endswith("kg"):
         try:
             return float(raw[:-2].strip()) * 1000.0
+        except ValueError:
+            return 0.0
+    if raw.endswith("gm"):
+        try:
+            return float(raw[:-2].strip())
         except ValueError:
             return 0.0
     if raw.endswith("g"):
