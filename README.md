@@ -158,6 +158,115 @@ HELPER_API_KEY=replace_with_service_key
 HELPER_TIMEOUT_SECONDS=30
 ```
 
+### 7) systemd service examples (all 4 services)
+
+Create these files under `/etc/systemd/system/` and adjust `User`, `Group`, and paths if needed.
+Ready-to-copy templates are also included in this repo under `deploy/systemd/`.
+
+`/etc/systemd/system/kudagu-crm-main.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM Main Gunicorn Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c gunicorn.crm.conf.py app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-inventory.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM Inventory Gunicorn Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c inventory/gunicorn.inventory.conf.py inventory.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-helper.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM UI Helper Gunicorn Service
+After=network.target kudagu-crm-main.service
+Requires=kudagu-crm-main.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c ui_helper/gunicorn.crm_helper.conf.py ui_helper.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-inventory-helper.service`
+
+```ini
+[Unit]
+Description=Kudagu Inventory UI Helper Gunicorn Service
+After=network.target kudagu-crm-inventory.service
+Requires=kudagu-crm-inventory.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c ui_helper/gunicorn.inventory_helper.conf.py ui_helper.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Apply and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now kudagu-crm-main kudagu-crm-inventory kudagu-crm-helper kudagu-crm-inventory-helper
+sudo systemctl status kudagu-crm-main kudagu-crm-inventory kudagu-crm-helper kudagu-crm-inventory-helper
+```
+
+Check bound ports:
+
+```bash
+sudo ss -ltnp | egrep ':8000|:8001|:8100|:8101'
+```
+
 - `ui_helper/.env.inventory`
 
 ```env
