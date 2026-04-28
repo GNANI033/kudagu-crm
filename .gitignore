@@ -11,6 +11,9 @@ data.json
 *.sqlite-shm
 *.sqlite-journal
 *.env
+!.env.example
+!ui_helper/.env.crm.example
+!ui_helper/.env.inventory.example
 __pycache__/
 inventory/__pycache__/
 ui_prefs.json
