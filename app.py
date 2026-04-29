@@ -86,6 +86,11 @@ ASSETS_DIR = BASE_DIR / "assets"
 UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
 CRM_SERVICE_API_KEYS_RAW = os.environ.get("CRM_SERVICE_API_KEYS", os.environ.get("SERVICE_API_KEYS", ""))
+WEBSITE_KEYS_RAW = os.environ.get("WEBSITE_KEYS", os.environ.get("WEBSITE_KEY", ""))
+UI_HELPER_KEYS_RAW = os.environ.get("UI_HELPER_KEYS", os.environ.get("UI_HELPER_KEY", ""))
+AUTHZ_SCOPE_MODE = str(os.environ.get("AUTHZ_SCOPE_MODE", "enforce")).strip().lower()
+WEBSITE_ALLOW_ORDER_SYNC = str(os.environ.get("WEBSITE_ALLOW_ORDER_SYNC", "1")).strip().lower() in ("1", "true", "yes", "on")
+SERVICE_NAME = "crm"
 SERVICE_API_KEYS = tuple(
     dict.fromkeys(str(part).strip() for part in CRM_SERVICE_API_KEYS_RAW.split(",") if str(part).strip())
 )
@@ -128,6 +133,9 @@ AUTH_RATE_LIMIT_MAX_ATTEMPTS = 10
 AUTH_THROTTLE_LOCK = threading.Lock()
 AUTH_THROTTLE_STATE: dict[str, list[float]] = {}
 
+KEY_METADATA_LOCK = threading.Lock()
+KEY_METADATA: dict[str, dict[str, Any]] = {}
+
 PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
 DASHBOARD_CARD_KEYS = (
     "revenue",
@@ -154,13 +162,18 @@ ACTION_KEYS: dict[str, tuple[str, ...]] = {
 
 
 def _validate_service_api_key_config() -> None:
-    if not SERVICE_API_KEYS:
+    known_keys = [
+        *[str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()],
+        *[str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()],
+        *SERVICE_API_KEYS,
+    ]
+    if not known_keys:
         raise RuntimeError(
-            "SERVICE_API_KEYS is required. Set one or more strong keys (comma-separated) before starting CRM."
+            "At least one API key is required (WEBSITE_KEY/UI_HELPER_KEY/CRM_SERVICE_API_KEYS)."
         )
-    weak = [key for key in SERVICE_API_KEYS if len(key) < 32]
+    weak = [key for key in known_keys if len(key) < 32]
     if weak:
-        raise RuntimeError("Every SERVICE_API_KEYS value must be at least 32 characters for security.")
+        raise RuntimeError("Every API key value must be at least 32 characters for security.")
 
 
 def _extract_api_key(request: Request) -> str:
@@ -173,10 +186,125 @@ def _extract_api_key(request: Request) -> str:
     return ""
 
 
-def _is_valid_service_api_key(value: str) -> bool:
+def _build_key_candidates() -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for idx, key in enumerate([str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"website_key_{idx}",
+                "owner": "ecommerce_backend",
+                "scope": "website",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate([str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"ui_helper_key_{idx}",
+                "owner": "ui_helper",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate(SERVICE_API_KEYS, start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"service_key_{idx}",
+                "owner": "internal_service",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    return candidates
+
+
+def _resolve_api_key_meta(value: str) -> dict[str, Any] | None:
     if not value:
-        return False
-    return any(hmac.compare_digest(value, known) for known in SERVICE_API_KEYS)
+        return None
+    for row in _build_key_candidates():
+        if hmac.compare_digest(value, str(row["value"])):
+            return row
+    return None
+
+
+def _track_key_usage(meta: dict[str, Any]) -> None:
+    key_id = str(meta.get("key_id") or "")
+    if not key_id:
+        return
+    now_ms = int(time.time() * 1000)
+    with KEY_METADATA_LOCK:
+        record = KEY_METADATA.get(key_id) or {
+            "key_id": key_id,
+            "owner": meta.get("owner"),
+            "scope": meta.get("scope"),
+            "created_at": meta.get("created_at"),
+            "expires_at": meta.get("expires_at"),
+            "revoked_at": meta.get("revoked_at"),
+            "last_used_at": None,
+        }
+        record["last_used_at"] = now_ms
+        KEY_METADATA[key_id] = record
+
+
+def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str]:
+    exact_routes: dict[str, set[str]] = {
+        "/api/website/auth/signup": {"POST"},
+        "/api/website/auth/login": {"POST"},
+        "/api/website/orders": {"GET"},
+    }
+    if WEBSITE_ALLOW_ORDER_SYNC:
+        exact_routes["/api/website/orders/sync"] = {"POST"}
+
+    if path in exact_routes:
+        if method in exact_routes[path]:
+            return True, "ok"
+        return False, "auth_method_denied"
+
+    user_match = re.match(r"^/api/website/users/\d+$", path)
+    if user_match:
+        if method in {"GET", "PUT"}:
+            return True, "ok"
+        return False, "auth_method_denied"
+
+    return False, "auth_scope_denied"
+
+
+def _authz_audit_log(request: Request, meta: dict[str, Any] | None, allowed: bool, reason: str) -> None:
+    payload = {
+        "event": "authz",
+        "service": SERVICE_NAME,
+        "key_id": (meta or {}).get("key_id"),
+        "owner": (meta or {}).get("owner"),
+        "scope": (meta or {}).get("scope"),
+        "route": request.url.path,
+        "method": request.method.upper(),
+        "allow": bool(allowed),
+        "reason": reason,
+        "timestamp": int(time.time() * 1000),
+        "caller_ip": (request.client.host if request.client else ""),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def _require_website_user_context(request: Request, expected_user_id: int) -> None:
+    raw = str(request.headers.get("x-website-user-id") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Missing website user context."})
+    try:
+        ctx_id = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Invalid website user context."})
+    if int(ctx_id) != int(expected_user_id):
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Cross-user access is not allowed."})
 
 
 def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -2526,12 +2654,27 @@ async def require_api_key_for_api_routes(request: Request, call_next):
         return await call_next(request)
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
-    if not SERVICE_API_KEYS:
-        return JSONResponse(status_code=503, content={"detail": "API key auth is not configured."})
-    api_key = _extract_api_key(request)
-    if not _is_valid_service_api_key(api_key):
-        return JSONResponse(status_code=401, content={"detail": "Invalid API key."})
-    return await call_next(request)
+    key_value = _extract_api_key(request)
+    key_meta = _resolve_api_key_meta(key_value)
+    if not key_meta:
+        _authz_audit_log(request, None, False, "auth_invalid_key")
+        return JSONResponse(status_code=401, content={"code": "auth_invalid_key", "detail": "Invalid API key."})
+    _track_key_usage(key_meta)
+    request.state.auth_key_scope = str(key_meta.get("scope") or "internal")
+    request.state.auth_key_id = str(key_meta.get("key_id") or "")
+
+    scope = str(key_meta.get("scope") or "internal")
+    if scope == "website":
+        allowed, reason = _authz_decision_for_website_scope(request.method.upper(), request.url.path)
+        if not allowed:
+            if AUTHZ_SCOPE_MODE == "monitor":
+                _authz_audit_log(request, key_meta, True, f"monitor_{reason}")
+            elif AUTHZ_SCOPE_MODE == "enforce":
+                _authz_audit_log(request, key_meta, False, reason)
+                return JSONResponse(status_code=403, content={"code": reason, "detail": "Route/method is not allowed for website key."})
+    response = await call_next(request)
+    _authz_audit_log(request, key_meta, True, "ok")
+    return response
 
 
 @app.post("/api/website/auth/signup")
@@ -2607,7 +2750,9 @@ async def website_login(request: Request):
 
 
 @app.get("/api/website/users/{website_user_id}")
-async def website_user_detail(website_user_id: int):
+async def website_user_detail(website_user_id: int, request: Request):
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, website_user_id)
     data = read_data()
     user = _find_website_user(data, website_user_id=website_user_id)
     if not user:
@@ -2629,6 +2774,8 @@ async def website_user_detail(website_user_id: int):
 
 @app.put("/api/website/users/{website_user_id}")
 async def website_user_sync_profile(website_user_id: int, request: Request):
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, website_user_id)
     body = await request.json()
     data = read_data()
     user = _find_website_user(data, website_user_id=website_user_id)
@@ -2662,6 +2809,25 @@ async def website_user_sync_profile(website_user_id: int, request: Request):
 @app.post("/api/website/orders/sync")
 async def website_sync_order(request: Request):
     body = await request.json()
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        extra_fields = set(body.keys()) - {
+            "websiteOrderId",
+            "websiteUserId",
+            "email",
+            "phone",
+            "profile",
+            "prodId",
+            "variant",
+            "qty",
+            "paymentMethod",
+            "shipping",
+            "status",
+            "at",
+        }
+        if extra_fields:
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Unexpected fields in website order sync payload."})
+        if "websiteUserId" not in body:
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "websiteUserId is required for website key."})
     website_order_id = str(body.get("websiteOrderId") or "").strip()
     if not website_order_id:
         raise HTTPException(status_code=400, detail="websiteOrderId is required.")
@@ -2679,6 +2845,8 @@ async def website_sync_order(request: Request):
     )
     if not user:
         raise HTTPException(status_code=404, detail="Website user not found. Signup first.")
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, int(user.get("id") or 0))
 
     if isinstance(body.get("profile"), dict):
         profile = body.get("profile") or {}
@@ -2781,6 +2949,10 @@ async def website_orders(request: Request):
         website_user_id = 0
     email = request.query_params.get("email") or ""
     phone = request.query_params.get("phone") or ""
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        if not request.query_params.get("websiteUserId"):
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "websiteUserId is required for website key."})
+        _require_website_user_context(request, website_user_id)
     data = read_data()
     user = _find_website_user(data, website_user_id=website_user_id, email=email, phone=phone)
     if not user:

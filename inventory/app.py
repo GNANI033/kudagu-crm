@@ -72,6 +72,10 @@ STATIC_DIR = BASE_DIR / "static"
 UI_PREFS_FILE = BASE_DIR.parent / "ui_prefs.json"
 CRM_URL = os.environ.get("CRM_URL", "http://localhost:8000")
 INVENTORY_SERVICE_API_KEYS_RAW = os.environ.get("INVENTORY_SERVICE_API_KEYS", os.environ.get("SERVICE_API_KEYS", ""))
+WEBSITE_KEYS_RAW = os.environ.get("WEBSITE_KEYS", os.environ.get("WEBSITE_KEY", ""))
+UI_HELPER_KEYS_RAW = os.environ.get("UI_HELPER_KEYS", os.environ.get("UI_HELPER_KEY", ""))
+AUTHZ_SCOPE_MODE = str(os.environ.get("AUTHZ_SCOPE_MODE", "enforce")).strip().lower()
+SERVICE_NAME = "inventory"
 SERVICE_API_KEYS = tuple(
     dict.fromkeys(str(part).strip() for part in INVENTORY_SERVICE_API_KEYS_RAW.split(",") if str(part).strip())
 )
@@ -97,16 +101,23 @@ SCHEMA_VERSION = 2
 DISABLE_IN_MEMORY_CACHE = str(os.environ.get("DISABLE_IN_MEMORY_CACHE", "")).strip().lower() in ("1", "true", "yes", "on")
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
+KEY_METADATA_LOCK = threading.Lock()
+KEY_METADATA: dict[str, dict[str, Any]] = {}
 
 
 def _validate_service_api_key_config() -> None:
-    if not SERVICE_API_KEYS:
+    known_keys = [
+        *[str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()],
+        *[str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()],
+        *SERVICE_API_KEYS,
+    ]
+    if not known_keys:
         raise RuntimeError(
-            "SERVICE_API_KEYS is required. Set one or more strong keys (comma-separated) before starting Inventory."
+            "At least one API key is required (WEBSITE_KEY/UI_HELPER_KEY/INVENTORY_SERVICE_API_KEYS)."
         )
-    weak = [key for key in SERVICE_API_KEYS if len(key) < 32]
+    weak = [key for key in known_keys if len(key) < 32]
     if weak:
-        raise RuntimeError("Every SERVICE_API_KEYS value must be at least 32 characters for security.")
+        raise RuntimeError("Every API key value must be at least 32 characters for security.")
 
 
 def _extract_api_key(request: Request) -> str:
@@ -119,10 +130,98 @@ def _extract_api_key(request: Request) -> str:
     return ""
 
 
-def _is_valid_service_api_key(value: str) -> bool:
+def _build_key_candidates() -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for idx, key in enumerate([str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"website_key_{idx}",
+                "owner": "ecommerce_backend",
+                "scope": "website",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate([str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"ui_helper_key_{idx}",
+                "owner": "ui_helper",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate(SERVICE_API_KEYS, start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"service_key_{idx}",
+                "owner": "internal_service",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    return candidates
+
+
+def _resolve_api_key_meta(value: str) -> dict[str, Any] | None:
     if not value:
-        return False
-    return any(hmac.compare_digest(value, known) for known in SERVICE_API_KEYS)
+        return None
+    for row in _build_key_candidates():
+        if hmac.compare_digest(value, str(row["value"])):
+            return row
+    return None
+
+
+def _track_key_usage(meta: dict[str, Any]) -> None:
+    key_id = str(meta.get("key_id") or "")
+    if not key_id:
+        return
+    now_ms = int(time.time() * 1000)
+    with KEY_METADATA_LOCK:
+        record = KEY_METADATA.get(key_id) or {
+            "key_id": key_id,
+            "owner": meta.get("owner"),
+            "scope": meta.get("scope"),
+            "created_at": meta.get("created_at"),
+            "expires_at": meta.get("expires_at"),
+            "revoked_at": meta.get("revoked_at"),
+            "last_used_at": None,
+        }
+        record["last_used_at"] = now_ms
+        KEY_METADATA[key_id] = record
+
+
+def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str]:
+    if path == "/api/finished-products":
+        if method == "GET":
+            return True, "ok"
+        return False, "auth_method_denied"
+    return False, "auth_scope_denied"
+
+
+def _authz_audit_log(request: Request, meta: dict[str, Any] | None, allowed: bool, reason: str) -> None:
+    payload = {
+        "event": "authz",
+        "service": SERVICE_NAME,
+        "key_id": (meta or {}).get("key_id"),
+        "owner": (meta or {}).get("owner"),
+        "scope": (meta or {}).get("scope"),
+        "route": request.url.path,
+        "method": request.method.upper(),
+        "allow": bool(allowed),
+        "reason": reason,
+        "timestamp": int(time.time() * 1000),
+        "caller_ip": (request.client.host if request.client else ""),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
 
 
 def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
@@ -609,6 +708,29 @@ def _hydrated_finished_products(data: dict) -> list[dict]:
         if isinstance(row, dict) and str(row.get("crmProductId") or "").strip()
     ]
 
+
+def _website_safe_variant_rows(rows: list[dict]) -> list[dict]:
+    safe_rows: list[dict] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        pricing = row.get("pricing") if isinstance(row.get("pricing"), dict) else {}
+        sale_prices = pricing.get("salePrices") if isinstance(pricing.get("salePrices"), dict) else {}
+        safe_rows.append(
+            {
+                "variant": str(row.get("variant") or "").strip(),
+                "availableUnits": max(0, int(row.get("availableUnits") or 0)),
+                "pricing": {
+                    "salePrices": {
+                        "website": float(sale_prices.get("website") or 0),
+                        "retail": float(sale_prices.get("retail") or 0),
+                        "whatsapp": float(sale_prices.get("whatsapp") or 0),
+                    }
+                },
+            }
+        )
+    return safe_rows
+
 def compute_analytics(p: dict) -> dict:
     """Compute dashboard metrics for a single product."""
     movements = p.get("movements", [])
@@ -694,12 +816,27 @@ async def require_api_key_for_api_routes(request: Request, call_next):
         return await call_next(request)
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
-    if not SERVICE_API_KEYS:
-        return JSONResponse(status_code=503, content={"detail": "API key auth is not configured."})
-    api_key = _extract_api_key(request)
-    if not _is_valid_service_api_key(api_key):
-        return JSONResponse(status_code=401, content={"detail": "Invalid API key."})
-    return await call_next(request)
+    key_value = _extract_api_key(request)
+    key_meta = _resolve_api_key_meta(key_value)
+    if not key_meta:
+        _authz_audit_log(request, None, False, "auth_invalid_key")
+        return JSONResponse(status_code=401, content={"code": "auth_invalid_key", "detail": "Invalid API key."})
+    _track_key_usage(key_meta)
+    scope = str(key_meta.get("scope") or "internal")
+    request.state.auth_key_scope = scope
+    request.state.auth_key_id = str(key_meta.get("key_id") or "")
+
+    if scope == "website":
+        allowed, reason = _authz_decision_for_website_scope(request.method.upper(), request.url.path)
+        if not allowed:
+            if AUTHZ_SCOPE_MODE == "monitor":
+                _authz_audit_log(request, key_meta, True, f"monitor_{reason}")
+            elif AUTHZ_SCOPE_MODE == "enforce":
+                _authz_audit_log(request, key_meta, False, reason)
+                return JSONResponse(status_code=403, content={"code": reason, "detail": "Route/method is not allowed for website key."})
+    response = await call_next(request)
+    _authz_audit_log(request, key_meta, True, "ok")
+    return response
 
 
 # ── Public stock summary (consumed by CRM) ────────────────────────────────────
@@ -767,12 +904,33 @@ async def sync_finished_products():
 
 
 @app.get("/api/finished-products")
-async def get_finished_products():
+async def get_finished_products(request: Request):
     data = read_data()
     data, changed = _sync_finished_products_from_crm(data)
     if changed:
         write_data(data)
-    return JSONResponse(_hydrated_finished_products(data))
+    rows = _hydrated_finished_products(data)
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        website_rows: list[dict] = []
+        for row in rows:
+            if not bool(row.get("isPublished")):
+                continue
+            website_rows.append(
+                {
+                    "crmProductId": row.get("crmProductId"),
+                    "name": row.get("name"),
+                    "description": row.get("description"),
+                    "usageInstructions": row.get("usageInstructions"),
+                    "preparationNotes": row.get("preparationNotes"),
+                    "imageDataUrl": row.get("imageDataUrl"),
+                    "imageAltText": row.get("imageAltText"),
+                    "availabilityBasis": row.get("availabilityBasis"),
+                    "advertisedVariants": row.get("advertisedVariants", []),
+                    "variants": _website_safe_variant_rows(row.get("websiteVariants", [])),
+                }
+            )
+        return JSONResponse(website_rows)
+    return JSONResponse(rows)
 
 
 @app.put("/api/finished-products/{crm_product_id}")

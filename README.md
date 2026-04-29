@@ -286,6 +286,9 @@ The CRM supports these environment variables:
 - `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
 - `CRM_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by CRM `/api/*`
 - `CRM_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to first `CRM_SERVICE_API_KEYS` value
+- `WEBSITE_KEY` (optional but recommended) dedicated ecommerce backend key with website-scope allowlist
+- `UI_HELPER_KEY` (optional but recommended) dedicated internal UI helper key
+- `AUTHZ_SCOPE_MODE` (`enforce`/`monitor`/`off`, default: `enforce`)
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
 - `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
 
@@ -300,6 +303,9 @@ The Inventory service supports:
 - `CRM_URL` (default: `http://localhost:8000`)
 - `INVENTORY_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by Inventory `/api/*`
 - `INVENTORY_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to first `INVENTORY_SERVICE_API_KEYS` value
+- `WEBSITE_KEY` (optional but recommended) dedicated ecommerce backend key with website-scope allowlist
+- `UI_HELPER_KEY` (optional but recommended) dedicated internal UI helper key
+- `AUTHZ_SCOPE_MODE` (`enforce`/`monitor`/`off`, default: `enforce`)
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
 - `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
 - `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
@@ -371,11 +377,21 @@ Main routes:
 - API key authentication is enforced for all `/api/*` routes in both CRM and Inventory.
 - Accepted headers: `X-API-Key: <key>` or `Authorization: Bearer <key>`.
 - `CRM_SERVICE_API_KEYS` and `INVENTORY_SERVICE_API_KEYS` are mandatory and each key should be 32+ characters.
+- WEBSITE key scope is default-deny with explicit route+method allowlists.
+- Missing/invalid key => `401` (`auth_invalid_key`), valid key but denied scope/method => `403` (`auth_scope_denied`/`auth_method_denied`).
 - Browser access should go through UI helper instances; do not expose CRM/Inventory backend ports publicly.
 - UI helper strips any client-supplied `X-API-Key` / `Authorization` and injects server-side key only for upstream `/api/*`.
 - Cross-origin callers and server-to-server callers must send API key.
 - Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
 - Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
+
+Website-key caller context rule:
+
+- For website-key calls to CRM user/order endpoints, send `X-Website-User-Id` header.
+- CRM enforces this context for:
+  - `GET/PUT /api/website/users/{websiteUserId}`
+  - `GET /api/website/orders` (must include `websiteUserId` query param)
+  - `POST /api/website/orders/sync`
 
 Example Caddy snippets (public domains -> helper instances):
 
