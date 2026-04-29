@@ -154,7 +154,7 @@ Create helper env files:
 
 ```env
 HELPER_UPSTREAM_URL=http://127.0.0.1:8000
-HELPER_API_KEY=replace_with_service_key
+HELPER_API_KEY=replace_with_crm_api_key
 HELPER_TIMEOUT_SECONDS=30
 ```
 
@@ -271,7 +271,7 @@ sudo ss -ltnp | egrep ':8000|:8001|:8100|:8101'
 
 ```env
 HELPER_UPSTREAM_URL=http://127.0.0.1:8001
-HELPER_API_KEY=replace_with_service_key
+HELPER_API_KEY=replace_with_inventory_api_key
 HELPER_TIMEOUT_SECONDS=30
 ```
 
@@ -284,23 +284,25 @@ The CRM supports these environment variables:
 - `MAX_IMPORT_BYTES` (default: `5242880`, i.e. 5 MB)
 - `ALLOW_PRIVATE_AI_BASE_URL` (default: disabled)
 - `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
-- `SERVICE_API_KEYS` (**required**) comma-separated API keys accepted on all `/api/*` routes
-- `SERVICE_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to the first `SERVICE_API_KEYS` value
+- `CRM_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by CRM `/api/*`
+- `CRM_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to first `CRM_SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
 
 Example:
 
 ```bash
-HOST=0.0.0.0 INVENTORY_URL=http://localhost:8001 SERVICE_API_KEYS=replace_with_very_long_random_key python app.py
+HOST=0.0.0.0 INVENTORY_URL=http://localhost:8001 CRM_SERVICE_API_KEYS=replace_with_crm_key CRM_OUTBOUND_API_KEY=replace_with_inventory_key python app.py
 ```
 
 The Inventory service supports:
 
 - `CRM_URL` (default: `http://localhost:8000`)
-- `SERVICE_API_KEYS` (**required**) must match keys trusted by CRM/website callers
-- `SERVICE_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to the first `SERVICE_API_KEYS` value
+- `INVENTORY_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by Inventory `/api/*`
+- `INVENTORY_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to first `INVENTORY_SERVICE_API_KEYS` value
 - `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
 - `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
+- `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
 
 UI helper environment variables (per helper instance):
 
@@ -368,7 +370,7 @@ Main routes:
 
 - API key authentication is enforced for all `/api/*` routes in both CRM and Inventory.
 - Accepted headers: `X-API-Key: <key>` or `Authorization: Bearer <key>`.
-- `SERVICE_API_KEYS` is mandatory and each key should be 32+ characters.
+- `CRM_SERVICE_API_KEYS` and `INVENTORY_SERVICE_API_KEYS` are mandatory and each key should be 32+ characters.
 - Browser access should go through UI helper instances; do not expose CRM/Inventory backend ports publicly.
 - UI helper strips any client-supplied `X-API-Key` / `Authorization` and injects server-side key only for upstream `/api/*`.
 - Cross-origin callers and server-to-server callers must send API key.

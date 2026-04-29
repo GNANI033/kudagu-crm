@@ -85,11 +85,13 @@ STATIC_DIR = BASE_DIR / "static"
 ASSETS_DIR = BASE_DIR / "assets"
 UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
+CRM_SERVICE_API_KEYS_RAW = os.environ.get("CRM_SERVICE_API_KEYS", os.environ.get("SERVICE_API_KEYS", ""))
 SERVICE_API_KEYS = tuple(
-    dict.fromkeys(str(part).strip() for part in os.environ.get("SERVICE_API_KEYS", "").split(",") if str(part).strip())
+    dict.fromkeys(str(part).strip() for part in CRM_SERVICE_API_KEYS_RAW.split(",") if str(part).strip())
 )
 SERVICE_OUTBOUND_API_KEY = (
-    str(os.environ.get("SERVICE_OUTBOUND_API_KEY", "")).strip() or (SERVICE_API_KEYS[0] if SERVICE_API_KEYS else "")
+    str(os.environ.get("CRM_OUTBOUND_API_KEY", os.environ.get("SERVICE_OUTBOUND_API_KEY", ""))).strip()
+    or (SERVICE_API_KEYS[0] if SERVICE_API_KEYS else "")
 )
 CORS_ALLOWED_ORIGINS = [
     origin
