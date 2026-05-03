@@ -337,9 +337,11 @@ function orderCommissionBreakup(o){
   return {manual,gateway,total:manual+gateway};
 }
 function orderProfit(o){
-  const sp=getSalePrice(o.prodId,o.variant,o.channel||'retail'); if(!sp) return null;
+  const rev=orderRevenue(o);
+  const cost=getTotalCost(o.prodId,o.variant)*(o.qty||1);
+  if(!(rev>0) && !(cost>0)) return null;
   const comm=orderCommissionBreakup(o).total;
-  return (sp-getTotalCost(o.prodId,o.variant))*(o.qty||1)-(parseFloat(o.discount||0))-comm;
+  return rev-cost-(parseFloat(o.discount||0))-comm;
 }
 // Only completed orders count toward revenue/profit
 function isCompleted(o){ return o.status==='completed'; }
@@ -2789,6 +2791,8 @@ function orderRow(o){
   const distName=isDist?String(o.distribution.distributorName||'').trim():'';
   const customerTitle=isDist?'Distributor Channel':o.cname;
   const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):o.carea;
+  const subTagRaw=(o.subscriptionTag||o.subscription?.tag||'').toString().trim();
+  const subTag=subTagRaw?`<div style="font-size:11px;color:var(--text-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subTagRaw)}</div>`:'';
   const statusBtn=`<div class="status-dropdown-wrap">
     <button class="status-badge ${STATUS_CLS[o.status||'pending']} status-clickable" onclick="toggleStatusDropdown(${o.id},this)">${STATUS_LABEL[o.status]||o.status} ▾</button>
     <div class="status-dropdown" id="sdrop-${o.id}">
@@ -2801,7 +2805,10 @@ function orderRow(o){
       <div style="font-weight:600">${esc(customerTitle)}</div>
       <div style="font-size:11.5px;color:var(--text-3)">${esc(customerSub)}</div>
     </td>
-    <td style="color:var(--text-2);max-width:140px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${o.prod}</td>
+    <td style="color:var(--text-2);max-width:220px">
+      <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.prod)}</div>
+      ${subTag}
+    </td>
     <td><span class="pill pn">${VL[o.variant]||o.variant}</span></td>
     <td style="font-weight:600">${o.qty}</td>
     <td>${chBadge(o.channel||'retail')}</td>
@@ -2832,7 +2839,9 @@ function orderMobileCard(o){
   const isDist=isDistributorOrder(o);
   const distName=isDist?String(o.distribution.distributorName||'').trim():'';
   const customerTitle=isDist?'Distributor Channel':o.cname;
-  const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}`;
+  const subTagRaw=(o.subscriptionTag||o.subscription?.tag||'').toString().trim();
+  const subTag=subTagRaw?` · ${esc(subTagRaw)}`:'';
+  const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
   const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
   return`<div class="order-card">

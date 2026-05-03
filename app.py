@@ -1627,7 +1627,7 @@ def _upsert_customer_for_website_user(data: dict, user: dict) -> int:
 
 def _normalize_website_order_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
-    if raw in {"completed", "success", "delivered"}:
+    if raw in {"completed", "success", "delivered", "paid", "captured"}:
         return "completed"
     if raw in {"cancelled", "canceled", "failed"}:
         return "cancelled"
@@ -1899,12 +1899,12 @@ def _order_revenue(products_by_id: dict, order: dict) -> float:
 
 
 def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> float | None:
-    unit = _sale_price_for_order(products_by_id, order)
-    if unit <= 0:
-        return None
     qty = _safe_float(order.get("qty")) or 1.0
-    revenue = unit * qty
-    gross = (unit - _total_cost_for_order(products_by_id, order)) * qty
+    revenue = _order_revenue(products_by_id, order)
+    unit_cost = _total_cost_for_order(products_by_id, order)
+    gross = revenue - (unit_cost * qty)
+    if revenue <= 0 and unit_cost <= 0:
+        return None
     discount = _safe_float(order.get("discount"))
     manual_comm = _safe_float(order.get("commission"))
     gateway_comm = 0.0
