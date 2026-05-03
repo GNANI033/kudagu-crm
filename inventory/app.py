@@ -118,6 +118,25 @@ def _validate_service_api_key_config() -> None:
     weak = [key for key in known_keys if len(key) < 32]
     if weak:
         raise RuntimeError("Every API key value must be at least 32 characters for security.")
+    _warn_on_scope_key_overlap()
+
+
+def _warn_on_scope_key_overlap() -> None:
+    website_keys = {str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()}
+    ui_keys = {str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()}
+    service_keys = {str(k).strip() for k in SERVICE_API_KEYS if str(k).strip()}
+    overlaps: list[str] = []
+    if website_keys & ui_keys:
+        overlaps.append("WEBSITE_KEY <-> UI_HELPER_KEY")
+    if website_keys & service_keys:
+        overlaps.append("WEBSITE_KEY <-> INVENTORY_SERVICE_API_KEYS")
+    if ui_keys & service_keys:
+        overlaps.append("UI_HELPER_KEY <-> INVENTORY_SERVICE_API_KEYS")
+    if overlaps:
+        print(
+            f"[Inventory][WARN] API key reuse detected across scopes: {', '.join(overlaps)}. "
+            "Use distinct keys per scope to avoid authorization ambiguity."
+        )
 
 
 def _extract_api_key(request: Request) -> str:
@@ -171,12 +190,27 @@ def _build_key_candidates() -> list[dict[str, Any]]:
     return candidates
 
 
-def _resolve_api_key_meta(value: str) -> dict[str, Any] | None:
+def _is_loopback_client(request: Request) -> bool:
+    host = str((request.client.host if request.client else "") or "").strip()
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def _resolve_api_key_meta(value: str, request: Request) -> dict[str, Any] | None:
     if not value:
         return None
-    for row in _build_key_candidates():
-        if hmac.compare_digest(value, str(row["value"])):
-            return row
+    matches = [row for row in _build_key_candidates() if hmac.compare_digest(value, str(row["value"]))]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    if _is_loopback_client(request):
+        internal = next((row for row in matches if str(row.get("scope")) != "website"), None)
+        if internal:
+            return internal
+    website = next((row for row in matches if str(row.get("scope")) == "website"), None)
+    if website:
+        return website
+    return matches[0]
     return None
 
 
@@ -817,7 +851,7 @@ async def require_api_key_for_api_routes(request: Request, call_next):
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
     key_value = _extract_api_key(request)
-    key_meta = _resolve_api_key_meta(key_value)
+    key_meta = _resolve_api_key_meta(key_value, request)
     if not key_meta:
         _authz_audit_log(request, None, False, "auth_invalid_key")
         return JSONResponse(status_code=401, content={"code": "auth_invalid_key", "detail": "Invalid API key."})
