@@ -1329,6 +1329,12 @@ def migrate(data: dict) -> dict:
             o["distribution"] = {}
         if "websiteOrderId" not in o:
             o["websiteOrderId"] = ""
+        if "subscriptionFrequency" not in o:
+            o["subscriptionFrequency"] = ""
+        if "subscriptionDuration" not in o:
+            o["subscriptionDuration"] = ""
+        if "subscriptionTag" not in o:
+            o["subscriptionTag"] = ""
         # Migrate old delivered/payment_received → completed
         if o["status"] in ("delivered", "payment_received"):
             o["status"] = "completed"
@@ -1630,7 +1636,34 @@ def _normalize_website_order_status(value: Any) -> str:
     return "pending"
 
 
+def _normalize_subscription_value(value: Any, max_len: int = 80) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_len]
+
+
+def _order_subscription_payload(order: dict) -> dict:
+    frequency = _normalize_subscription_value(order.get("subscriptionFrequency"), max_len=80)
+    duration = _normalize_subscription_value(order.get("subscriptionDuration"), max_len=80)
+    tag = _normalize_subscription_value(order.get("subscriptionTag"), max_len=140)
+    if not tag and (frequency or duration):
+        if frequency and duration:
+            tag = f"{frequency}. {duration} plan"
+        elif frequency:
+            tag = frequency
+        else:
+            tag = duration
+    return {
+        "frequency": frequency,
+        "duration": duration,
+        "tag": tag,
+    }
+
+
 def _website_safe_order_payload(order: dict) -> dict:
+    subscription = _order_subscription_payload(order)
     return {
         "id": int(order.get("id") or 0),
         "websiteOrderId": str(order.get("websiteOrderId") or "").strip(),
@@ -1647,6 +1680,7 @@ def _website_safe_order_payload(order: dict) -> dict:
         "paymentMethod": str(order.get("paymentMethod") or "").strip(),
         "at": int(order.get("at") or 0),
         "shipping": order.get("shipping", {}) if isinstance(order.get("shipping"), dict) else {},
+        "subscription": subscription,
     }
 
 
@@ -2860,6 +2894,9 @@ async def website_sync_order(request: Request):
             "shipping",
             "status",
             "at",
+            "subscriptionFrequency",
+            "subscriptionDuration",
+            "subscriptionTag",
         }
         if extra_fields:
             raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Unexpected fields in website order sync payload."})
@@ -2912,6 +2949,16 @@ async def website_sync_order(request: Request):
     qty = float(body.get("qty") or 0)
     if qty <= 0:
         raise HTTPException(status_code=400, detail="qty must be greater than 0.")
+    subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
+    subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+    subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+    if not subscription_tag and (subscription_frequency or subscription_duration):
+        if subscription_frequency and subscription_duration:
+            subscription_tag = f"{subscription_frequency}. {subscription_duration} plan"
+        elif subscription_frequency:
+            subscription_tag = subscription_frequency
+        else:
+            subscription_tag = subscription_duration
     status = _normalize_website_order_status(body.get("status"))
     at_ms = _normalized_order_time_ms(body.get("at") or int(time.time() * 1000))
     customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None) or {}
@@ -2947,6 +2994,9 @@ async def website_sync_order(request: Request):
             "inventorySynced": False,
             "inventorySyncedAt": None,
             "shipping": body.get("shipping", {}) if isinstance(body.get("shipping"), dict) else {},
+            "subscriptionFrequency": subscription_frequency,
+            "subscriptionDuration": subscription_duration,
+            "subscriptionTag": subscription_tag,
         }
         data.setdefault("orders", []).insert(0, order)
         data["oid"] = int(data.get("oid") or 1) + 1
@@ -2972,6 +3022,10 @@ async def website_sync_order(request: Request):
             order["realizedRevenue"] = body.get("realizedRevenue")
         if "shipping" in body and isinstance(body.get("shipping"), dict):
             order["shipping"] = body.get("shipping")
+        if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
+            order["subscriptionFrequency"] = subscription_frequency
+            order["subscriptionDuration"] = subscription_duration
+            order["subscriptionTag"] = subscription_tag
         order["at"] = at_ms
         _reconcile_order_inventory(data, existing_idx, prev_order=prev, force=False)
     write_data(data)
@@ -3505,6 +3559,16 @@ async def add_order(request: Request):
         _ensure_customer_scope(ctx.get("user"), data, customer_id)
     channel = body["channel"]
     default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
+    subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
+    subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+    subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+    if not subscription_tag and (subscription_frequency or subscription_duration):
+        if subscription_frequency and subscription_duration:
+            subscription_tag = f"{subscription_frequency}. {subscription_duration} plan"
+        elif subscription_frequency:
+            subscription_tag = subscription_frequency
+        else:
+            subscription_tag = subscription_duration
     order = {
         "id":         data["oid"],
         "cid":        body["cid"],
@@ -3526,6 +3590,9 @@ async def add_order(request: Request):
         "inventorySynced": False,
         "inventorySyncedAt": None,
         "shipping": body.get("shipping", {}),
+        "subscriptionFrequency": subscription_frequency,
+        "subscriptionDuration": subscription_duration,
+        "subscriptionTag": subscription_tag,
     }
     data["orders"].insert(0, order)
     data["oid"] += 1
@@ -3704,6 +3771,20 @@ async def update_order(order_id: int, request: Request):
     for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution"):
         if key in body:
             data["orders"][idx][key] = body[key]
+    if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
+        sub_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
+        sub_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+        sub_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+        if not sub_tag and (sub_frequency or sub_duration):
+            if sub_frequency and sub_duration:
+                sub_tag = f"{sub_frequency}. {sub_duration} plan"
+            elif sub_frequency:
+                sub_tag = sub_frequency
+            else:
+                sub_tag = sub_duration
+        data["orders"][idx]["subscriptionFrequency"] = sub_frequency
+        data["orders"][idx]["subscriptionDuration"] = sub_duration
+        data["orders"][idx]["subscriptionTag"] = sub_tag
     _reconcile_order_inventory(data, idx, prev_order=prev)
     write_data(data)
     return _filtered_order_response(data, ctx.get("user"), order_id)
@@ -3930,6 +4011,9 @@ async def complete_distribution_batch(batch_id: int, request: Request):
         "inventorySynced": False,
         "inventorySyncedAt": None,
         "shipping": {},
+        "subscriptionFrequency": "",
+        "subscriptionDuration": "",
+        "subscriptionTag": "",
     }
     data["orders"].insert(0, order)
     data["oid"] += 1
