@@ -2962,10 +2962,17 @@ async def website_sync_order(request: Request):
     qty = float(body.get("qty") or 0)
     if qty <= 0:
         raise HTTPException(status_code=400, detail="qty must be greater than 0.")
-    subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
-    subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+    profile_payload = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    subscription_frequency = _normalize_subscription_value(
+        body.get("subscriptionFrequency") or profile_payload.get("subscriptionFrequency"),
+        max_len=80,
+    )
+    subscription_duration = _normalize_subscription_value(
+        body.get("subscriptionDuration") or profile_payload.get("subscriptionDuration"),
+        max_len=80,
+    )
     subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
-    order_notes = str(body.get("notes") or "").strip()
+    order_notes = str(body.get("notes") or profile_payload.get("notes") or "").strip()
     if not subscription_tag and order_notes:
         subscription_tag = _normalize_subscription_value(order_notes, max_len=140)
     if not subscription_tag and (subscription_frequency or subscription_duration):
