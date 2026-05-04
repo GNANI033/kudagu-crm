@@ -1335,6 +1335,10 @@ def migrate(data: dict) -> dict:
             o["subscriptionDuration"] = ""
         if "subscriptionTag" not in o:
             o["subscriptionTag"] = ""
+        if "notes" not in o:
+            o["notes"] = ""
+        if "websiteStatusOriginal" not in o:
+            o["websiteStatusOriginal"] = ""
         # Migrate old delivered/payment_received → completed
         if o["status"] in ("delivered", "payment_received"):
             o["status"] = "completed"
@@ -1629,6 +1633,8 @@ def _normalize_website_order_status(value: Any) -> str:
     raw = str(value or "").strip().lower()
     if raw in {"completed", "success", "delivered", "paid", "captured"}:
         return "completed"
+    if raw in {"confirmed"}:
+        return "confirmed"
     if raw in {"cancelled", "canceled", "failed"}:
         return "cancelled"
     if raw in {"active", "processing", "in_progress", "pending"}:
@@ -1648,6 +1654,8 @@ def _order_subscription_payload(order: dict) -> dict:
     frequency = _normalize_subscription_value(order.get("subscriptionFrequency"), max_len=80)
     duration = _normalize_subscription_value(order.get("subscriptionDuration"), max_len=80)
     tag = _normalize_subscription_value(order.get("subscriptionTag"), max_len=140)
+    if not tag:
+        tag = _normalize_subscription_value(order.get("notes"), max_len=140)
     if not tag and (frequency or duration):
         if frequency and duration:
             tag = f"{frequency}. {duration} plan"
@@ -1681,6 +1689,9 @@ def _website_safe_order_payload(order: dict) -> dict:
         "at": int(order.get("at") or 0),
         "shipping": order.get("shipping", {}) if isinstance(order.get("shipping"), dict) else {},
         "subscription": subscription,
+        "notes": str(order.get("notes") or "").strip(),
+        "realizedRevenue": order.get("realizedRevenue"),
+        "websiteStatusOriginal": str(order.get("websiteStatusOriginal") or "").strip(),
     }
 
 
@@ -2897,6 +2908,8 @@ async def website_sync_order(request: Request):
             "subscriptionFrequency",
             "subscriptionDuration",
             "subscriptionTag",
+            "notes",
+            "realizedRevenue",
         }
         if extra_fields:
             raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Unexpected fields in website order sync payload."})
@@ -2952,6 +2965,9 @@ async def website_sync_order(request: Request):
     subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
     subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
     subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+    order_notes = str(body.get("notes") or "").strip()
+    if not subscription_tag and order_notes:
+        subscription_tag = _normalize_subscription_value(order_notes, max_len=140)
     if not subscription_tag and (subscription_frequency or subscription_duration):
         if subscription_frequency and subscription_duration:
             subscription_tag = f"{subscription_frequency}. {subscription_duration} plan"
@@ -2960,6 +2976,7 @@ async def website_sync_order(request: Request):
         else:
             subscription_tag = subscription_duration
     status = _normalize_website_order_status(body.get("status"))
+    website_status_original = str(body.get("status") or "").strip()
     at_ms = _normalized_order_time_ms(body.get("at") or int(time.time() * 1000))
     customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None) or {}
 
@@ -2985,11 +3002,13 @@ async def website_sync_order(request: Request):
             "qty": qty,
             "channel": "website",
             "status": status,
+            "websiteStatusOriginal": website_status_original,
             "discount": float(body.get("discount", 0) or 0),
             "commission": float(body.get("commission", 0) or 0),
             "paymentMethod": str(body.get("paymentMethod") or "").strip(),
             "at": at_ms,
             "realizedRevenue": body.get("realizedRevenue"),
+            "notes": order_notes,
             "distribution": {},
             "inventorySynced": False,
             "inventorySyncedAt": None,
@@ -3013,6 +3032,7 @@ async def website_sync_order(request: Request):
         order["variant"] = variant
         order["qty"] = qty
         order["status"] = status
+        order["websiteStatusOriginal"] = website_status_original
         order["paymentMethod"] = str(body.get("paymentMethod", order.get("paymentMethod")) or "").strip()
         if "discount" in body:
             order["discount"] = float(body.get("discount") or 0)
@@ -3020,6 +3040,8 @@ async def website_sync_order(request: Request):
             order["commission"] = float(body.get("commission") or 0)
         if "realizedRevenue" in body:
             order["realizedRevenue"] = body.get("realizedRevenue")
+        if "notes" in body:
+            order["notes"] = order_notes
         if "shipping" in body and isinstance(body.get("shipping"), dict):
             order["shipping"] = body.get("shipping")
         if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
@@ -3586,6 +3608,8 @@ async def add_order(request: Request):
         "paymentMethod": body.get("paymentMethod", ""),
         "at":            body["at"],
         "realizedRevenue": body.get("realizedRevenue"),
+        "notes": str(body.get("notes") or "").strip(),
+        "websiteStatusOriginal": str(body.get("websiteStatusOriginal") or "").strip(),
         "distribution": body.get("distribution", {}),
         "inventorySynced": False,
         "inventorySyncedAt": None,
@@ -3768,7 +3792,7 @@ async def update_order(order_id: int, request: Request):
         if next_customer_id > 0:
             _ensure_customer_scope(ctx.get("user"), data, next_customer_id)
     prev = copy.deepcopy(data["orders"][idx])
-    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution"):
+    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal"):
         if key in body:
             data["orders"][idx][key] = body[key]
     if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
@@ -4000,6 +4024,8 @@ async def complete_distribution_batch(batch_id: int, request: Request):
         "paymentMethod": str(body.get("paymentMethod", "")).strip(),
         "at": now_ms,
         "realizedRevenue": amount_collected,
+        "notes": "",
+        "websiteStatusOriginal": "",
         "distribution": {
             "batchId": int(batch.get("id")),
             "distributorName": str(batch.get("distributorName", "")).strip(),
