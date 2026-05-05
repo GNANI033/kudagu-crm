@@ -58,6 +58,12 @@ HELPER_API_KEY = str(os.environ.get("HELPER_API_KEY", "")).strip()
 HELPER_LISTEN_HOST = str(os.environ.get("HELPER_LISTEN_HOST", "0.0.0.0")).strip() or "0.0.0.0"
 HELPER_LISTEN_PORT = int(str(os.environ.get("HELPER_LISTEN_PORT", "9000")).strip() or "9000")
 HELPER_TIMEOUT_SECONDS = float(str(os.environ.get("HELPER_TIMEOUT_SECONDS", "30")).strip() or "30")
+HELPER_BLOCK_WEBSITE_API = str(os.environ.get("HELPER_BLOCK_WEBSITE_API", "1")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -145,6 +151,14 @@ async def healthcheck() -> JSONResponse:
 async def proxy(full_path: str, request: Request) -> Response:
     started = time.time()
     path = "/" + str(full_path or "").lstrip("/")
+    if HELPER_BLOCK_WEBSITE_API and (path == "/api/website" or path.startswith("/api/website/")):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "code": "helper_website_api_blocked",
+                "detail": "Website integration APIs must be called directly with a website-scoped API key.",
+            },
+        )
     query = request.url.query
     upstream_url = f"{HELPER_UPSTREAM_URL}{path}"
     if query:

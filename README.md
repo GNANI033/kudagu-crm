@@ -317,6 +317,7 @@ UI helper environment variables (per helper instance):
 - `HELPER_LISTEN_HOST` (default: `0.0.0.0`)
 - `HELPER_LISTEN_PORT` (default: `9000`)
 - `HELPER_TIMEOUT_SECONDS` (default: `30`)
+- `HELPER_BLOCK_WEBSITE_API` (default: `1`) blocks `/api/website/*` through the UI helper; website/ecommerce backends should call CRM directly with `WEBSITE_KEY`
 
 ## Marketing AI + WhatsApp Workflow
 
@@ -381,6 +382,7 @@ Main routes:
 - Missing/invalid key => `401` (`auth_invalid_key`), valid key but denied scope/method => `403` (`auth_scope_denied`/`auth_method_denied`).
 - Browser access should go through UI helper instances; do not expose CRM/Inventory backend ports publicly.
 - UI helper strips any client-supplied `X-API-Key` / `Authorization` and injects server-side key only for upstream `/api/*`.
+- UI helper blocks `/api/website/*` by default so public CRM UI domains cannot be used as an unauthenticated ecommerce API proxy.
 - Cross-origin callers and server-to-server callers must send API key.
 - Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
 - Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.

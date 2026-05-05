@@ -2759,8 +2759,38 @@ async def require_api_key_for_api_routes(request: Request, call_next):
     return response
 
 
+def _require_api_key_context(request: Request) -> None:
+    if str(getattr(request.state, "auth_key_id", "") or "").strip():
+        return
+    key_value = _extract_api_key(request)
+    key_meta = _resolve_api_key_meta(key_value, request)
+    if not key_meta:
+        _authz_audit_log(request, None, False, "auth_invalid_key")
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "auth_invalid_key", "message": "Invalid API key."},
+        )
+    _track_key_usage(key_meta)
+    request.state.auth_key_scope = str(key_meta.get("scope") or "internal")
+    request.state.auth_key_id = str(key_meta.get("key_id") or "")
+
+    scope = str(key_meta.get("scope") or "internal")
+    if scope == "website":
+        allowed, reason = _authz_decision_for_website_scope(request.method.upper(), request.url.path)
+        if not allowed:
+            if AUTHZ_SCOPE_MODE == "monitor":
+                _authz_audit_log(request, key_meta, True, f"monitor_{reason}")
+            elif AUTHZ_SCOPE_MODE == "enforce":
+                _authz_audit_log(request, key_meta, False, reason)
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": reason, "message": "Route/method is not allowed for website key."},
+                )
+
+
 @app.post("/api/website/auth/signup")
 async def website_signup(request: Request):
+    _require_api_key_context(request)
     body = await request.json()
     password = str(body.get("password") or "")
     if len(password) < 8:
@@ -2811,6 +2841,7 @@ async def website_signup(request: Request):
 
 @app.post("/api/website/auth/login")
 async def website_login(request: Request):
+    _require_api_key_context(request)
     body = await request.json()
     password = str(body.get("password") or "")
     if not password:
@@ -2833,6 +2864,7 @@ async def website_login(request: Request):
 
 @app.get("/api/website/users/{website_user_id}")
 async def website_user_detail(website_user_id: int, request: Request):
+    _require_api_key_context(request)
     if str(getattr(request.state, "auth_key_scope", "")) == "website":
         _require_website_user_context(request, website_user_id)
     data = read_data()
@@ -2856,6 +2888,7 @@ async def website_user_detail(website_user_id: int, request: Request):
 
 @app.put("/api/website/users/{website_user_id}")
 async def website_user_sync_profile(website_user_id: int, request: Request):
+    _require_api_key_context(request)
     if str(getattr(request.state, "auth_key_scope", "")) == "website":
         _require_website_user_context(request, website_user_id)
     body = await request.json()
@@ -2890,6 +2923,7 @@ async def website_user_sync_profile(website_user_id: int, request: Request):
 
 @app.post("/api/website/orders/sync")
 async def website_sync_order(request: Request):
+    _require_api_key_context(request)
     body = await request.json()
     if str(getattr(request.state, "auth_key_scope", "")) == "website":
         extra_fields = set(body.keys()) - {
@@ -3063,6 +3097,7 @@ async def website_sync_order(request: Request):
 
 @app.get("/api/website/orders")
 async def website_orders(request: Request):
+    _require_api_key_context(request)
     try:
         website_user_id = int(request.query_params.get("websiteUserId") or 0)
     except (TypeError, ValueError):
