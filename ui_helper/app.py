@@ -153,10 +153,10 @@ async def proxy(full_path: str, request: Request) -> Response:
     path = "/" + str(full_path or "").lstrip("/")
     if HELPER_BLOCK_WEBSITE_API and (path == "/api/website" or path.startswith("/api/website/")):
         return JSONResponse(
-            status_code=403,
+            status_code=401,
             content={
-                "code": "helper_website_api_blocked",
-                "detail": "Website integration APIs must be called directly with a website-scoped API key.",
+                "code": "auth_invalid_key",
+                "detail": "Invalid API key.",
             },
         )
     query = request.url.query
