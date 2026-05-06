@@ -1350,6 +1350,10 @@ def migrate(data: dict) -> dict:
             o["distribution"] = {}
         if "websiteOrderId" not in o:
             o["websiteOrderId"] = ""
+        if "websiteCartId" not in o:
+            o["websiteCartId"] = str(o.get("websiteOrderId") or "").strip()
+        if "websiteOrderItemId" not in o:
+            o["websiteOrderItemId"] = ""
         if "websiteUserId" not in o:
             o["websiteUserId"] = 0
         if "subscriptionFrequency" not in o:
@@ -1708,6 +1712,8 @@ def _website_safe_order_payload(order: dict) -> dict:
     return {
         "id": int(order.get("id") or 0),
         "websiteOrderId": str(order.get("websiteOrderId") or "").strip(),
+        "websiteCartId": str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip(),
+        "websiteOrderItemId": str(order.get("websiteOrderItemId") or "").strip(),
         "websiteUserId": int(order.get("websiteUserId") or 0),
         "customerId": int(order.get("cid") or 0),
         "customerName": str(order.get("cname") or "").strip(),
@@ -1980,17 +1986,19 @@ def _coupon_usage_count(data: dict, coupon: dict, exclude_website_order_id: str 
     code = _normalize_coupon_code(coupon.get("code"))
     coupon_id = int(coupon.get("id") or 0)
     exclude = str(exclude_website_order_id or "").strip()
-    count = 0
+    used_groups: set[str] = set()
     for order in data.get("orders", []) or []:
         if not isinstance(order, dict):
             continue
-        if exclude and str(order.get("websiteOrderId") or "").strip() == exclude:
+        group_id = str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip()
+        order_id = str(order.get("websiteOrderId") or "").strip()
+        if exclude and (group_id == exclude or order_id == exclude):
             continue
         order_coupon_id = int(order.get("couponId") or 0)
         order_code = _normalize_coupon_code(order.get("couponCode"))
         if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
-            count += 1
-    return count
+            used_groups.add(group_id or order_id or f"order:{order.get('id')}")
+    return len(used_groups)
 
 
 def _coupon_user_usage_count(data: dict, coupon: dict, website_user_id: int, exclude_website_order_id: str = "") -> int:
@@ -1999,11 +2007,13 @@ def _coupon_user_usage_count(data: dict, coupon: dict, website_user_id: int, exc
     code = _normalize_coupon_code(coupon.get("code"))
     coupon_id = int(coupon.get("id") or 0)
     exclude = str(exclude_website_order_id or "").strip()
-    count = 0
+    used_groups: set[str] = set()
     for order in data.get("orders", []) or []:
         if not isinstance(order, dict):
             continue
-        if exclude and str(order.get("websiteOrderId") or "").strip() == exclude:
+        group_id = str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip()
+        order_id = str(order.get("websiteOrderId") or "").strip()
+        if exclude and (group_id == exclude or order_id == exclude):
             continue
         try:
             order_website_user_id = int(order.get("websiteUserId") or 0)
@@ -2014,8 +2024,8 @@ def _coupon_user_usage_count(data: dict, coupon: dict, website_user_id: int, exc
         order_coupon_id = int(order.get("couponId") or 0)
         order_code = _normalize_coupon_code(order.get("couponCode"))
         if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
-            count += 1
-    return count
+            used_groups.add(group_id or order_id or f"order:{order.get('id')}")
+    return len(used_groups)
 
 
 def _coupon_invalid_payload() -> dict:
@@ -2032,6 +2042,81 @@ def _website_unit_price(product: dict, variant: str) -> float:
     return _safe_float(sale_prices.get("retail"))
 
 
+def _website_cart_items_from_body(body: dict) -> list[dict]:
+    raw_items = body.get("items")
+    if isinstance(raw_items, list) and raw_items:
+        source_items = raw_items
+    else:
+        source_items = [
+            {
+                "websiteOrderItemId": body.get("websiteOrderItemId"),
+                "prodId": body.get("prodId"),
+                "variant": body.get("variant"),
+                "qty": body.get("qty"),
+            }
+        ]
+    items: list[dict] = []
+    seen_item_ids: set[str] = set()
+    for idx, raw in enumerate(source_items, start=1):
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="Each cart item must be an object.")
+        prod_id = str(raw.get("prodId") or raw.get("productId") or raw.get("id") or "").strip()
+        variant = str(raw.get("variant") or raw.get("size") or "").strip()
+        try:
+            qty = float(raw.get("qty") if "qty" in raw else raw.get("quantity"))
+        except (TypeError, ValueError):
+            qty = 0.0
+        if not prod_id:
+            raise HTTPException(status_code=400, detail="Each cart item requires prodId.")
+        if not variant:
+            raise HTTPException(status_code=400, detail="Each cart item requires variant.")
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="Each cart item qty must be greater than 0.")
+        item_id = str(raw.get("websiteOrderItemId") or raw.get("lineId") or raw.get("cartItemId") or idx).strip()
+        if item_id in seen_item_ids:
+            raise HTTPException(status_code=400, detail="Each cart item requires a unique websiteOrderItemId.")
+        seen_item_ids.add(item_id)
+        items.append(
+            {
+                "websiteOrderItemId": item_id[:80],
+                "prodId": prod_id,
+                "variant": variant,
+                "qty": qty,
+            }
+        )
+    return items
+
+
+def _website_cart_lines(data: dict, items: list[dict]) -> list[dict]:
+    lines: list[dict] = []
+    for item in items:
+        product = next((p for p in data.get("products", []) if str(p.get("id") or "") == item["prodId"]), None)
+        if not product:
+            raise HTTPException(status_code=400, detail=f"prodId not found in CRM products: {item['prodId']}")
+        unit_price = _website_unit_price(product, item["variant"])
+        if unit_price <= 0:
+            raise HTTPException(status_code=400, detail=f"Website price is not configured for {item['prodId']} / {item['variant']}.")
+        subtotal = round(unit_price * float(item["qty"]), 2)
+        lines.append({**item, "product": product, "unitPrice": unit_price, "subtotal": subtotal})
+    return lines
+
+
+def _allocate_discount_to_lines(total_discount: float, lines: list[dict]) -> list[float]:
+    total = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
+    if total <= 0 or total_discount <= 0 or not lines:
+        return [0.0 for _ in lines]
+    remaining = round(min(total_discount, total), 2)
+    allocations: list[float] = []
+    for idx, line in enumerate(lines):
+        if idx == len(lines) - 1:
+            amount = remaining
+        else:
+            amount = round(min(remaining, total_discount * (_safe_float(line.get("subtotal")) / total)), 2)
+        allocations.append(amount)
+        remaining = round(remaining - amount, 2)
+    return allocations
+
+
 def _find_coupon(data: dict, code: Any) -> dict | None:
     normalized = _normalize_coupon_code(code)
     if not normalized:
@@ -2046,6 +2131,7 @@ def _validate_coupon_for_cart(
     variant: Any,
     qty: Any,
     *,
+    items: list[dict] | None = None,
     website_user_id: int = 0,
     exclude_website_order_id: str = "",
 ) -> dict | None:
@@ -2072,20 +2158,12 @@ def _validate_coupon_for_cart(
     )
     if per_customer_usage_limit is not None and user_usage_count >= per_customer_usage_limit:
         return None
-    product = next((p for p in data.get("products", []) if str(p.get("id") or "") == str(prod_id or "").strip()), None)
-    if not product:
-        return None
-    variant_key = str(variant or "").strip()
     try:
-        qty_value = float(qty or 0)
-    except (TypeError, ValueError):
-        qty_value = 0.0
-    if qty_value <= 0:
+        cart_items = items if items is not None else _website_cart_items_from_body({"prodId": prod_id, "variant": variant, "qty": qty})
+        lines = _website_cart_lines(data, cart_items)
+    except HTTPException:
         return None
-    unit_price = _website_unit_price(product, variant_key)
-    if unit_price <= 0:
-        return None
-    subtotal = round(unit_price * qty_value, 2)
+    subtotal = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
     min_cart_value = _safe_float(coupon.get("minCartValue"))
     if subtotal < min_cart_value:
         return None
@@ -2103,6 +2181,17 @@ def _validate_coupon_for_cart(
         "payableAmount": round(max(0.0, subtotal - discount), 2),
         "usageCount": usage_count,
         "userUsageCount": user_usage_count,
+        "items": [
+            {
+                "websiteOrderItemId": line["websiteOrderItemId"],
+                "prodId": line["prodId"],
+                "variant": line["variant"],
+                "qty": line["qty"],
+                "unitPrice": line["unitPrice"],
+                "subtotal": line["subtotal"],
+            }
+            for line in lines
+        ],
     }
 
 
@@ -3128,6 +3217,7 @@ async def website_validate_coupon(request: Request):
         body.get("prodId"),
         body.get("variant"),
         body.get("qty"),
+        items=_website_cart_items_from_body(body) if isinstance(body.get("items"), list) and body.get("items") else None,
         website_user_id=website_user_id,
     )
     if not result:
@@ -3216,9 +3306,11 @@ async def website_sync_order(request: Request):
             "email",
             "phone",
             "profile",
+            "items",
             "prodId",
             "variant",
             "qty",
+            "websiteOrderItemId",
             "paymentMethod",
             "shipping",
             "status",
@@ -3271,25 +3363,19 @@ async def website_sync_order(request: Request):
     user["customerId"] = customer_id
     user["updatedAt"] = int(time.time() * 1000)
 
-    prod_id = str(body.get("prodId") or "").strip()
-    product = next((p for p in data.get("products", []) if str(p.get("id") or "") == prod_id), None)
-    if not product:
-        raise HTTPException(status_code=400, detail="prodId not found in CRM products.")
-    variant = str(body.get("variant") or "").strip()
-    if not variant:
-        raise HTTPException(status_code=400, detail="variant is required.")
-    qty = float(body.get("qty") or 0)
-    if qty <= 0:
-        raise HTTPException(status_code=400, detail="qty must be greater than 0.")
+    cart_items = _website_cart_items_from_body(body)
+    lines = _website_cart_lines(data, cart_items)
+    cart_subtotal = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
     coupon_code = _normalize_coupon_code(body.get("couponCode"))
     coupon_result = None
     if coupon_code:
         coupon_result = _validate_coupon_for_cart(
             data,
             coupon_code,
-            prod_id,
-            variant,
-            qty,
+            None,
+            None,
+            None,
+            items=cart_items,
             website_user_id=website_user_id,
             exclude_website_order_id=website_order_id,
         )
@@ -3297,6 +3383,7 @@ async def website_sync_order(request: Request):
             raise HTTPException(status_code=400, detail="Coupon is not valid.")
     coupon = (coupon_result or {}).get("coupon") or {}
     coupon_discount = _safe_float((coupon_result or {}).get("discount"))
+    discount_allocations = _allocate_discount_to_lines(coupon_discount, lines)
     profile_payload = body.get("profile") if isinstance(body.get("profile"), dict) else {}
     subscription_frequency = _normalize_subscription_value(
         body.get("subscriptionFrequency") or profile_payload.get("subscriptionFrequency"),
@@ -3322,97 +3409,115 @@ async def website_sync_order(request: Request):
     at_ms = _normalized_order_time_ms(body.get("at") or int(time.time() * 1000))
     customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None) or {}
 
-    existing_idx = next(
-        (
-            i
-            for i, row in enumerate(data.get("orders", []))
-            if str(row.get("websiteOrderId") or "").strip() == website_order_id and str(row.get("channel") or "") == "website"
-        ),
-        None,
-    )
-    if existing_idx is None:
-        order = {
-            "id": int(data.get("oid") or 1),
-            "websiteOrderId": website_order_id,
+    explicit_items = isinstance(body.get("items"), list)
+    touched_order_ids: set[int] = set()
+    response_orders: list[dict] = []
+    for idx, line in enumerate(lines):
+        line_item_id = str(line.get("websiteOrderItemId") or idx + 1).strip()
+        line_order_id = website_order_id if (len(lines) == 1 and not explicit_items) else f"{website_order_id}-{line_item_id}"
+        line_discount = discount_allocations[idx] if idx < len(discount_allocations) else 0.0
+        existing_idx = next(
+            (
+                i
+                for i, row in enumerate(data.get("orders", []))
+                if str(row.get("channel") or "") == "website"
+                and (
+                    (
+                        str(row.get("websiteCartId") or "").strip() == website_order_id
+                        and str(row.get("websiteOrderItemId") or "").strip() == line_item_id
+                    )
+                    or str(row.get("websiteOrderId") or "").strip() == line_order_id
+                    or (len(lines) == 1 and not explicit_items and str(row.get("websiteOrderId") or "").strip() == website_order_id)
+                )
+            ),
+            None,
+        )
+        product = line["product"]
+        common = {
+            "websiteOrderId": line_order_id,
+            "websiteCartId": website_order_id,
+            "websiteOrderItemId": line_item_id,
             "websiteUserId": website_user_id,
             "cid": customer_id,
             "cname": str(customer.get("name") or user.get("name") or "").strip(),
             "cphone": str(customer.get("phone") or user.get("phone") or "").strip(),
             "carea": str(customer.get("area") or user.get("area") or "").strip(),
             "prod": str(product.get("name") or "").strip(),
-            "prodId": prod_id,
-            "variant": variant,
-            "qty": qty,
+            "prodId": line["prodId"],
+            "variant": line["variant"],
+            "qty": line["qty"],
             "channel": "website",
             "status": status,
             "websiteStatusOriginal": website_status_original,
-            "discount": coupon_discount if coupon_code else float(body.get("discount", 0) or 0),
+            "discount": line_discount if coupon_code else 0.0,
             "couponCode": coupon_code,
             "couponId": int(coupon.get("id") or 0) if coupon_code else None,
             "couponDiscountType": _normalize_discount_type(coupon.get("discountType")) if coupon_code else "",
             "couponDiscountValue": _safe_float(coupon.get("discountValue")) if coupon_code else 0,
             "couponMinCartValue": _safe_float(coupon.get("minCartValue")) if coupon_code else 0,
-            "commission": float(body.get("commission", 0) or 0),
             "paymentMethod": str(body.get("paymentMethod") or "").strip(),
             "at": at_ms,
-            "realizedRevenue": body.get("realizedRevenue"),
+            "realizedRevenue": body.get("realizedRevenue") if (len(lines) == 1 and not explicit_items and "realizedRevenue" in body) else None,
             "notes": order_notes,
-            "distribution": {},
-            "inventorySynced": False,
-            "inventorySyncedAt": None,
             "shipping": body.get("shipping", {}) if isinstance(body.get("shipping"), dict) else {},
             "subscriptionFrequency": subscription_frequency,
             "subscriptionDuration": subscription_duration,
             "subscriptionTag": subscription_tag,
         }
-        data.setdefault("orders", []).insert(0, order)
-        data["oid"] = int(data.get("oid") or 1) + 1
-        _reconcile_order_inventory(data, 0, prev_order=None, force=True)
-    else:
-        prev = copy.deepcopy(data["orders"][existing_idx])
-        order = data["orders"][existing_idx]
-        order["cid"] = customer_id
-        order["websiteUserId"] = website_user_id
-        order["cname"] = str(customer.get("name") or user.get("name") or "").strip()
-        order["cphone"] = str(customer.get("phone") or user.get("phone") or "").strip()
-        order["carea"] = str(customer.get("area") or user.get("area") or "").strip()
-        order["prod"] = str(product.get("name") or "").strip()
-        order["prodId"] = prod_id
-        order["variant"] = variant
-        order["qty"] = qty
-        order["status"] = status
-        order["websiteStatusOriginal"] = website_status_original
-        order["paymentMethod"] = str(body.get("paymentMethod", order.get("paymentMethod")) or "").strip()
-        if coupon_code:
-            order["discount"] = coupon_discount
-            order["couponCode"] = coupon_code
-            order["couponId"] = int(coupon.get("id") or 0)
-            order["couponDiscountType"] = _normalize_discount_type(coupon.get("discountType"))
-            order["couponDiscountValue"] = _safe_float(coupon.get("discountValue"))
-            order["couponMinCartValue"] = _safe_float(coupon.get("minCartValue"))
+        if existing_idx is None:
+            order = {
+                "id": int(data.get("oid") or 1),
+                **common,
+                "commission": float(body.get("commission") or 0) if (len(lines) == 1 and not explicit_items and "commission" in body) else 0.0,
+                "distribution": {},
+                "inventorySynced": False,
+                "inventorySyncedAt": None,
+            }
+            data.setdefault("orders", []).insert(0, order)
+            data["oid"] = int(data.get("oid") or 1) + 1
+            _reconcile_order_inventory(data, 0, prev_order=None, force=True)
         else:
-            order["discount"] = float(body.get("discount", 0) or 0)
-            order["couponCode"] = ""
-            order["couponId"] = None
-            order["couponDiscountType"] = ""
-            order["couponDiscountValue"] = 0
-            order["couponMinCartValue"] = 0
-        if "commission" in body:
-            order["commission"] = float(body.get("commission") or 0)
-        if "realizedRevenue" in body:
-            order["realizedRevenue"] = body.get("realizedRevenue")
-        if "notes" in body:
-            order["notes"] = order_notes
-        if "shipping" in body and isinstance(body.get("shipping"), dict):
-            order["shipping"] = body.get("shipping")
-        if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
-            order["subscriptionFrequency"] = subscription_frequency
-            order["subscriptionDuration"] = subscription_duration
-            order["subscriptionTag"] = subscription_tag
-        order["at"] = at_ms
-        _reconcile_order_inventory(data, existing_idx, prev_order=prev, force=False)
+            prev = copy.deepcopy(data["orders"][existing_idx])
+            order = data["orders"][existing_idx]
+            order.update(common)
+            if "commission" in body:
+                order["commission"] = float(body.get("commission") or 0)
+            if len(lines) == 1 and not explicit_items and "realizedRevenue" in body:
+                order["realizedRevenue"] = body.get("realizedRevenue")
+            if "shipping" not in body:
+                order["shipping"] = order.get("shipping", {})
+            _reconcile_order_inventory(data, existing_idx, prev_order=prev, force=False)
+        touched_order_ids.add(int(order.get("id") or 0))
+        response_orders.append(_website_safe_order_payload(order))
+
+    obsolete_indices = [
+        i
+        for i, row in enumerate(data.get("orders", []))
+        if str(row.get("channel") or "") == "website"
+        and str(row.get("websiteCartId") or "").strip() == website_order_id
+        and int(row.get("id") or 0) not in touched_order_ids
+        and str(row.get("status") or "") not in {"completed", "cancelled", "returned"}
+    ]
+    for obsolete_idx in obsolete_indices:
+        prev = copy.deepcopy(data["orders"][obsolete_idx])
+        data["orders"][obsolete_idx]["status"] = "cancelled"
+        data["orders"][obsolete_idx]["discount"] = 0.0
+        data["orders"][obsolete_idx]["couponCode"] = ""
+        data["orders"][obsolete_idx]["couponId"] = None
+        data["orders"][obsolete_idx]["couponDiscountType"] = ""
+        data["orders"][obsolete_idx]["couponDiscountValue"] = 0
+        data["orders"][obsolete_idx]["couponMinCartValue"] = 0
+        _reconcile_order_inventory(data, obsolete_idx, prev_order=prev, force=False)
     write_data(data)
-    return {"ok": True, "order": _website_safe_order_payload(order), "user": _website_user_public_payload(user)}
+    return {
+        "ok": True,
+        "order": response_orders[0] if response_orders else None,
+        "orders": response_orders,
+        "cartSubtotal": cart_subtotal,
+        "discount": coupon_discount,
+        "payableAmount": round(max(0.0, cart_subtotal - coupon_discount), 2),
+        "user": _website_user_public_payload(user),
+    }
 
 
 @app.get("/api/website/orders")

@@ -402,9 +402,85 @@ Website coupon flow:
 
 - Create coupon rules in CRM Settings -> Coupons.
 - Website backend validates a user-entered coupon with `POST /api/website/coupons/validate`; never expose `WEBSITE_KEY` in browser code.
-- CRM calculates subtotal from CRM website pricing using `prodId`, `variant`, and `qty`.
+- CRM calculates subtotal from CRM website pricing using each cart line's `prodId`, `variant`, and `qty`.
+- Website backend can send the whole cart in one request using `items[]`; legacy single-line `prodId`/`variant`/`qty` requests still work.
 - Website backend sends only `couponCode` during `POST /api/website/orders/sync`; CRM revalidates and records the trusted discount.
-- Coupon rules can have both a global usage limit and a per-customer usage limit; the per-customer limit is enforced by `websiteUserId`.
+- CRM stores one CRM order row per cart line, all sharing the same `websiteCartId`; the response returns `orders[]` for all rows plus `order` as the first row for backward compatibility.
+- Coupon rules can have both a global usage limit and a per-customer usage limit; limits count one website cart once, not once per cart line.
+- `websiteOrderItemId` should be stable and unique per cart line. If omitted, CRM uses the array index.
+
+Multi-item coupon validation example:
+
+```http
+POST /api/website/coupons/validate
+X-API-Key: <WEBSITE_KEY>
+X-Website-User-Id: 12
+Content-Type: application/json
+```
+
+```json
+{
+  "code": "COUPON1",
+  "websiteUserId": 12,
+  "items": [
+    { "websiteOrderItemId": "line_1", "prodId": "p1", "variant": "250g", "qty": 2 },
+    { "websiteOrderItemId": "line_2", "prodId": "p2", "variant": "500g", "qty": 1 }
+  ]
+}
+```
+
+Valid response:
+
+```json
+{
+  "ok": true,
+  "coupon": { "code": "COUPON1", "discountType": "flat", "discountValue": 10 },
+  "cartSubtotal": 560,
+  "discount": 10,
+  "payableAmount": 550
+}
+```
+
+Multi-item order sync example:
+
+```http
+POST /api/website/orders/sync
+X-API-Key: <WEBSITE_KEY>
+X-Website-User-Id: 12
+Content-Type: application/json
+```
+
+```json
+{
+  "websiteOrderId": "web_order_1001",
+  "websiteUserId": 12,
+  "items": [
+    { "websiteOrderItemId": "line_1", "prodId": "p1", "variant": "250g", "qty": 2 },
+    { "websiteOrderItemId": "line_2", "prodId": "p2", "variant": "500g", "qty": 1 }
+  ],
+  "couponCode": "COUPON1",
+  "paymentMethod": "razorpay",
+  "status": "pending"
+}
+```
+
+Sync response:
+
+```json
+{
+  "ok": true,
+  "order": { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_1" },
+  "orders": [
+    { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_1", "discount": 2.68 },
+    { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_2", "discount": 7.32 }
+  ],
+  "cartSubtotal": 560,
+  "discount": 10,
+  "payableAmount": 550
+}
+```
+
+For multi-item carts, the website should treat `orders[]` as authoritative. CRM allocates the cart discount proportionally across the stored CRM order rows so existing CRM reporting and inventory flows continue to work.
 
 Example Caddy snippets (public domains -> helper instances):
 
