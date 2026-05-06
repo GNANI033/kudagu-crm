@@ -296,6 +296,7 @@ def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str
     exact_routes: dict[str, set[str]] = {
         "/api/website/auth/signup": {"POST"},
         "/api/website/auth/login": {"POST"},
+        "/api/website/coupons/validate": {"POST"},
         "/api/website/orders": {"GET"},
     }
     if WEBSITE_ALLOW_ORDER_SYNC:
@@ -381,10 +382,12 @@ DEFAULT_DATA: dict = {
     "users": [],
     "websiteUsers": [],
     "authSessions": [],
+    "coupons": [],
     "cid": 1,
     "oid": 1,
     "dbid": 1,
     "exid": 1,
+    "couponId": 1,
     "pid": 6,
     "uid": 1,
     "wuid": 1,
@@ -968,6 +971,8 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
         safe["operationalExpenses"] = []
     elif not _user_can_view_page(user, "expenses"):
         safe["operationalExpenses"] = []
+    if not _user_can_view_page(user, "settings"):
+        safe["coupons"] = []
     safe.pop("users", None)
     safe.pop("websiteUsers", None)
     safe.pop("authSessions", None)
@@ -1235,10 +1240,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions"):
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid"):
+    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid", "couponId"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -1296,6 +1301,21 @@ def migrate(data: dict) -> dict:
     next_expense_id = max([int(e.get("id") or 0) for e in data["operationalExpenses"]] + [0]) + 1
     data["exid"] = max(int(data.get("exid") or 1), next_expense_id)
 
+    normalized_coupons: list[dict] = []
+    seen_coupon_codes: set[str] = set()
+    for idx, raw_coupon in enumerate(data.get("coupons", []) or [], start=1):
+        if not isinstance(raw_coupon, dict):
+            continue
+        coupon = _normalize_coupon(raw_coupon, fallback_id=idx)
+        code_key = str(coupon.get("code") or "").upper()
+        if not code_key or code_key in seen_coupon_codes:
+            continue
+        seen_coupon_codes.add(code_key)
+        normalized_coupons.append(coupon)
+    data["coupons"] = sorted(normalized_coupons, key=lambda row: int(row.get("id") or 0))
+    next_coupon_id = max([int(c.get("id") or 0) for c in data["coupons"]] + [0]) + 1
+    data["couponId"] = max(int(data.get("couponId") or 1), next_coupon_id)
+
     # Migrate old salePrice → salePrices
     for p in data["products"]:
         if "waTpl" not in p:
@@ -1339,6 +1359,16 @@ def migrate(data: dict) -> dict:
             o["notes"] = ""
         if "websiteStatusOriginal" not in o:
             o["websiteStatusOriginal"] = ""
+        if "couponCode" not in o:
+            o["couponCode"] = ""
+        if "couponId" not in o:
+            o["couponId"] = None
+        if "couponDiscountType" not in o:
+            o["couponDiscountType"] = ""
+        if "couponDiscountValue" not in o:
+            o["couponDiscountValue"] = 0
+        if "couponMinCartValue" not in o:
+            o["couponMinCartValue"] = 0
         # Migrate old delivered/payment_received → completed
         if o["status"] in ("delivered", "payment_received"):
             o["status"] = "completed"
@@ -1690,6 +1720,12 @@ def _website_safe_order_payload(order: dict) -> dict:
         "shipping": order.get("shipping", {}) if isinstance(order.get("shipping"), dict) else {},
         "subscription": subscription,
         "notes": str(order.get("notes") or "").strip(),
+        "discount": _safe_float(order.get("discount")),
+        "couponCode": _normalize_coupon_code(order.get("couponCode")),
+        "couponId": order.get("couponId"),
+        "couponDiscountType": str(order.get("couponDiscountType") or "").strip(),
+        "couponDiscountValue": _safe_float(order.get("couponDiscountValue")),
+        "couponMinCartValue": _safe_float(order.get("couponMinCartValue")),
         "realizedRevenue": order.get("realizedRevenue"),
         "websiteStatusOriginal": str(order.get("websiteStatusOriginal") or "").strip(),
     }
@@ -1824,6 +1860,12 @@ def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
 def _client_safe_data(data: dict, request: Request | None = None, auth_source_data: dict | None = None) -> dict:
     """Return payload safe for frontend (avoid returning raw API key)."""
     safe = copy.deepcopy(data)
+    if isinstance(safe.get("coupons"), list):
+        safe["coupons"] = [
+            _coupon_public_payload(c, _coupon_usage_count(data, c))
+            for c in safe.get("coupons", [])
+            if isinstance(c, dict)
+        ]
     ms = safe.get("marketingSettings")
     if isinstance(ms, dict):
         raw_key = str(ms.get("aiApiKey") or "").strip()
@@ -1867,6 +1909,159 @@ def _safe_float(value: Any) -> float:
         return float(value or 0)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _normalize_coupon_code(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9_-]+", "", str(value or "").strip().upper())[:40]
+
+
+def _normalize_discount_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"percent", "percentage", "%"}:
+        return "percent"
+    return "flat"
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_coupon(raw: dict, fallback_id: int | None = None) -> dict:
+    now_ms = int(time.time() * 1000)
+    try:
+        coupon_id = int(raw.get("id") or fallback_id or 0)
+    except (TypeError, ValueError):
+        coupon_id = int(fallback_id or 0)
+    discount_type = _normalize_discount_type(raw.get("discountType"))
+    discount_value = _safe_float(raw.get("discountValue"))
+    if discount_value < 0:
+        discount_value = 0.0
+    if discount_type == "percent" and discount_value > 100:
+        discount_value = 100.0
+    min_cart_value = _safe_float(raw.get("minCartValue"))
+    if min_cart_value < 0:
+        min_cart_value = 0.0
+    usage_limit = _safe_int_or_none(raw.get("usageLimit"))
+    created_at = _safe_int_or_none(raw.get("createdAt")) or now_ms
+    updated_at = _safe_int_or_none(raw.get("updatedAt")) or created_at
+    return {
+        "id": coupon_id,
+        "code": _normalize_coupon_code(raw.get("code")),
+        "description": str(raw.get("description") or "").strip()[:240],
+        "isActive": bool(raw.get("isActive", True)),
+        "discountType": discount_type,
+        "discountValue": round(discount_value, 2),
+        "minCartValue": round(min_cart_value, 2),
+        "startAt": _safe_int_or_none(raw.get("startAt")),
+        "endAt": _safe_int_or_none(raw.get("endAt")),
+        "usageLimit": usage_limit,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+def _coupon_public_payload(coupon: dict, usage_count: int = 0) -> dict:
+    payload = copy.deepcopy(coupon)
+    payload["usageCount"] = int(usage_count or 0)
+    return payload
+
+
+def _coupon_usage_count(data: dict, coupon: dict, exclude_website_order_id: str = "") -> int:
+    code = _normalize_coupon_code(coupon.get("code"))
+    coupon_id = int(coupon.get("id") or 0)
+    exclude = str(exclude_website_order_id or "").strip()
+    count = 0
+    for order in data.get("orders", []) or []:
+        if not isinstance(order, dict):
+            continue
+        if exclude and str(order.get("websiteOrderId") or "").strip() == exclude:
+            continue
+        order_coupon_id = int(order.get("couponId") or 0)
+        order_code = _normalize_coupon_code(order.get("couponCode"))
+        if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
+            count += 1
+    return count
+
+
+def _coupon_invalid_payload() -> dict:
+    return {"ok": False, "code": "coupon_invalid", "detail": "Coupon is not valid."}
+
+
+def _website_unit_price(product: dict, variant: str) -> float:
+    pricing = product.get("pricing") or {}
+    row = pricing.get(variant) or {}
+    sale_prices = row.get("salePrices") or {}
+    val = _safe_float(sale_prices.get("website"))
+    if val > 0:
+        return val
+    return _safe_float(sale_prices.get("retail"))
+
+
+def _find_coupon(data: dict, code: Any) -> dict | None:
+    normalized = _normalize_coupon_code(code)
+    if not normalized:
+        return None
+    return next((c for c in data.get("coupons", []) or [] if _normalize_coupon_code(c.get("code")) == normalized), None)
+
+
+def _validate_coupon_for_cart(
+    data: dict,
+    code: Any,
+    prod_id: Any,
+    variant: Any,
+    qty: Any,
+    *,
+    exclude_website_order_id: str = "",
+) -> dict | None:
+    coupon = _find_coupon(data, code)
+    if not coupon or not bool(coupon.get("isActive", True)):
+        return None
+    now_ms = int(time.time() * 1000)
+    start_at = _safe_int_or_none(coupon.get("startAt"))
+    end_at = _safe_int_or_none(coupon.get("endAt"))
+    if start_at and now_ms < start_at:
+        return None
+    if end_at and now_ms > end_at:
+        return None
+    usage_limit = _safe_int_or_none(coupon.get("usageLimit"))
+    usage_count = _coupon_usage_count(data, coupon, exclude_website_order_id=exclude_website_order_id)
+    if usage_limit is not None and usage_count >= usage_limit:
+        return None
+    product = next((p for p in data.get("products", []) if str(p.get("id") or "") == str(prod_id or "").strip()), None)
+    if not product:
+        return None
+    variant_key = str(variant or "").strip()
+    try:
+        qty_value = float(qty or 0)
+    except (TypeError, ValueError):
+        qty_value = 0.0
+    if qty_value <= 0:
+        return None
+    unit_price = _website_unit_price(product, variant_key)
+    if unit_price <= 0:
+        return None
+    subtotal = round(unit_price * qty_value, 2)
+    min_cart_value = _safe_float(coupon.get("minCartValue"))
+    if subtotal < min_cart_value:
+        return None
+    discount_type = _normalize_discount_type(coupon.get("discountType"))
+    discount_value = _safe_float(coupon.get("discountValue"))
+    if discount_type == "percent":
+        discount = subtotal * (min(discount_value, 100.0) / 100.0)
+    else:
+        discount = discount_value
+    discount = round(max(0.0, min(discount, subtotal)), 2)
+    return {
+        "coupon": coupon,
+        "cartSubtotal": subtotal,
+        "discount": discount,
+        "payableAmount": round(max(0.0, subtotal - discount), 2),
+        "usageCount": usage_count,
+    }
 
 
 def _order_is_completed(order: dict) -> bool:
@@ -2862,6 +3057,42 @@ async def website_login(request: Request):
     return {"ok": True, "user": _website_user_public_payload(user)}
 
 
+@app.post("/api/website/coupons/validate")
+async def website_validate_coupon(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    data = read_data()
+    try:
+        website_user_id = int(body.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        if website_user_id <= 0:
+            return _coupon_invalid_payload()
+        _require_website_user_context(request, website_user_id)
+    result = _validate_coupon_for_cart(
+        data,
+        body.get("code"),
+        body.get("prodId"),
+        body.get("variant"),
+        body.get("qty"),
+    )
+    if not result:
+        return _coupon_invalid_payload()
+    coupon = result["coupon"]
+    return {
+        "ok": True,
+        "coupon": {
+            "code": _normalize_coupon_code(coupon.get("code")),
+            "discountType": _normalize_discount_type(coupon.get("discountType")),
+            "discountValue": _safe_float(coupon.get("discountValue")),
+        },
+        "cartSubtotal": result["cartSubtotal"],
+        "discount": result["discount"],
+        "payableAmount": result["payableAmount"],
+    }
+
+
 @app.get("/api/website/users/{website_user_id}")
 async def website_user_detail(website_user_id: int, request: Request):
     _require_api_key_context(request)
@@ -2943,6 +3174,7 @@ async def website_sync_order(request: Request):
             "subscriptionDuration",
             "subscriptionTag",
             "notes",
+            "couponCode",
             "realizedRevenue",
         }
         if extra_fields:
@@ -2996,6 +3228,21 @@ async def website_sync_order(request: Request):
     qty = float(body.get("qty") or 0)
     if qty <= 0:
         raise HTTPException(status_code=400, detail="qty must be greater than 0.")
+    coupon_code = _normalize_coupon_code(body.get("couponCode"))
+    coupon_result = None
+    if coupon_code:
+        coupon_result = _validate_coupon_for_cart(
+            data,
+            coupon_code,
+            prod_id,
+            variant,
+            qty,
+            exclude_website_order_id=website_order_id,
+        )
+        if not coupon_result:
+            raise HTTPException(status_code=400, detail="Coupon is not valid.")
+    coupon = (coupon_result or {}).get("coupon") or {}
+    coupon_discount = _safe_float((coupon_result or {}).get("discount"))
     profile_payload = body.get("profile") if isinstance(body.get("profile"), dict) else {}
     subscription_frequency = _normalize_subscription_value(
         body.get("subscriptionFrequency") or profile_payload.get("subscriptionFrequency"),
@@ -3044,7 +3291,12 @@ async def website_sync_order(request: Request):
             "channel": "website",
             "status": status,
             "websiteStatusOriginal": website_status_original,
-            "discount": float(body.get("discount", 0) or 0),
+            "discount": coupon_discount if coupon_code else float(body.get("discount", 0) or 0),
+            "couponCode": coupon_code,
+            "couponId": int(coupon.get("id") or 0) if coupon_code else None,
+            "couponDiscountType": _normalize_discount_type(coupon.get("discountType")) if coupon_code else "",
+            "couponDiscountValue": _safe_float(coupon.get("discountValue")) if coupon_code else 0,
+            "couponMinCartValue": _safe_float(coupon.get("minCartValue")) if coupon_code else 0,
             "commission": float(body.get("commission", 0) or 0),
             "paymentMethod": str(body.get("paymentMethod") or "").strip(),
             "at": at_ms,
@@ -3075,8 +3327,20 @@ async def website_sync_order(request: Request):
         order["status"] = status
         order["websiteStatusOriginal"] = website_status_original
         order["paymentMethod"] = str(body.get("paymentMethod", order.get("paymentMethod")) or "").strip()
-        if "discount" in body:
-            order["discount"] = float(body.get("discount") or 0)
+        if coupon_code:
+            order["discount"] = coupon_discount
+            order["couponCode"] = coupon_code
+            order["couponId"] = int(coupon.get("id") or 0)
+            order["couponDiscountType"] = _normalize_discount_type(coupon.get("discountType"))
+            order["couponDiscountValue"] = _safe_float(coupon.get("discountValue"))
+            order["couponMinCartValue"] = _safe_float(coupon.get("minCartValue"))
+        else:
+            order["discount"] = float(body.get("discount", 0) or 0)
+            order["couponCode"] = ""
+            order["couponId"] = None
+            order["couponDiscountType"] = ""
+            order["couponDiscountValue"] = 0
+            order["couponMinCartValue"] = 0
         if "commission" in body:
             order["commission"] = float(body.get("commission") or 0)
         if "realizedRevenue" in body:
@@ -4362,6 +4626,81 @@ async def delete_product(product_id: str, request: Request):
     data["products"] = [p for p in data["products"] if p["id"] != product_id]
     if len(data["products"]) == before:
         raise HTTPException(status_code=404, detail="Product not found")
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Coupons ────────────────────────────────────────────────────────────────
+@app.post("/api/coupons")
+async def add_coupon(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    coupon = _normalize_coupon({**body, "id": int(data.get("couponId") or 1)})
+    if not coupon["code"]:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    if coupon["discountValue"] <= 0:
+        raise HTTPException(status_code=400, detail="Discount value must be greater than 0.")
+    if coupon.get("startAt") and coupon.get("endAt") and int(coupon["endAt"]) < int(coupon["startAt"]):
+        raise HTTPException(status_code=400, detail="Coupon end date must be after start date.")
+    if _find_coupon(data, coupon["code"]):
+        raise HTTPException(status_code=409, detail="Coupon code already exists.")
+    now_ms = int(time.time() * 1000)
+    coupon["createdAt"] = now_ms
+    coupon["updatedAt"] = now_ms
+    data.setdefault("coupons", []).append(coupon)
+    data["couponId"] = int(data.get("couponId") or 1) + 1
+    write_data(data)
+    return _coupon_public_payload(coupon, 0)
+
+
+@app.put("/api/coupons/{coupon_id}")
+async def update_coupon(coupon_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    idx = next((i for i, c in enumerate(data.get("coupons", [])) if int(c.get("id") or 0) == int(coupon_id)), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    current = copy.deepcopy(data["coupons"][idx])
+    coupon = _normalize_coupon({**current, **body, "id": coupon_id})
+    if not coupon["code"]:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    if coupon["discountValue"] <= 0:
+        raise HTTPException(status_code=400, detail="Discount value must be greater than 0.")
+    if coupon.get("startAt") and coupon.get("endAt") and int(coupon["endAt"]) < int(coupon["startAt"]):
+        raise HTTPException(status_code=400, detail="Coupon end date must be after start date.")
+    duplicate = next(
+        (
+            c
+            for c in data.get("coupons", [])
+            if int(c.get("id") or 0) != int(coupon_id) and _normalize_coupon_code(c.get("code")) == coupon["code"]
+        ),
+        None,
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Coupon code already exists.")
+    coupon["createdAt"] = current.get("createdAt") or coupon.get("createdAt")
+    coupon["updatedAt"] = int(time.time() * 1000)
+    data["coupons"][idx] = coupon
+    write_data(data)
+    return _coupon_public_payload(coupon, _coupon_usage_count(data, coupon))
+
+
+@app.delete("/api/coupons/{coupon_id}")
+async def delete_coupon(coupon_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    before = len(data.get("coupons", []))
+    data["coupons"] = [c for c in data.get("coupons", []) if int(c.get("id") or 0) != int(coupon_id)]
+    if len(data["coupons"]) == before:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
     write_data(data)
     return {"ok": True}
 

@@ -590,10 +590,12 @@ function emptyState(){
     distributionChannels: [],
     operationalExpenses: [],
     closedFollowUps: [],
+    coupons: [],
     cid: 1,
     oid: 1,
     dbid: 1,
     exid: 1,
+    couponId: 1,
     pid: 1,
     waDefaultTpl: DEFAULT_WA_TPL,
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
@@ -1445,6 +1447,7 @@ function sPanel(id){
   if(id==='wa-messages') rWaMessages();
   if(id==='appearance') rThemeSettings();
   if(id==='marketing-ai') rMarketingSettings();
+  if(id==='coupons') rCoupons();
   if(id==='shipping') rShippingSettings();
   if(id==='users') rUsersSettings();
 }
@@ -4860,6 +4863,115 @@ function insertShippingToken(token){
 function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;const merged=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Item'),variant:'250g',qty:'1'});pr.innerHTML=esc(merged).replace(/\n/g,'<br>'); }
 async function saveWaTpl(key){ if(key==='default'){const el=g('wa-tpl-default');if(!el)return;S.waDefaultTpl=el.value.trim();try{await api.put('/api/settings',{waDefaultTpl:S.waDefaultTpl});toast('Default template saved','ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}}else{const prod=S.products.find(p=>p.id===key);if(!prod)return;const el=g(`wa-tpl-${key}`);if(!el)return;prod.waTpl=el.value.trim();try{await api.put(`/api/products/${key}`,{waTpl:prod.waTpl});toast(`Template saved for ${prod.name}`,'ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}} }
 async function clearProdWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(!prod)return;prod.waTpl='';try{await api.put(`/api/products/${pid}`,{waTpl:''});toast('Reset to default');rWaMessages();}catch(e){toast('Error: '+e.message,'err');} }
+
+// ─── COUPONS ────────────────────────────────────────────────────────────────
+function normalizeCouponCode(raw){ return String(raw||'').trim().toUpperCase().replace(/[^A-Z0-9_-]+/g,'').slice(0,40); }
+function couponDateInput(ms){
+  const n=parseInt(ms||0,10);
+  if(!n) return '';
+  const d=new Date(n);
+  if(isNaN(d.getTime())) return '';
+  const y=d.getFullYear(),m=String(d.getMonth()+1).padStart(2,'0'),day=String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
+}
+function couponDateMs(value,endOfDay=false){
+  const raw=String(value||'').trim();
+  if(!raw) return null;
+  const parts=raw.split('-').map(Number);
+  if(parts.length!==3 || parts.some(n=>!Number.isFinite(n))) return null;
+  const d=endOfDay?new Date(parts[0],parts[1]-1,parts[2],23,59,59,999):new Date(parts[0],parts[1]-1,parts[2],0,0,0,0);
+  return d.getTime();
+}
+function couponTypeLabel(type){ return String(type)==='percent'?'% off':'₹ off'; }
+function couponStatus(c){
+  const now=Date.now();
+  if(!c?.isActive) return {label:'Inactive',cls:'st-cancelled'};
+  if(c.startAt && now<Number(c.startAt)) return {label:'Scheduled',cls:'st-pending'};
+  if(c.endAt && now>Number(c.endAt)) return {label:'Expired',cls:'st-cancelled'};
+  if(c.usageLimit && Number(c.usageCount||0)>=Number(c.usageLimit)) return {label:'Used up',cls:'st-cancelled'};
+  return {label:'Active',cls:'st-completed'};
+}
+function resetCouponForm(){
+  ['coupon-code','coupon-description','coupon-discount-value','coupon-min-cart','coupon-usage-limit','coupon-start','coupon-end','coupon-edit-id'].forEach(id=>{ if(g(id)) g(id).value=''; });
+  if(g('coupon-discount-type')) g('coupon-discount-type').value='flat';
+  if(g('coupon-active')) g('coupon-active').checked=true;
+}
+function editCoupon(id){
+  const c=(S.coupons||[]).find(row=>Number(row.id)===Number(id));
+  if(!c) return;
+  if(g('coupon-edit-id')) g('coupon-edit-id').value=c.id;
+  if(g('coupon-code')) g('coupon-code').value=c.code||'';
+  if(g('coupon-description')) g('coupon-description').value=c.description||'';
+  if(g('coupon-discount-type')) g('coupon-discount-type').value=c.discountType||'flat';
+  if(g('coupon-discount-value')) g('coupon-discount-value').value=c.discountValue||'';
+  if(g('coupon-min-cart')) g('coupon-min-cart').value=c.minCartValue||0;
+  if(g('coupon-usage-limit')) g('coupon-usage-limit').value=c.usageLimit||'';
+  if(g('coupon-start')) g('coupon-start').value=couponDateInput(c.startAt);
+  if(g('coupon-end')) g('coupon-end').value=couponDateInput(c.endAt);
+  if(g('coupon-active')) g('coupon-active').checked=!!c.isActive;
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+function couponPayloadFromForm(){
+  return {
+    code:normalizeCouponCode(g('coupon-code')?.value),
+    description:String(g('coupon-description')?.value||'').trim(),
+    isActive:!!g('coupon-active')?.checked,
+    discountType:g('coupon-discount-type')?.value||'flat',
+    discountValue:Math.max(0,parseFloat(g('coupon-discount-value')?.value||0)||0),
+    minCartValue:Math.max(0,parseFloat(g('coupon-min-cart')?.value||0)||0),
+    startAt:couponDateMs(g('coupon-start')?.value,false),
+    endAt:couponDateMs(g('coupon-end')?.value,true),
+    usageLimit:(g('coupon-usage-limit')?.value?Math.max(1,parseInt(g('coupon-usage-limit').value,10)||1):null),
+  };
+}
+async function saveCoupon(){
+  if(!hasActionAccess('settings','manage')){ toast('Settings access is restricted','err'); return; }
+  const payload=couponPayloadFromForm();
+  if(!payload.code){ toast('Coupon code is required','err'); return; }
+  if(payload.discountValue<=0){ toast('Discount value must be greater than 0','err'); return; }
+  const editId=parseInt(g('coupon-edit-id')?.value||0,10)||0;
+  try{
+    const saved=editId?await api.put(`/api/coupons/${editId}`,payload):await api.post('/api/coupons',payload);
+    const idx=(S.coupons||[]).findIndex(c=>Number(c.id)===Number(saved.id));
+    if(idx>=0) S.coupons[idx]=saved; else S.coupons=[...(S.coupons||[]),saved];
+    resetCouponForm();
+    rCoupons();
+    toast('Coupon saved','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+async function deleteCoupon(id){
+  if(!confirm('Delete this coupon? Existing orders keep their recorded discount.')) return;
+  try{
+    await api.del(`/api/coupons/${id}`);
+    S.coupons=(S.coupons||[]).filter(c=>Number(c.id)!==Number(id));
+    rCoupons();
+    toast('Coupon deleted','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function rCoupons(){
+  const list=g('coupons-list');
+  if(!list) return;
+  const coupons=[...(S.coupons||[])].sort((a,b)=>String(a.code||'').localeCompare(String(b.code||'')));
+  if(!coupons.length){
+    list.innerHTML='<div class="empty"><div class="ei">%</div><div class="et">No coupons yet</div><div class="es">Create coupon rules for website checkout.</div></div>';
+    return;
+  }
+  list.innerHTML=`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Code</th><th>Discount</th><th>Minimum</th><th>Validity</th><th>Usage</th><th>Status</th><th></th></tr></thead><tbody>${coupons.map(c=>{
+    const st=couponStatus(c);
+    const value=String(c.discountType)==='percent'?`${Number(c.discountValue||0).toFixed(2)}%`:`₹${Number(c.discountValue||0).toFixed(2)}`;
+    const validity=[c.startAt?couponDateInput(c.startAt):'Now',c.endAt?couponDateInput(c.endAt):'No end'].join(' → ');
+    const usage=`${Number(c.usageCount||0)} / ${c.usageLimit?Number(c.usageLimit):'∞'}`;
+    return `<tr>
+      <td><div style="font-weight:700">${esc(c.code||'')}</div><div style="font-size:11.5px;color:var(--text-3)">${esc(c.description||'')}</div></td>
+      <td>${value} <span style="font-size:11px;color:var(--text-3)">${couponTypeLabel(c.discountType)}</span></td>
+      <td>₹${Number(c.minCartValue||0).toFixed(2)}</td>
+      <td style="color:var(--text-2)">${esc(validity)}</td>
+      <td>${esc(usage)}</td>
+      <td><span class="status-badge ${st.cls}">${st.label}</span></td>
+      <td><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn btn-s btn-xs" onclick="editCoupon(${c.id})">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteCoupon(${c.id})">Delete</button></div></td>
+    </tr>`;
+  }).join('')}</tbody></table></div>`;
+}
 
 // ─── SHIPPING SETTINGS ───────────────────────────────────────────────────────
 let SHIPPING_ROWS = [];

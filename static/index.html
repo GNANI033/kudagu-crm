@@ -240,6 +240,8 @@ input[type="date"] {
   appearance: auto;
   padding-right: 12px;
 }
+.checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.checkline input { width: auto; min-width: 16px; }
 input:focus, select:focus, textarea:focus { border-color: var(--text); box-shadow: 0 0 0 3px rgba(17,17,16,.08); }
 input::placeholder, textarea::placeholder { color: var(--text-3); }
 select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23a0a09a'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
@@ -1264,7 +1266,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 
   <!-- SETTINGS -->
   <div class="view" id="view-settings">
-    <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, services, pricing & messages</div></div></div>
+    <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, pricing, coupons & messages</div></div></div>
       <div class="settings-layout">
       <div class="settings-menu">
         <div class="smenu-row">
@@ -1274,6 +1276,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
         <button class="smenu-item" data-panel="appearance" onclick="sPanel('appearance')">Appearance</button>
         <button class="smenu-item" data-panel="wa-messages" onclick="sPanel('wa-messages')">WA Messages</button>
         <button class="smenu-item" data-panel="marketing-ai" onclick="sPanel('marketing-ai')">Marketing AI</button>
+        <button class="smenu-item" data-panel="coupons" onclick="sPanel('coupons')">Coupons</button>
         <button class="smenu-item" data-panel="shipping" onclick="sPanel('shipping')">Shipping</button>
         <button class="smenu-item" data-panel="faq" onclick="sPanel('faq')">FAQ / Help</button>
       </div>
@@ -1482,6 +1485,45 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
             </div>
           </div>
         </div>
+        <div class="settings-panel" id="sp-coupons">
+          <div class="card">
+            <div class="ch"><div class="ct">Coupons</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fr">
+                <div class="fg"><label>Code <span class="req">*</span></label><input id="coupon-code" type="text" placeholder="e.g. COUPON1"></div>
+                <div class="fg"><label>Description</label><input id="coupon-description" type="text" placeholder="Optional internal note"></div>
+              </div>
+              <div class="fr">
+                <div class="fg">
+                  <label>Discount Type</label>
+                  <select id="coupon-discount-type">
+                    <option value="flat">Flat rupee off</option>
+                    <option value="percent">Percentage off</option>
+                  </select>
+                </div>
+                <div class="fg"><label>Discount Value <span class="req">*</span></label><input id="coupon-discount-value" type="number" min="0" step="0.01" placeholder="10"></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Minimum Cart Value</label><div class="input-prefix"><span>₹</span><input id="coupon-min-cart" type="number" min="0" step="0.01" placeholder="0"></div></div>
+                <div class="fg"><label>Global Usage Limit</label><input id="coupon-usage-limit" type="number" min="1" step="1" placeholder="Blank = unlimited"></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Start Date</label><input id="coupon-start" type="date"></div>
+                <div class="fg"><label>End Date</label><input id="coupon-end" type="date"></div>
+              </div>
+              <label class="checkline"><input id="coupon-active" type="checkbox" checked> Active</label>
+              <input id="coupon-edit-id" type="hidden">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-p" onclick="saveCoupon()">Save Coupon</button>
+                <button class="btn btn-s" onclick="resetCouponForm()">Clear</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="ch"><div class="ct">Active Coupon Rules</div></div>
+            <div class="cb" id="coupons-list"></div>
+          </div>
+        </div>
         <div class="settings-panel" id="sp-faq">
           <div class="card">
             <div class="ch"><div class="ct">FAQ / Help</div></div>
@@ -1546,6 +1588,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
                   <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
                     <div style="font-weight:700">Marketing AI</div>
                     <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Lets you set the AI endpoint, model, and prompt rules used for marketing draft generation.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Coupons</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Creates website coupon rules for flat or percentage discounts, minimum cart values, dates, and global usage limits.</div>
                   </div>
                   <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
                     <div style="font-weight:700">Shipping</div>

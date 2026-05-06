@@ -349,6 +349,7 @@ Main routes:
 - `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}`
 - `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}`
 - `PUT /api/settings`
+- `POST /api/coupons`, `PUT /api/coupons/{id}`, `DELETE /api/coupons/{id}`
 - `GET /api/orders/{id}/shipping-label.pdf`
 - `POST /api/alerts/followups/close`
 - `POST /api/distribution/batches` and related batch update/complete/delete routes
@@ -358,6 +359,7 @@ Main routes:
 - `POST /api/marketing/template`
 - `POST /api/website/auth/signup` (create website customer account + sync CRM customer)
 - `POST /api/website/auth/login` (verify website credentials via CRM)
+- `POST /api/website/coupons/validate` (validate CRM-owned coupon rules for a website cart)
 - `GET /api/website/users/{id}`, `PUT /api/website/users/{id}` (profile sync)
 - `POST /api/website/orders/sync` (upsert website order into CRM orders)
 - `GET /api/website/orders?websiteUserId={id}` (website-safe customer order history)
@@ -393,7 +395,15 @@ Website-key caller context rule:
 - CRM enforces this context for:
   - `GET/PUT /api/website/users/{websiteUserId}`
   - `GET /api/website/orders` (must include `websiteUserId` query param)
+  - `POST /api/website/coupons/validate`
   - `POST /api/website/orders/sync`
+
+Website coupon flow:
+
+- Create coupon rules in CRM Settings -> Coupons.
+- Website backend validates a user-entered coupon with `POST /api/website/coupons/validate`; never expose `WEBSITE_KEY` in browser code.
+- CRM calculates subtotal from CRM website pricing using `prodId`, `variant`, and `qty`.
+- Website backend sends only `couponCode` during `POST /api/website/orders/sync`; CRM revalidates and records the trusted discount.
 
 Example Caddy snippets (public domains -> helper instances):
 
