@@ -107,7 +107,7 @@ def _clean_response_headers(headers: httpx.Headers) -> dict[str, str]:
         lower = key.lower()
         if lower in HOP_BY_HOP_HEADERS:
             continue
-        if lower == "content-length":
+        if lower in {"content-length", "content-encoding"}:
             continue
         out[key] = value
     return out
