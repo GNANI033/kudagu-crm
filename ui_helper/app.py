@@ -16,6 +16,7 @@ import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
+from starlette.middleware.gzip import GZipMiddleware
 
 
 def _load_env_file(path: Path) -> None:
@@ -121,6 +122,7 @@ def _is_html_payload(content_type: str, content: bytes) -> bool:
 
 
 app = FastAPI(title="Kudagu UI Helper", docs_url=None, redoc_url=None)
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 _validate_config()
 _CLIENT = httpx.AsyncClient(timeout=HELPER_TIMEOUT_SECONDS, follow_redirects=False)
 

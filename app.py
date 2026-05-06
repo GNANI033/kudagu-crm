@@ -44,6 +44,7 @@ from urllib import parse as urlparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -2918,6 +2919,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Kudagu Kaapi CRM", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
@@ -2959,10 +2961,19 @@ async def healthcheck():
 async def disable_ui_asset_caching(request: Request, call_next):
     response = await call_next(request)
     path = request.url.path
-    if path == "/" or path.startswith("/static/") or path.startswith("/assets/"):
+    if path == "/":
         response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
+    elif path.startswith("/static/") or path.startswith("/assets/"):
+        if request.query_params.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            if "Pragma" in response.headers:
+                del response.headers["Pragma"]
+            if "Expires" in response.headers:
+                del response.headers["Expires"]
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300"
     return response
 
 
