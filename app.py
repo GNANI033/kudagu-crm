@@ -1349,6 +1349,8 @@ def migrate(data: dict) -> dict:
             o["distribution"] = {}
         if "websiteOrderId" not in o:
             o["websiteOrderId"] = ""
+        if "websiteUserId" not in o:
+            o["websiteUserId"] = 0
         if "subscriptionFrequency" not in o:
             o["subscriptionFrequency"] = ""
         if "subscriptionDuration" not in o:
@@ -1705,6 +1707,7 @@ def _website_safe_order_payload(order: dict) -> dict:
     return {
         "id": int(order.get("id") or 0),
         "websiteOrderId": str(order.get("websiteOrderId") or "").strip(),
+        "websiteUserId": int(order.get("websiteUserId") or 0),
         "customerId": int(order.get("cid") or 0),
         "customerName": str(order.get("cname") or "").strip(),
         "customerPhone": str(order.get("cphone") or "").strip(),
@@ -1946,6 +1949,7 @@ def _normalize_coupon(raw: dict, fallback_id: int | None = None) -> dict:
     if min_cart_value < 0:
         min_cart_value = 0.0
     usage_limit = _safe_int_or_none(raw.get("usageLimit"))
+    per_customer_usage_limit = _safe_int_or_none(raw.get("perCustomerUsageLimit"))
     created_at = _safe_int_or_none(raw.get("createdAt")) or now_ms
     updated_at = _safe_int_or_none(raw.get("updatedAt")) or created_at
     return {
@@ -1959,6 +1963,7 @@ def _normalize_coupon(raw: dict, fallback_id: int | None = None) -> dict:
         "startAt": _safe_int_or_none(raw.get("startAt")),
         "endAt": _safe_int_or_none(raw.get("endAt")),
         "usageLimit": usage_limit,
+        "perCustomerUsageLimit": per_customer_usage_limit,
         "createdAt": created_at,
         "updatedAt": updated_at,
     }
@@ -1979,6 +1984,31 @@ def _coupon_usage_count(data: dict, coupon: dict, exclude_website_order_id: str 
         if not isinstance(order, dict):
             continue
         if exclude and str(order.get("websiteOrderId") or "").strip() == exclude:
+            continue
+        order_coupon_id = int(order.get("couponId") or 0)
+        order_code = _normalize_coupon_code(order.get("couponCode"))
+        if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
+            count += 1
+    return count
+
+
+def _coupon_user_usage_count(data: dict, coupon: dict, website_user_id: int, exclude_website_order_id: str = "") -> int:
+    if website_user_id <= 0:
+        return 0
+    code = _normalize_coupon_code(coupon.get("code"))
+    coupon_id = int(coupon.get("id") or 0)
+    exclude = str(exclude_website_order_id or "").strip()
+    count = 0
+    for order in data.get("orders", []) or []:
+        if not isinstance(order, dict):
+            continue
+        if exclude and str(order.get("websiteOrderId") or "").strip() == exclude:
+            continue
+        try:
+            order_website_user_id = int(order.get("websiteUserId") or 0)
+        except (TypeError, ValueError):
+            order_website_user_id = 0
+        if order_website_user_id != int(website_user_id):
             continue
         order_coupon_id = int(order.get("couponId") or 0)
         order_code = _normalize_coupon_code(order.get("couponCode"))
@@ -2015,6 +2045,7 @@ def _validate_coupon_for_cart(
     variant: Any,
     qty: Any,
     *,
+    website_user_id: int = 0,
     exclude_website_order_id: str = "",
 ) -> dict | None:
     coupon = _find_coupon(data, code)
@@ -2030,6 +2061,15 @@ def _validate_coupon_for_cart(
     usage_limit = _safe_int_or_none(coupon.get("usageLimit"))
     usage_count = _coupon_usage_count(data, coupon, exclude_website_order_id=exclude_website_order_id)
     if usage_limit is not None and usage_count >= usage_limit:
+        return None
+    per_customer_usage_limit = _safe_int_or_none(coupon.get("perCustomerUsageLimit"))
+    user_usage_count = _coupon_user_usage_count(
+        data,
+        coupon,
+        int(website_user_id or 0),
+        exclude_website_order_id=exclude_website_order_id,
+    )
+    if per_customer_usage_limit is not None and user_usage_count >= per_customer_usage_limit:
         return None
     product = next((p for p in data.get("products", []) if str(p.get("id") or "") == str(prod_id or "").strip()), None)
     if not product:
@@ -2061,6 +2101,7 @@ def _validate_coupon_for_cart(
         "discount": discount,
         "payableAmount": round(max(0.0, subtotal - discount), 2),
         "usageCount": usage_count,
+        "userUsageCount": user_usage_count,
     }
 
 
@@ -3076,6 +3117,7 @@ async def website_validate_coupon(request: Request):
         body.get("prodId"),
         body.get("variant"),
         body.get("qty"),
+        website_user_id=website_user_id,
     )
     if not result:
         return _coupon_invalid_payload()
@@ -3237,6 +3279,7 @@ async def website_sync_order(request: Request):
             prod_id,
             variant,
             qty,
+            website_user_id=website_user_id,
             exclude_website_order_id=website_order_id,
         )
         if not coupon_result:
@@ -3280,6 +3323,7 @@ async def website_sync_order(request: Request):
         order = {
             "id": int(data.get("oid") or 1),
             "websiteOrderId": website_order_id,
+            "websiteUserId": website_user_id,
             "cid": customer_id,
             "cname": str(customer.get("name") or user.get("name") or "").strip(),
             "cphone": str(customer.get("phone") or user.get("phone") or "").strip(),
@@ -3317,6 +3361,7 @@ async def website_sync_order(request: Request):
         prev = copy.deepcopy(data["orders"][existing_idx])
         order = data["orders"][existing_idx]
         order["cid"] = customer_id
+        order["websiteUserId"] = website_user_id
         order["cname"] = str(customer.get("name") or user.get("name") or "").strip()
         order["cphone"] = str(customer.get("phone") or user.get("phone") or "").strip()
         order["carea"] = str(customer.get("area") or user.get("area") or "").strip()

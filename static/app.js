@@ -4892,7 +4892,7 @@ function couponStatus(c){
   return {label:'Active',cls:'st-completed'};
 }
 function resetCouponForm(){
-  ['coupon-code','coupon-description','coupon-discount-value','coupon-min-cart','coupon-usage-limit','coupon-start','coupon-end','coupon-edit-id'].forEach(id=>{ if(g(id)) g(id).value=''; });
+  ['coupon-code','coupon-description','coupon-discount-value','coupon-min-cart','coupon-usage-limit','coupon-user-usage-limit','coupon-start','coupon-end','coupon-edit-id'].forEach(id=>{ if(g(id)) g(id).value=''; });
   if(g('coupon-discount-type')) g('coupon-discount-type').value='flat';
   if(g('coupon-active')) g('coupon-active').checked=true;
 }
@@ -4906,6 +4906,7 @@ function editCoupon(id){
   if(g('coupon-discount-value')) g('coupon-discount-value').value=c.discountValue||'';
   if(g('coupon-min-cart')) g('coupon-min-cart').value=c.minCartValue||0;
   if(g('coupon-usage-limit')) g('coupon-usage-limit').value=c.usageLimit||'';
+  if(g('coupon-user-usage-limit')) g('coupon-user-usage-limit').value=c.perCustomerUsageLimit||'';
   if(g('coupon-start')) g('coupon-start').value=couponDateInput(c.startAt);
   if(g('coupon-end')) g('coupon-end').value=couponDateInput(c.endAt);
   if(g('coupon-active')) g('coupon-active').checked=!!c.isActive;
@@ -4922,6 +4923,7 @@ function couponPayloadFromForm(){
     startAt:couponDateMs(g('coupon-start')?.value,false),
     endAt:couponDateMs(g('coupon-end')?.value,true),
     usageLimit:(g('coupon-usage-limit')?.value?Math.max(1,parseInt(g('coupon-usage-limit').value,10)||1):null),
+    perCustomerUsageLimit:(g('coupon-user-usage-limit')?.value?Math.max(1,parseInt(g('coupon-user-usage-limit').value,10)||1):null),
   };
 }
 async function saveCoupon(){
@@ -4956,17 +4958,19 @@ function rCoupons(){
     list.innerHTML='<div class="empty"><div class="ei">%</div><div class="et">No coupons yet</div><div class="es">Create coupon rules for website checkout.</div></div>';
     return;
   }
-  list.innerHTML=`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Code</th><th>Discount</th><th>Minimum</th><th>Validity</th><th>Usage</th><th>Status</th><th></th></tr></thead><tbody>${coupons.map(c=>{
+  list.innerHTML=`<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Code</th><th>Discount</th><th>Minimum</th><th>Validity</th><th>Usage</th><th>User Limit</th><th>Status</th><th></th></tr></thead><tbody>${coupons.map(c=>{
     const st=couponStatus(c);
     const value=String(c.discountType)==='percent'?`${Number(c.discountValue||0).toFixed(2)}%`:`₹${Number(c.discountValue||0).toFixed(2)}`;
     const validity=[c.startAt?couponDateInput(c.startAt):'Now',c.endAt?couponDateInput(c.endAt):'No end'].join(' → ');
     const usage=`${Number(c.usageCount||0)} / ${c.usageLimit?Number(c.usageLimit):'∞'}`;
+    const userLimit=c.perCustomerUsageLimit?Number(c.perCustomerUsageLimit):'∞';
     return `<tr>
       <td><div style="font-weight:700">${esc(c.code||'')}</div><div style="font-size:11.5px;color:var(--text-3)">${esc(c.description||'')}</div></td>
       <td>${value} <span style="font-size:11px;color:var(--text-3)">${couponTypeLabel(c.discountType)}</span></td>
       <td>₹${Number(c.minCartValue||0).toFixed(2)}</td>
       <td style="color:var(--text-2)">${esc(validity)}</td>
       <td>${esc(usage)}</td>
+      <td>${esc(userLimit)}</td>
       <td><span class="status-badge ${st.cls}">${st.label}</span></td>
       <td><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn btn-s btn-xs" onclick="editCoupon(${c.id})">Edit</button><button class="btn btn-danger btn-xs" onclick="deleteCoupon(${c.id})">Delete</button></div></td>
     </tr>`;

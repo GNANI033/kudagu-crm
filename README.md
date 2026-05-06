@@ -404,6 +404,7 @@ Website coupon flow:
 - Website backend validates a user-entered coupon with `POST /api/website/coupons/validate`; never expose `WEBSITE_KEY` in browser code.
 - CRM calculates subtotal from CRM website pricing using `prodId`, `variant`, and `qty`.
 - Website backend sends only `couponCode` during `POST /api/website/orders/sync`; CRM revalidates and records the trusted discount.
+- Coupon rules can have both a global usage limit and a per-customer usage limit; the per-customer limit is enforced by `websiteUserId`.
 
 Example Caddy snippets (public domains -> helper instances):
 
