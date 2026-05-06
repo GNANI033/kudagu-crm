@@ -604,6 +604,14 @@ function emptyState(){
     authContext: { ...AUTH_STATE },
   };
 }
+function normalizeAppState(){
+  if(!S || typeof S!=='object') S=emptyState();
+  ['customers','customerProductTags','orders','products','distributorBatches','distributionChannels','operationalExpenses','closedFollowUps','coupons'].forEach(key=>{
+    if(!Array.isArray(S[key])) S[key]=[];
+  });
+  if(!S.shippingProfile || typeof S.shippingProfile!=='object') S.shippingProfile={ paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} };
+  if(!S.marketingSettings || typeof S.marketingSettings!=='object') S.marketingSettings={ aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' };
+}
 
 function normalizeCustomerProductTags(values){
   const arr=Array.isArray(values)?values:[values];
@@ -710,6 +718,15 @@ function setAppLocked(locked){
     el.style.pointerEvents=locked?'none':'';
     el.setAttribute('aria-hidden', locked?'true':'false');
   });
+}
+function showStartupRenderError(err){
+  const msg=String(err?.message||err||'Unknown render error').slice(0,180);
+  ['sg','sg2'].forEach(id=>{ const el=g(id); if(el) el.innerHTML=''; });
+  const orders=g('d-orders');
+  if(orders) orders.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Dashboard could not render</div><div class="es">${esc(msg)}</div></div>`;
+  const alerts=g('d-al');
+  if(alerts) alerts.innerHTML='<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Reload after deployment</div></div>';
+  toast('Dashboard render failed: '+msg,'err');
 }
 function ensureAuthUi(){
   if(g('auth-gate')) return;
@@ -5159,15 +5176,18 @@ async function loadApplicationData(){
     enterAuthMode();
     return;
   }
+  normalizeAppState();
   enterAppMode();
   applyTheme(S?.uiPreferences?.theme||'light');
-  if(!Array.isArray(S.distributorBatches)) S.distributorBatches=[];
-  if(!Array.isArray(S.distributionChannels)) S.distributionChannels=[];
-  if(!Array.isArray(S.operationalExpenses)) S.operationalExpenses=[];
   setCustomerFiltersExpanded(false);
   ensureUserManagementUi();
   applyPermissionUI();
-  updBadge(); rDash(); populateProdSelect(); setDefaultDate(); setOperationalExpenseDateDefault(); resetCompositionBuilder(); refreshVariantBuilderUI();
+  try{
+    updBadge(); rDash(); populateProdSelect(); setDefaultDate(); setOperationalExpenseDateDefault(); resetCompositionBuilder(); refreshVariantBuilderUI();
+  }catch(err){
+    console.error('Startup render failed', err);
+    showStartupRenderError(err);
+  }
   pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
   if(!window.__inventoryPollStarted){
     window.__inventoryPollStarted=true;
@@ -5175,6 +5195,12 @@ async function loadApplicationData(){
   }
 }
 window.addEventListener('DOMContentLoaded',init);
+window.addEventListener('error', (event)=>{
+  console.error('Unhandled app error', event.error||event.message);
+});
+window.addEventListener('unhandledrejection', (event)=>{
+  console.error('Unhandled app rejection', event.reason);
+});
 document.addEventListener('visibilitychange', ()=>{
   if(document.visibilityState==='visible') refreshThemePreference();
 });
