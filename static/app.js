@@ -325,15 +325,16 @@ function paymentGatewayCommissionPct(){
   const raw=parseFloat(S?.shippingProfile?.paymentGatewayCommissionPct);
   return Number.isFinite(raw)&&raw>=0 ? raw : 3;
 }
-function websiteGatewayCommission(amount, channel){
+function websiteGatewayCommission(amount, channel, discount=0){
   if((channel||'').toLowerCase()!=='website') return 0;
   const pct=paymentGatewayCommissionPct();
-  return (parseFloat(amount||0)||0) * (pct/100);
+  const feeBase=Math.max(0,(parseFloat(amount||0)||0)-(parseFloat(discount||0)||0));
+  return feeBase * (pct/100);
 }
 function orderCommissionBreakup(o){
   const rev=orderRevenue(o);
   const manual=parseFloat(o.commission||0)||0;
-  const gateway=websiteGatewayCommission(rev,o.channel||'retail');
+  const gateway=websiteGatewayCommission(rev,o.channel||'retail',o.discount||0);
   return {manual,gateway,total:manual+gateway};
 }
 function orderProfit(o){
@@ -2707,7 +2708,7 @@ function refreshSum(){
   let priceRows='';
   if(sp>0){
     const rev=sp*qty;
-    const pgComm=websiteGatewayCommission(rev,selCh);
+    const pgComm=websiteGatewayCommission(rev,selCh,disc);
     const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
     priceRows=`<hr class="sdiv">
       <div class="sr"><span class="sk">Sale price / pack</span><span class="sval">₹${sp.toFixed(0)}</span></div>
@@ -2972,7 +2973,7 @@ function showWebsitePendingConfirmPopup(oid,newStatus,from='orders'){
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
   const rev=orderRevenue(o);
   const pgPct=paymentGatewayCommissionPct();
-  const pgAmt=websiteGatewayCommission(rev,'website');
+  const pgAmt=websiteGatewayCommission(rev,'website',o.discount||0);
   const actionLabel=newStatus==='shipped'?'Confirm & Continue to Shipping':(newStatus==='completed'?'Confirm & Complete':'Confirm & Mark Confirmed');
   openModal(`
     <div style="text-align:center;margin-bottom:6px">
@@ -3108,7 +3109,7 @@ function eoPreview(oid){
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
   if(!sp){prev.innerHTML=`<span style="color:var(--text-3);font-size:12.5px">No pricing set for this channel</span>`;return;}
   const rev=sp*qty;
-  const pgComm=websiteGatewayCommission(rev,o.channel||'retail');
+  const pgComm=websiteGatewayCommission(rev,o.channel||'retail',disc);
   const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
   prev.innerHTML=`
     <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>

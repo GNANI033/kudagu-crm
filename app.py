@@ -2403,7 +2403,8 @@ def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> floa
     manual_comm = _safe_float(order.get("commission"))
     gateway_comm = 0.0
     if str(order.get("channel") or "").strip().lower() == "website":
-        gateway_comm = revenue * (gateway_pct / 100.0)
+        gateway_base = max(0.0, revenue - discount)
+        gateway_comm = gateway_base * (gateway_pct / 100.0)
     return gross - discount - manual_comm - gateway_comm
 
 
