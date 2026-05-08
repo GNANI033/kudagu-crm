@@ -404,7 +404,7 @@ Website coupon flow:
 - Website backend validates a user-entered coupon with `POST /api/website/coupons/validate`; never expose `WEBSITE_KEY` in browser code.
 - CRM calculates subtotal from CRM website pricing using each cart line's `prodId`, `variant`, and `qty`.
 - Website backend can send the whole cart in one request using `items[]`; legacy single-line `prodId`/`variant`/`qty` requests still work.
-- Website backend sends only `couponCode` during `POST /api/website/orders/sync`; CRM revalidates and records the trusted discount.
+- Website backend sends `couponCode` and, when available, the CRM-returned `couponQuoteId` during `POST /api/website/orders/sync`; CRM verifies the quote/cart and records the trusted discount.
 - CRM stores one CRM order row per cart line, all sharing the same `websiteCartId`; the response returns `orders[]` for all rows plus `order` as the first row for backward compatibility.
 - Coupon rules can have both a global usage limit and a per-customer usage limit; limits count one website cart once, not once per cart line.
 - `websiteOrderItemId` should be stable and unique per cart line. If omitted, CRM uses the array index.
@@ -435,6 +435,8 @@ Valid response:
 {
   "ok": true,
   "coupon": { "code": "COUPON1", "discountType": "flat", "discountValue": 10 },
+  "couponQuoteId": "cq_1_xxxxxxxxxxxxxxxx",
+  "expiresAt": 1778247000000,
   "cartSubtotal": 560,
   "discount": 10,
   "payableAmount": 550
@@ -459,6 +461,7 @@ Content-Type: application/json
     { "websiteOrderItemId": "line_2", "prodId": "p2", "variant": "500g", "qty": 1 }
   ],
   "couponCode": "COUPON1",
+  "couponQuoteId": "cq_1_xxxxxxxxxxxxxxxx",
   "paymentMethod": "razorpay",
   "status": "pending"
 }
@@ -481,6 +484,8 @@ Sync response:
 ```
 
 For multi-item carts, the website should treat `orders[]` as authoritative. CRM allocates the cart discount proportionally across the stored CRM order rows so existing CRM reporting and inventory flows continue to work.
+
+`couponQuoteId` is a short-lived CRM snapshot of a successful coupon validation. The website should pass it into order sync after payment so a checkout that was already approved by CRM does not fail because the live coupon rule changes while the customer is inside the payment gateway. CRM still verifies that the quote belongs to the same `websiteUserId`, coupon code, and cart lines.
 
 Example Caddy snippets (public domains -> helper instances):
 
