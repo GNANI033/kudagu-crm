@@ -31,7 +31,7 @@ from typing import Any
 from urllib import request as urlrequest
 from urllib import error as urlerror
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -821,16 +821,18 @@ async def index():
     return FileResponse(str(idx))
 
 
+HEALTH_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
 @app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
-async def healthcheck():
-    return JSONResponse(
-        {"ok": True, "service": "inventory"},
-        headers={
-            "Cache-Control": "no-store, no-cache, must-revalidate",
-            "Pragma": "no-cache",
-            "X-Robots-Tag": "noindex, nofollow",
-        },
-    )
+async def healthcheck(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=HEALTH_HEADERS)
+    return JSONResponse({"ok": True}, headers=HEALTH_HEADERS)
 
 
 @app.middleware("http")
