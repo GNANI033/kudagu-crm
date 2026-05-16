@@ -1,0 +1,1690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Kudagu Kaapi — CRM</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Instrument+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+/* ─── DESIGN TOKENS ─────────────────────────────────────────────────────── */
+:root {
+  --bg:         #f7f7f5;
+  --surface:    #ffffff;
+  --surface-2:  #f2f2ef;
+  --surface-3:  #eaeae6;
+  --border:     #e4e4e0;
+  --border-s:   #c8c8c2;
+  --text:       #111110;
+  --text-2:     #6b6b66;
+  --text-3:     #a0a09a;
+  --accent:     #1a1a18;
+  --green:      #16a34a;  --green-bg:  #f0fdf4;  --green-bd:  #bbf7d0;
+  --amber:      #d97706;  --amber-bg:  #fffbeb;  --amber-bd:  #fde68a;
+  --red:        #dc2626;  --red-bg:    #fef2f2;  --red-bd:    #fecaca;
+  --blue:       #2563eb;  --blue-bg:   #eff6ff;  --blue-bd:   #bfdbfe;
+  --r:    10px;
+  --r-sm: 6px;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.06), 0 1px 2px rgba(0,0,0,.04);
+  --sh:    0 4px 16px rgba(0,0,0,.07), 0 1px 3px rgba(0,0,0,.05);
+  --sh-lg: 0 12px 40px rgba(0,0,0,.1), 0 2px 8px rgba(0,0,0,.06);
+  /* Safe area insets for notch phones */
+  --safe-top:    env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+html[data-theme="dark"] {
+  --bg:         #111315;
+  --surface:    #181c20;
+  --surface-2:  #21262c;
+  --surface-3:  #2a3138;
+  --border:     #313841;
+  --border-s:   #495260;
+  --text:       #f3f5f7;
+  --text-2:     #c0c7d0;
+  --text-3:     #8e98a6;
+  --accent:     #f3f5f7;
+  --green:      #4ade80;  --green-bg:  #112218;  --green-bd:  #1f6b37;
+  --amber:      #fbbf24;  --amber-bg:  #271d08;  --amber-bd:  #7c5b12;
+  --red:        #f87171;  --red-bg:    #2a1416;  --red-bd:    #7f2b31;
+  --blue:       #60a5fa;  --blue-bg:   #0f1d34;  --blue-bd:   #294f8a;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.35), 0 1px 2px rgba(0,0,0,.25);
+  --sh:    0 8px 24px rgba(0,0,0,.35), 0 2px 6px rgba(0,0,0,.2);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.45), 0 4px 12px rgba(0,0,0,.28);
+  color-scheme: dark;
+}
+html[data-theme="nord"] {
+  --bg:         #2e3440;
+  --surface:    #3b4252;
+  --surface-2:  #434c5e;
+  --surface-3:  #4c566a;
+  --border:     #566277;
+  --border-s:   #81a1c1;
+  --text:       #eceff4;
+  --text-2:     #d8dee9;
+  --text-3:     #aeb8c7;
+  --accent:     #88c0d0;
+  --green:      #a3be8c;  --green-bg:  #374438;  --green-bd:  #64795f;
+  --amber:      #ebcb8b;  --amber-bg:  #4b4332;  --amber-bd:  #957d49;
+  --red:        #bf616a;  --red-bg:    #4d3136;  --red-bd:    #87565c;
+  --blue:       #81a1c1;  --blue-bg:   #314253;  --blue-bd:   #5e7f9f;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.28), 0 1px 2px rgba(0,0,0,.18);
+  --sh:    0 8px 24px rgba(0,0,0,.32), 0 2px 6px rgba(0,0,0,.18);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.38), 0 4px 12px rgba(0,0,0,.22);
+  color-scheme: dark;
+}
+html[data-theme="solarized"] {
+  --bg:         #fdf6e3;
+  --surface:    #fffaf0;
+  --surface-2:  #f5edd9;
+  --surface-3:  #eee4cb;
+  --border:     #e0d6be;
+  --border-s:   #cbbd9b;
+  --text:       #586e75;
+  --text-2:     #657b83;
+  --text-3:     #93a1a1;
+  --accent:     #268bd2;
+  --green:      #859900;  --green-bg:  #f1f6cd;  --green-bd:  #cad59b;
+  --amber:      #b58900;  --amber-bg:  #f9f0c3;  --amber-bd:  #dbc36d;
+  --red:        #dc322f;  --red-bg:    #fde3df;  --red-bd:    #f2b7b2;
+  --blue:       #268bd2;  --blue-bg:   #e7f2fb;  --blue-bd:   #a7cae7;
+}
+html[data-theme="dracula"] {
+  --bg:         #282a36;
+  --surface:    #313442;
+  --surface-2:  #3a3d4f;
+  --surface-3:  #44475a;
+  --border:     #565a70;
+  --border-s:   #7a80a0;
+  --text:       #f8f8f2;
+  --text-2:     #d6d6cf;
+  --text-3:     #a4a7b8;
+  --accent:     #bd93f9;
+  --green:      #50fa7b;  --green-bg:  #173723;  --green-bd:  #2f8750;
+  --amber:      #f1fa8c;  --amber-bg:  #3d4021;  --amber-bd:  #8b9151;
+  --red:        #ff5555;  --red-bg:    #431f2b;  --red-bd:    #92505e;
+  --blue:       #8be9fd;  --blue-bg:   #203f50;  --blue-bd:   #5492a0;
+  --sh-sm: 0 1px 3px rgba(0,0,0,.32), 0 1px 2px rgba(0,0,0,.22);
+  --sh:    0 8px 24px rgba(0,0,0,.34), 0 2px 6px rgba(0,0,0,.2);
+  --sh-lg: 0 18px 48px rgba(0,0,0,.42), 0 4px 12px rgba(0,0,0,.24);
+  color-scheme: dark;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { -webkit-text-size-adjust: 100%; }
+body { font-family: 'Instrument Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+.app { display: flex; min-height: 100vh; width: 100%; max-width: 100%; overflow-x: hidden; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SIDEBAR — desktop/tablet
+══════════════════════════════════════════════════════════════════════════ */
+.sidebar {
+  width: 204px; flex-shrink: 0; background: var(--surface);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  position: fixed; top: 0; left: 0; bottom: 0; z-index: 100;
+}
+.sb-logo { padding: 18px 18px 14px; border-bottom: 1px solid var(--border); }
+.sb-brand { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 800; color: var(--text); letter-spacing: -.01em; line-height: 1; }
+.sb-brand span { color: var(--text-3); font-weight: 400; }
+.sb-tag { font-size: 10px; color: var(--text-3); margin-top: 2px; letter-spacing: .05em; text-transform: uppercase; }
+.sb-nav {
+  padding: 8px 8px 10px;
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.sb-nav::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.sb-sect { font-size: 9.5px; font-weight: 700; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; padding: 8px 10px 4px; margin-top: 2px; }
+.nb {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+  border-radius: var(--r-sm); cursor: pointer; color: var(--text-2);
+  font-size: 12.5px; font-weight: 500; transition: all .15s;
+  border: none; background: none; width: 100%; text-align: left; position: relative;
+  min-height: 34px;
+}
+.nb:hover { background: var(--surface-2); color: var(--text); }
+.nb.active { background: var(--accent); color: #fff; }
+.nb-ic { width: 15px; text-align: center; font-size: 12px; flex-shrink: 0; line-height: 1; }
+.n-badge {
+  margin-left: auto; background: var(--red); color: #fff;
+  font-size: 10px; font-weight: 700; min-width: 17px; height: 17px;
+  border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px;
+}
+.nb.active .n-badge { background: rgba(255,255,255,.25); }
+.sb-foot { padding: 12px 10px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px; }
+.sb-foot-lbl { font-size: 10px; font-weight: 700; color: var(--text-3); letter-spacing: .06em; text-transform: uppercase; padding: 0 4px 2px; }
+.data-btn { display: flex; align-items: center; gap: 7px; padding: 7px 10px; border-radius: var(--r-sm); cursor: pointer; font-size: 12px; font-weight: 500; color: var(--text-2); border: none; background: none; width: 100%; text-align: left; transition: all .15s; min-height: 36px; }
+.data-btn:hover { background: var(--surface-2); color: var(--text); }
+.data-btn.danger:hover { background: var(--red-bg); color: var(--red); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   BOTTOM TAB BAR — mobile only (hidden on desktop/tablet)
+══════════════════════════════════════════════════════════════════════════ */
+.bottom-nav { display: none; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE TOP BAR — replaces page header on mobile
+══════════════════════════════════════════════════════════════════════════ */
+.mobile-topbar {
+  display: none;
+  position: sticky; top: 0; z-index: 90;
+  background: var(--surface); border-bottom: 1px solid var(--border);
+  padding: 0 16px;
+  height: 52px; align-items: center; justify-content: space-between;
+  padding-top: var(--safe-top);
+}
+.mobile-topbar-title { font-family: 'Syne', sans-serif; font-size: 16px; font-weight: 800; color: var(--text); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MAIN CONTENT
+══════════════════════════════════════════════════════════════════════════ */
+.main { margin-left: 0; flex: 1; width: 100%; max-width: 100%; padding: 36px 40px; min-width: 0; }
+@media (min-width: 1024px) {
+  .main { margin-left: 204px; max-width: calc(100% - 204px); }
+}
+.view { display: none; animation: fadeUp .2s ease; min-width: 0; }
+.view.active { display: block; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+/* ─── PAGE HEADER ───────────────────────────────────────────────────────── */
+.ph { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 26px; }
+.ph-title { font-family: 'Syne', sans-serif; font-size: 21px; font-weight: 700; line-height: 1.2; }
+.ph-sub { font-size: 12.5px; color: var(--text-3); margin-top: 3px; }
+.inv-actions { text-align: right; }
+.inv-actions-row { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+
+/* ─── STAT CARDS ────────────────────────────────────────────────────────── */
+.stats-merged { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; margin-bottom: 12px; width: 100%; }
+.sbox { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 0; box-shadow: var(--sh-sm); overflow: hidden; }
+.sbox.accent-top { border-top: 2px solid var(--accent); }
+.sbox.green-top  { border-top: 2px solid var(--green); }
+.sbox.red-top    { border-top: 2px solid var(--red); }
+.sbox.amber-top  { border-top: 2px solid var(--amber); }
+.sbox-inner { display: flex; min-width: 0; }
+.sbox-half { flex: 1; min-width: 0; padding: 18px 20px; }
+.sbox-half + .sbox-half { border-left: 1px solid var(--border); }
+.sl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; }
+.sv { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin-top: 5px; line-height: 1; }
+.sv.red { color: var(--red); } .sv.green { color: var(--green); }
+.sn { font-size: 11.5px; color: var(--text-3); margin-top: 4px; }
+.sn.up { color: var(--green); } .sn.down { color: var(--red); }
+
+/* ─── CARD ──────────────────────────────────────────────────────────────── */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--sh-sm); overflow: hidden; }
+.orders-card { overflow: visible; }
+.orders-card .tbl-wrap { overflow: visible; }
+.ch { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; }
+.ct { font-family: 'Syne', sans-serif; font-size: 13.5px; font-weight: 600; color: var(--text); }
+.cb { padding: 18px 20px; }
+.card + .card { margin-top: 14px; }
+.two { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* ─── FORM ELEMENTS ─────────────────────────────────────────────────────── */
+.fg { display: flex; flex-direction: column; gap: 6px; }
+.fr { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.fr3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+label { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
+.req { color: var(--red); margin-left: 2px; }
+input, select, textarea {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm);
+  padding: 11px 12px; color: var(--text); font-family: 'Instrument Sans', sans-serif;
+  font-size: 16px; /* 16px prevents iOS zoom */ outline: none;
+  transition: border-color .15s, box-shadow .15s; width: 100%;
+  -webkit-appearance: none; appearance: none;
+}
+input[type="date"] {
+  -webkit-appearance: auto;
+  appearance: auto;
+  padding-right: 12px;
+}
+input[type="checkbox"] {
+  -webkit-appearance: checkbox;
+  appearance: checkbox;
+  width: 16px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+.checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
+.checkline input { flex: 0 0 auto; }
+input:focus, select:focus, textarea:focus { border-color: var(--text); box-shadow: 0 0 0 3px rgba(17,17,16,.08); }
+input::placeholder, textarea::placeholder { color: var(--text-3); }
+select { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M0 0l6 8 6-8z' fill='%23a0a09a'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 12px center; padding-right: 32px; }
+select option { background: var(--surface); color: var(--text); font-size: 14px; }
+textarea { resize: vertical; font-size: 15px; }
+.input-prefix { position: relative; }
+.input-prefix > span { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--text-3); font-size: 13px; pointer-events: none; }
+.input-prefix input { padding-left: 26px; }
+hr { border: none; border-top: 1px solid var(--border); margin: 16px 0; }
+.sl-label { font-size: 11px; font-weight: 700; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+.sl-label::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
+.mt8 { margin-top: 8px; } .mt12 { margin-top: 12px; }
+.sar { text-align: center; padding: 14px 0 4px; border-top: 1px solid var(--border); }
+
+/* ─── BUTTONS ───────────────────────────────────────────────────────────── */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: var(--r-sm); border: none; font-family: 'Instrument Sans', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: all .15s; line-height: 1; text-decoration: none; min-height: 40px; -webkit-tap-highlight-color: transparent; }
+.btn-p      { background: var(--accent); color: #fff; }
+.btn-p:hover { background: #2d2d2b; box-shadow: var(--sh); }
+.btn-p:active { background: #3a3a38; }
+html[data-theme="dark"] .btn-p:hover,
+html[data-theme="nord"] .btn-p:hover,
+html[data-theme="dracula"] .btn-p:hover { background: #d7dce2; color: #111315; }
+html[data-theme="dark"] .btn-p:active,
+html[data-theme="nord"] .btn-p:active,
+html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; }
+.btn-s      { background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.btn-s:hover { background: var(--surface-3); }
+.btn-g      { background: transparent; color: var(--text-2); }
+.btn-g:hover { background: var(--surface-2); color: var(--text); }
+.btn-danger { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-bd); }
+.btn-danger:hover { background: #fee2e2; }
+.btn-sm  { padding: 7px 12px; font-size: 12px; min-height: 34px; }
+.btn-xs  { padding: 5px 9px;  font-size: 11px; min-height: 30px; }
+.btn-full { width: 100%; justify-content: center; padding: 13px 16px; min-height: 46px; }
+.btn-follow-up { background: var(--surface); color: var(--text); border: 1px solid var(--border-s); font-weight: 600; }
+.btn-follow-up:hover { background: var(--surface-2); border-color: var(--text); }
+.btn[disabled] { opacity: .7; cursor: not-allowed; }
+.btn.is-loading, .nb.is-loading, .bnav-item.is-loading, .smenu-item.is-loading { position: relative; pointer-events: none; color: transparent !important; }
+.btn.is-loading > *, .nb.is-loading > *, .bnav-item.is-loading > *, .smenu-item.is-loading > * { opacity: 0; }
+.btn.is-loading::after, .nb.is-loading::after, .bnav-item.is-loading::after, .smenu-item.is-loading::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin-top: -7px;
+  margin-left: -7px;
+  border: 2px solid var(--text-2);
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: spin .75s linear infinite;
+}
+.btn-p.is-loading::after { border-color: rgba(255,255,255,.95); border-right-color: transparent; }
+#dash-inv-sync-btn.is-loading::after { border-color: var(--text-3); border-right-color: transparent; }
+.btn-spin {
+  width: 12px;
+  height: 12px;
+  border: 2px solid rgba(255,255,255,.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  display: inline-block;
+  animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ─── CUSTOMER SEARCH DROPDOWN ──────────────────────────────────────────── */
+.sw { position: relative; }
+.dd { position: absolute; top: calc(100% + 4px); left: 0; right: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); z-index: 200; box-shadow: var(--sh-lg); max-height: 220px; overflow-y: auto; display: none; }
+.dd.open { display: block; }
+.ddi { padding: 13px 14px; cursor: pointer; border-bottom: 1px solid var(--border); transition: background .1s; display: flex; justify-content: space-between; align-items: center; min-height: 52px; }
+.ddi:last-child { border-bottom: none; }
+.ddi:hover { background: var(--surface-2); }
+.ddi-n { font-weight: 600; font-size: 13px; }
+.ddi-m { font-size: 11.5px; color: var(--text-3); margin-top: 1px; }
+.ddi-a { font-size: 11px; color: var(--text-3); background: var(--surface-2); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--border); white-space: nowrap; }
+.sc-box { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; display: flex; align-items: center; justify-content: space-between; margin-top: 8px; }
+.sc-av { width: 34px; height: 34px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; flex-shrink: 0; }
+.sc-n { font-weight: 600; font-size: 13px; }
+.sc-m { font-size: 11.5px; color: var(--text-3); }
+
+/* ─── VARIANT + CHANNEL PICKERS ─────────────────────────────────────────── */
+.vr { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+.vb { border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); padding: 14px 8px; cursor: pointer; text-align: center; transition: all .15s; font-family: 'Instrument Sans', sans-serif; min-height: 60px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; }
+.vb:hover { border-color: var(--border-s); background: var(--surface-2); }
+.vb.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.vs { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; display: block; }
+.vh { font-size: 10.5px; color: var(--text-3); display: block; }
+.vb.on .vh { color: rgba(255,255,255,.5); }
+.channel-row { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+.ch-btn { border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); padding: 14px 8px; cursor: pointer; text-align: center; transition: all .15s; font-family: 'Instrument Sans', sans-serif; display: flex; flex-direction: column; align-items: center; gap: 3px; min-height: 62px; justify-content: center; }
+.ch-btn:hover { border-color: var(--border-s); background: var(--surface-2); }
+.ch-btn.on { border-color: var(--accent); background: var(--accent); color: #fff; }
+.ch-btn-label { font-size: 13px; font-weight: 700; font-family: 'Syne', sans-serif; line-height: 1; }
+.ch-btn-sub { font-size: 10.5px; color: var(--text-3); line-height: 1; }
+.ch-btn.on .ch-btn-sub { color: rgba(255,255,255,.5); }
+
+/* ─── QUANTITY ──────────────────────────────────────────────────────────── */
+.qr { display: flex; align-items: center; width: fit-content; }
+.qb { width: 44px; height: 44px; border: 1px solid var(--border); background: var(--surface); cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px; color: var(--text-2); transition: all .1s; }
+.qb:first-child { border-radius: var(--r-sm) 0 0 var(--r-sm); }
+.qb:last-child  { border-radius: 0 var(--r-sm) var(--r-sm) 0; }
+.qb:hover { background: var(--surface-2); color: var(--text); }
+.qv { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); min-width: 52px; height: 44px; display: flex; align-items: center; justify-content: center; font-family: 'Syne', sans-serif; font-size: 16px; font-weight: 700; }
+
+/* ─── DELIVERED TOGGLE ──────────────────────────────────────────────────── */
+.toggle-row { display: flex; align-items: center; justify-content: space-between; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 14px 15px; gap: 12px; }
+.toggle-lbl { font-size: 13px; font-weight: 600; color: var(--text); }
+.toggle-sub { font-size: 11.5px; color: var(--text-3); margin-top: 2px; }
+.toggle-switch { position: relative; width: 44px; height: 26px; flex-shrink: 0; }
+.toggle-switch input { opacity: 0; width: 0; height: 0; }
+.toggle-track { position: absolute; inset: 0; background: var(--border-s); border-radius: 13px; cursor: pointer; transition: background .2s; }
+.toggle-track::before { content: ''; position: absolute; width: 20px; height: 20px; left: 3px; top: 3px; background: #fff; border-radius: 50%; transition: transform .2s; box-shadow: 0 1px 3px rgba(0,0,0,.2); }
+.toggle-switch input:checked + .toggle-track { background: var(--green); }
+.toggle-switch input:checked + .toggle-track::before { transform: translateX(18px); }
+
+/* ─── SUMMARY BOX ───────────────────────────────────────────────────────── */
+.sumbox { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 14px 16px; font-size: 13px; }
+.sr { display: flex; justify-content: space-between; padding: 4px 0; }
+.sk { color: var(--text-3); }
+.sval { font-weight: 600; }
+.sdiv { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+
+/* ─── TABLE (desktop) ───────────────────────────────────────────────────── */
+.tbl { width: 100%; border-collapse: collapse; }
+.tbl th { text-align: left; padding: 9px 14px; font-size: 10.5px; font-weight: 600; color: var(--text-3); letter-spacing: .06em; text-transform: uppercase; border-bottom: 1px solid var(--border); background: var(--surface-2); }
+.tbl td { padding: 11px 14px; border-bottom: 1px solid var(--border); font-size: 13px; vertical-align: middle; }
+.tbl tr:last-child td { border-bottom: none; }
+.tbl tbody tr:hover td { background: var(--surface-2); }
+.dots-btn { font-size: 16px; line-height: 1; padding: 4px 10px; letter-spacing: 2px; min-height: 36px; }
+
+/* ─── ORDER CARDS (mobile) — hidden on desktop ──────────────────────────── */
+.order-card-list { display: none; }
+.order-card {
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.order-card:last-child { border-bottom: none; }
+.order-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.order-card-name { font-weight: 700; font-size: 13.5px; }
+.order-card-prod { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.order-card-right { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; flex-shrink: 0; }
+.order-card-right-top { display: flex; align-items: center; gap: 4px; }
+.order-card-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.order-card-rev { font-size: 13px; font-weight: 700; color: var(--green); }
+.order-card-actions { display: flex; align-items: center; gap: 6px; }
+.order-card-menu {
+  border: none;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 18px;
+  line-height: 1;
+  padding: 0 2px;
+  min-height: 22px;
+  min-width: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ─── ORDER SECTION HEADERS ─────────────────────────────────────────────── */
+.orders-section-header { display: flex; align-items: center; gap: 10px; padding: 12px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); }
+.orders-section-header.collapsible { cursor: pointer; user-select: none; }
+.orders-section-header.collapsible:hover { background: var(--surface-3); }
+.orders-section-title { font-family: 'Syne', sans-serif; font-size: 12.5px; font-weight: 700; color: var(--text); }
+.orders-section-count { background: var(--border); color: var(--text-2); font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 10px; }
+.section-chevron { margin-left: auto; font-size: 11px; color: var(--text-3); }
+
+/* ─── CHANNEL BADGE ─────────────────────────────────────────────────────── */
+.ch-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.ch-badge::before { content: ''; width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.ch-badge--retail::before   { background: var(--text);   opacity: .7; }
+.ch-badge--website::before  { background: var(--text-2); }
+.ch-badge--whatsapp::before { background: var(--text-3); }
+.ch-badge--retail   { background: var(--surface-3); color: var(--text-2); }
+.ch-badge--website  { background: var(--surface-2); color: var(--text-2); }
+.ch-badge--whatsapp { background: var(--surface);   color: var(--text-3); border-style: dashed; }
+
+/* ─── STATUS BADGES ─────────────────────────────────────────────────────── */
+.status-badge { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 20px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.st-pending   { background: #fafafa;         color: var(--text-3); border-color: var(--border); }
+.st-confirmed { background: var(--blue-bg);  color: var(--blue);   border-color: var(--blue-bd); }
+.st-shipped   { background: var(--amber-bg); color: var(--amber);  border-color: var(--amber-bd); }
+.st-completed { background: var(--green-bg); color: var(--green);  border-color: var(--green-bd); }
+.st-cancelled { background: var(--red-bg);   color: var(--red);    border-color: var(--red-bd); }
+.st-returned  { background: var(--surface-3);color: var(--text-2); border-color: var(--border-s); }
+
+/* ─── INLINE STATUS DROPDOWN ────────────────────────────────────────────── */
+.status-dropdown-wrap { position: relative; display: inline-block; }
+.status-clickable { cursor: pointer; gap: 4px; }
+.status-clickable:hover { filter: brightness(.92); }
+.status-dropdown { position: absolute; top: calc(100% + 4px); left: 0; min-width: 152px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); box-shadow: var(--sh-lg); z-index: 300; display: none; padding: 4px; }
+.orders-card .status-dropdown { z-index: 1200; }
+.status-dropdown.open { display: block; animation: fadeUp .15s ease; }
+.sdrop-item { display: block; width: 100%; text-align: left; padding: 10px 12px; border: none; background: none; cursor: pointer; font-family: 'Instrument Sans', sans-serif; font-size: 13px; font-weight: 500; color: var(--text-2); border-radius: 4px; transition: background .1s; min-height: 40px; }
+.sdrop-item:hover { background: var(--surface-2); color: var(--text); }
+.sdrop-item.active { font-weight: 700; color: var(--text); }
+
+/* inline status select on dashboard */
+.inline-status-sel { border: 1px solid var(--border); border-radius: 20px; padding: 3px 18px 3px 10px; font-size: 11px; font-weight: 600; font-family: 'Instrument Sans', sans-serif; cursor: pointer; background: var(--surface-2); color: var(--text-2); transition: all .15s; -webkit-appearance: none; appearance: none; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a0a09a'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 6px center; min-height: 28px; width: auto; min-width: 0; flex: 0 0 auto; box-sizing: border-box; }
+.inline-status-sel.st-completed { background-color: var(--green-bg); color: var(--green); border-color: var(--green-bd); }
+.inline-status-sel.st-confirmed { background-color: var(--blue-bg);  color: var(--blue);  border-color: var(--blue-bd); }
+.inline-status-sel.st-shipped   { background-color: var(--amber-bg); color: var(--amber); border-color: var(--amber-bd); }
+.inline-status-sel.st-cancelled { background-color: var(--red-bg);   color: var(--red);   border-color: var(--red-bd); }
+.inline-status-sel.st-pending   { background-color: #fafafa; color: var(--text-3); }
+.inline-status-sel.st-returned  { background-color: var(--surface-3); color: var(--text-2); }
+
+/* ─── CONTEXT MENU (3-dot) ──────────────────────────────────────────────── */
+.ctx-menu { position: fixed; background: var(--surface); border: 1px solid var(--border); border-radius: var(--r-sm); box-shadow: var(--sh-lg); z-index: 500; min-width: 170px; padding: 3px; animation: fadeUp .12s ease; }
+.ctx-item { display: flex; align-items: center; gap: 8px; width: 100%; padding: 8px 11px; border: none; background: none; cursor: pointer; font-family: 'Instrument Sans', sans-serif; font-size: 12.5px; font-weight: 500; color: var(--text-2); border-radius: 4px; text-align: left; transition: background .1s; min-height: 34px; }
+.ctx-item:hover { background: var(--surface-2); color: var(--text); }
+.ctx-danger { color: var(--red) !important; }
+.ctx-danger:hover { background: var(--red-bg) !important; }
+.ctx-divider { border: none; border-top: 1px solid var(--border); margin: 4px 0; }
+.ctx-badge { margin-left: auto; font-size: 9px; font-weight: 700; background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); padding: 1px 5px; border-radius: 4px; letter-spacing: .04em; }
+
+/* ─── DASHBOARD RECENT ORDERS ───────────────────────────────────────────── */
+.dash-order-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; border-bottom: 1px solid var(--border); transition: background .1s; }
+.dash-order-row:last-child { border-bottom: none; }
+.dash-order-row:hover { background: var(--surface-2); }
+.dash-order-info { flex: 1; min-width: 0; }
+.dor-name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dor-prod { font-size: 11.5px; color: var(--text-3); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dash-order-meta { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* ─── PILLS ─────────────────────────────────────────────────────────────── */
+.pill { display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 20px; font-size: 11.5px; font-weight: 600; }
+.pn { background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); }
+.pg { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
+.pa { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.pr { background: var(--red-bg);   color: var(--red);   border: 1px solid var(--red-bd); }
+
+/* ─── ALERTS ────────────────────────────────────────────────────────────── */
+.ai { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 15px 16px; display: flex; align-items: flex-start; gap: 12px; margin-bottom: 10px; box-shadow: var(--sh-sm); transition: box-shadow .15s; }
+.ai:hover { box-shadow: var(--sh); }
+.ai.ov { border-left: 3px solid var(--red); }
+.ai.ds { border-left: 3px solid var(--amber); }
+.ai.sm { border-left: 3px solid var(--green); }
+
+/* Stock alert variants — same structure as .ai but different border accent */
+.ai.stock-alert { background: var(--surface); }
+.ai.stock-critical { border-left: 3px solid var(--red); background: linear-gradient(to right, rgba(220,38,38,.03), var(--surface)); }
+.ai.stock-low      { border-left: 3px solid var(--amber); background: linear-gradient(to right, rgba(217,119,6,.03), var(--surface)); }
+
+/* Alert section headers — separate reorder vs stock sections */
+.alert-section-header {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 4px 8px; margin-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.alert-section-header.mt12 { margin-top: 20px; }
+.alert-section-title { font-family: 'Syne', sans-serif; font-size: 12px; font-weight: 700; color: var(--text-2); letter-spacing: .04em; text-transform: uppercase; }
+.alert-section-count { background: var(--surface-3); color: var(--text-2); font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 10px; }
+.alert-section-badge { font-size: 9.5px; font-weight: 700; padding: 2px 7px; border-radius: 4px; letter-spacing: .05em; text-transform: uppercase; margin-left: auto; }
+.alert-section-badge.stock   { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.alert-section-badge.reorder { background: var(--surface-2); color: var(--text-3); border: 1px solid var(--border); }
+
+.adot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
+.adot.ov { background: var(--red);   box-shadow: 0 0 0 3px rgba(220,38,38,.15); }
+.adot.ds { background: var(--amber); box-shadow: 0 0 0 3px rgba(217,119,6,.15); }
+.adot.sm { background: var(--green); box-shadow: 0 0 0 3px rgba(22,163,74,.15); }
+.ab { flex: 1; min-width: 0; }
+.an { font-weight: 600; font-size: 13.5px; }
+.ad { font-size: 12px; color: var(--text-3); margin-top: 2px; }
+.at2 { display: flex; gap: 6px; margin-top: 7px; flex-wrap: wrap; }
+.aa { display: flex; gap: 8px; flex-shrink: 0; }
+
+/* ─── CUSTOMER CARDS ────────────────────────────────────────────────────── */
+.cg { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 12px; }
+.cc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; box-shadow: var(--sh-sm); transition: box-shadow .15s, border-color .15s; }
+.cc:hover { box-shadow: var(--sh); border-color: var(--border-s); }
+.cc-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+.cav { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 700; flex-shrink: 0; }
+.cnm { font-weight: 600; font-size: 14px; line-height: 1.2; }
+.car { font-size: 12px; color: var(--text-3); }
+.cm { display: flex; flex-direction: column; gap: 6px; }
+.cmr { font-size: 12.5px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.cmi { color: var(--text-3); width: 14px; font-size: 12px; }
+.cf { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.c-menu-btn {
+  width: 32px; height: 32px; border-radius: var(--r-sm);
+  border: 1px solid var(--border); background: none;
+  cursor: pointer; display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; color: var(--text-3); letter-spacing: 1px;
+  line-height: 1; transition: all .15s; font-family: 'Instrument Sans', sans-serif;
+  flex-shrink: 0;
+}
+.c-menu-btn:hover { background: var(--surface-2); border-color: var(--border-s); color: var(--text); }
+
+/* ─── SETTINGS ──────────────────────────────────────────────────────────── */
+.settings-layout { display: grid; grid-template-columns: 210px 1fr; gap: 20px; }
+.settings-menu { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; height: fit-content; box-shadow: var(--sh-sm); }
+.smenu-item { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); transition: all .15s; border: none; background: none; width: 100%; text-align: left; min-height: 42px; }
+.smenu-item:hover { background: var(--surface-2); color: var(--text); }
+.smenu-item.active { background: var(--accent); color: #fff; }
+html[data-theme="dark"] .smenu-item.active,
+html[data-theme="dark"] .smenu-plus.active,
+html[data-theme="dark"] .nb.active,
+html[data-theme="dark"] .bnav-item.active,
+html[data-theme="dark"] .btn-p,
+html[data-theme="dark"] .vb.on,
+html[data-theme="dark"] .ch-btn.on,
+html[data-theme="nord"] .smenu-item.active,
+html[data-theme="nord"] .smenu-plus.active,
+html[data-theme="nord"] .nb.active,
+html[data-theme="nord"] .bnav-item.active,
+html[data-theme="nord"] .btn-p,
+html[data-theme="nord"] .vb.on,
+html[data-theme="nord"] .ch-btn.on,
+html[data-theme="dracula"] .smenu-item.active,
+html[data-theme="dracula"] .smenu-plus.active,
+html[data-theme="dracula"] .nb.active,
+html[data-theme="dracula"] .bnav-item.active,
+html[data-theme="dracula"] .btn-p,
+html[data-theme="dracula"] .vb.on,
+html[data-theme="dracula"] .ch-btn.on { color: #111315; }
+.smenu-row { display: flex; align-items: center; gap: 6px; }
+.smenu-row .smenu-item { flex: 1; }
+.smenu-plus {
+  width: 32px; height: 32px; border-radius: 9px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text-2); font-size: 18px; line-height: 1;
+  display: inline-flex; align-items: center; justify-content: center; cursor: pointer; transition: all .15s;
+}
+.smenu-plus:hover { background: var(--surface-2); color: var(--text); border-color: var(--border-s); }
+.smenu-plus.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.theme-option-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+.theme-option {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  border-radius: var(--r);
+  padding: 14px;
+  cursor: pointer;
+  text-align: left;
+  transition: all .15s;
+}
+.theme-option:hover { background: var(--surface-2); border-color: var(--border-s); }
+.theme-option.active { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.theme-option-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; color: var(--text); }
+.theme-option-sub { font-size: 12px; color: var(--text-3); margin-top: 4px; }
+.theme-preview {
+  margin-top: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  gap: 6px;
+  background: linear-gradient(135deg, var(--surface), var(--surface-2));
+}
+.theme-preview span { flex: 1; height: 26px; border-radius: 5px; border: 1px solid var(--border); }
+.theme-preview .tp-bg { background: var(--bg); }
+.theme-preview .tp-surface { background: var(--surface); }
+.theme-preview .tp-accent { background: var(--accent); }
+.settings-panel { display: none; } .settings-panel.active { display: block; }
+.mkt-filter-grid { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:10px 12px; }
+.mkt-rule-note { font-size:11.5px;color:var(--text-3);margin-top:-4px; }
+.prod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 16px; overflow: hidden; box-shadow: var(--sh-sm); }
+.prod-card-header { padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; min-height: 52px; }
+.prod-card-header:hover { background: var(--surface-2); }
+.prod-card-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; }
+.prod-card-body { border-top: 1px solid var(--border); padding: 18px; }
+.prod-card-body.collapsed { display: none; }
+.size-tab-row { display: flex; gap: 6px; margin-bottom: 16px; flex-wrap: wrap; }
+.size-tab { padding: 8px 14px; border-radius: var(--r-sm); border: 1px solid var(--border); background: var(--surface); font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all .15s; font-family: 'Instrument Sans', sans-serif; color: var(--text-2); min-height: 36px; }
+.size-tab:hover { border-color: var(--border-s); color: var(--text); }
+.size-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.size-panel { display: none; } .size-panel.active { display: block; }
+.expense-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
+.comp-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; }
+.pc-comp-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; }
+.split-input-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+.del-btn { width: 40px; height: 40px; border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-sm); cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--text-3); transition: all .15s; flex-shrink: 0; font-size: 14px; }
+.del-btn:hover { background: var(--red-bg); border-color: var(--red-bd); color: var(--red); }
+.margin-display { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; margin-top: 14px; }
+.margin-row { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; font-size: 13px; }
+.margin-key { color: var(--text-3); }
+.margin-val { font-weight: 700; font-family: 'Syne', sans-serif; font-size: 13.5px; }
+.margin-val.pos { color: var(--green); } .margin-val.neg { color: var(--red); }
+.wa-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 14px; overflow: hidden; box-shadow: var(--sh-sm); }
+.wa-card-header { padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border); }
+.wa-card-title { font-family: 'Syne', sans-serif; font-size: 13.5px; font-weight: 700; }
+.wa-card-body { padding: 18px; }
+.token-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.token-chip { padding: 5px 10px; border-radius: var(--r-sm); font-size: 11.5px; font-weight: 600; background: var(--surface-2); color: var(--text-2); border: 1px solid var(--border); cursor: pointer; transition: all .15s; font-family: monospace; min-height: 32px; display: inline-flex; align-items: center; }
+.token-chip:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+.wa-preview { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; font-size: 12.5px; line-height: 1.7; color: var(--text-2); margin-top: 10px; min-height: 52px; }
+.global-wa-note { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; font-size: 12px; color: var(--text-2); margin-bottom: 16px; }
+.global-wa-note code { font-family: monospace; font-size: 11px; background: var(--surface-3); padding: 1px 5px; border-radius: 3px; color: var(--text); }
+
+/* ─── MODAL ─────────────────────────────────────────────────────────────── */
+.modal-overlay { position: fixed; inset: 0; background: rgba(17,17,16,.5); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 16px; }
+.modal-overlay.open { display: flex; }
+.modal-box { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--sh-lg); width: 100%; max-width: 480px; max-height: 90vh; overflow-y: auto; overflow-x: hidden; padding: 24px; -webkit-overflow-scrolling: touch; outline: none; }
+.modal-box:focus,
+.modal-box:focus-visible { outline: none; box-shadow: var(--sh-lg); }
+.modal-box.modal-lg { max-width: 560px; }
+.modal-box.modal-no-scroll { overflow-y: hidden; }
+.modal-title { font-family: 'Syne', sans-serif; font-size: 17px; font-weight: 700; color: var(--text); }
+
+/* ─── EMPTY STATE ───────────────────────────────────────────────────────── */
+.empty { text-align: center; padding: 48px 20px; color: var(--text-3); }
+.ei { font-size: 28px; margin-bottom: 12px; }
+.et { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+.es { font-size: 13px; }
+
+/* ─── TOAST ─────────────────────────────────────────────────────────────── */
+.toasts { position: fixed; bottom: 22px; right: 16px; z-index: 9000; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px); }
+.toast { background: var(--text); color: #fff; border-radius: var(--r-sm); padding: 12px 16px; display: flex; align-items: center; gap: 9px; box-shadow: var(--sh-lg); font-size: 13px; font-weight: 500; animation: tin .22s ease; }
+.toast.ok  { background: #15803d; }
+.toast.err { background: var(--red); }
+@keyframes tin { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   TABLET — 600-1023px: icon-only sidebar
+══════════════════════════════════════════════════════════════════════════ */
+@media (min-width: 600px) and (max-width: 1023px) {
+  .sidebar { width: 60px; }
+  .sb-brand, .sb-tag, .nb span:not(.nb-ic), .sb-sect,
+  .data-btn span:not(:first-child), .sb-foot-lbl { display: none; }
+  .nb { justify-content: center; padding: 10px; }
+  .n-badge { position: absolute; top: 3px; right: 3px; }
+  .main { margin-left: 60px; max-width: calc(100% - 60px); padding: 24px 20px; }
+  .two { grid-template-columns: 1fr; }
+  .fr3 { grid-template-columns: 1fr 1fr; }
+  .settings-layout { grid-template-columns: 1fr; }
+  .mkt-filter-grid { grid-template-columns: repeat(2,minmax(170px,1fr)); }
+  .tbl th:nth-child(8), .tbl td:nth-child(8),
+  .tbl th:nth-child(9), .tbl td:nth-child(9) { display: none; }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   MOBILE — < 600px: bottom tab bar, full-width content
+══════════════════════════════════════════════════════════════════════════ */
+@media (max-width: 599px) {
+  /* Mobile uses vertical app flow (topbar over content) */
+  .app { display: block; width: 100%; }
+
+  /* Hide desktop sidebar entirely */
+  .sidebar { display: none; }
+
+  /* Full-width main, no left margin, bottom padding for tab bar */
+  .main {
+    margin-left: 0;
+    width: 100%;
+    max-width: 100%;
+    padding: 16px 14px;
+    padding-bottom: calc(70px + var(--safe-bottom));
+    overflow-x: hidden;
+  }
+
+  /* Show mobile top bar */
+  .mobile-topbar {
+    display: flex;
+    width: 100%;
+    left: 0;
+    right: 0;
+  }
+  .mobile-topbar { gap: 10px; }
+  .mobile-topbar-title {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 15px;
+  }
+  .mobile-topbar .btn { flex-shrink: 0; }
+  /* Push content below topbar */
+  .view.active { padding-top: 0; }
+
+  /* Page header adjustments */
+  .ph {
+    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: flex-start;
+    gap: 10px;
+  }
+  .ph-title { font-size: 18px; }
+  .ph-sub { font-size: 11.5px; }
+  .dash-sale-btn { display: none; }
+
+  /* ── BOTTOM TAB BAR ── */
+  .bottom-nav {
+    display: flex;
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 100;
+    background: var(--surface); border-top: 1px solid var(--border);
+    box-shadow: 0 -2px 12px rgba(0,0,0,.06);
+    padding-bottom: var(--safe-bottom);
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+  .bnav-item {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; padding: 8px 4px; cursor: pointer; border: none; background: none;
+    color: var(--text-3); font-family: 'Instrument Sans', sans-serif;
+    font-size: 10px; font-weight: 600; letter-spacing: .02em;
+    transition: color .15s; min-height: 54px; position: relative;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .bnav-item.active { color: var(--accent); }
+  .bnav-item.active::after {
+    content: ''; position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 24px; height: 2px; background: var(--accent); border-radius: 0 0 2px 2px;
+  }
+  .bnav-icon {
+    font-size: 18px; line-height: 1;
+    width: 26px; height: 26px; display: flex; align-items: center; justify-content: center;
+  }
+  .bnav-badge {
+    position: absolute; top: 6px; right: calc(50% - 22px);
+    background: var(--red); color: #fff;
+    font-size: 9px; font-weight: 800; min-width: 16px; height: 16px;
+    border-radius: 8px; display: flex; align-items: center; justify-content: center;
+    padding: 0 3px; border: 2px solid var(--surface);
+  }
+
+  /* Toast above bottom nav */
+  .toasts { bottom: calc(70px + var(--safe-bottom) + 8px); }
+
+  /* Stat cards: single column */
+  .stats-merged { grid-template-columns: 1fr; }
+  .sbox-inner { flex-direction: row; }
+  .sbox-half { padding: 14px 12px; flex: 1 1 0; min-width: 0; }
+  .sbox-half + .sbox-half { border-left: 1px solid var(--border); border-top: none; }
+  .sv { font-size: 22px; }
+  .sl { font-size: 10px; }
+  .sn { font-size: 11px; }
+
+  /* Prevent heading/action clipping on narrow devices */
+  .ph, .ch { gap: 8px; flex-wrap: wrap; }
+  .inv-actions { width: 100%; text-align: left; }
+  .inv-actions-row { justify-content: flex-start; }
+
+  /* Dashboard two-col → single col */
+  .two { grid-template-columns: 1fr; gap: 12px; }
+
+  /* Forms: all single column */
+  .fr, .fr3, .channel-row { grid-template-columns: 1fr; }
+
+  /* Variant buttons: 2-col on mobile */
+  .vr { grid-template-columns: repeat(2,1fr); }
+
+  /* Record sale card: no max-width */
+  .card[style*="max-width"] { max-width: 100% !important; }
+
+  /* Orders: hide table, show card list */
+  .tbl-wrap { display: none; }
+  .order-card-list { display: block; }
+
+  /* Alerts: tighter layout */
+  .ai { padding: 13px 14px; display: block; }
+  .adot { display: none; }
+  .ab { width: 100%; }
+  .an, .ad { overflow-wrap: anywhere; word-break: normal; }
+  .aa { width: 100%; margin-top: 10px; display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+  .aa .btn, .aa .btn-follow-up { width: 100%; justify-content: center; }
+
+  /* Settings: single col */
+  .settings-layout { grid-template-columns: 1fr; }
+  .mkt-filter-grid { grid-template-columns: 1fr; }
+  .settings-menu { display: grid; grid-template-columns: 1fr; gap: 6px; overflow: visible; padding: 8px; }
+  .smenu-item { flex-shrink: 1; width: 100%; justify-content: flex-start; }
+
+  /* Expense rows */
+  .expense-row { grid-template-columns: 1fr 100px 40px; }
+  .comp-row, .pc-comp-row { grid-template-columns: 1fr 88px 40px; }
+  .split-input-row { grid-template-columns: 1fr; }
+
+  /* Modal: full-screen sheet on mobile */
+  .modal-overlay { align-items: flex-end; padding: 0; }
+  .modal-box {
+    max-width: 100%; border-radius: var(--r) var(--r) 0 0;
+    max-height: 92vh; padding: 20px 16px;
+    padding-bottom: calc(16px + var(--safe-bottom));
+    border-left: none; border-right: none; border-bottom: none;
+  }
+  .modal-box.modal-lg { max-width: 100%; }
+  /* drag indicator on bottom sheet */
+  .modal-box::before {
+    content: ''; display: block; width: 36px; height: 4px;
+    background: var(--border-s); border-radius: 2px;
+    margin: 0 auto 18px;
+  }
+
+  /* Customer grid: single col */
+  .cg { grid-template-columns: 1fr; }
+
+  /* Dash order rows: tighter */
+  .dash-order-row { padding: 10px 14px; }
+  .dor-name { font-size: 13px; }
+
+  /* Input sizing fine-tuned for mobile */
+  input, select, textarea { padding: 13px 12px; }
+
+  /* Qty control: bigger touch targets */
+  .qb { width: 48px; height: 48px; }
+  .qv { min-width: 56px; height: 48px; font-size: 18px; }
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ─── DESKTOP/TABLET SIDEBAR ──────────────────────────────────────────── -->
+<aside class="sidebar">
+  <div class="sb-logo">
+    <div class="sb-brand">Kudagu<span>.</span></div>
+    <div class="sb-tag">Sales CRM</div>
+  </div>
+  <nav class="sb-nav">
+    <div class="sb-sect">Main</div>
+    <button class="nb active" onclick="nav('dashboard')"><span class="nb-ic">◈</span><span>Dashboard</span></button>
+    <button class="nb" onclick="nav('orders')"><span class="nb-ic">≡</span><span>Orders</span></button>
+    <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
+    <button class="nb" onclick="nav('marketing')"><span class="nb-ic">✦</span><span>Marketing</span></button>
+    <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
+    <button class="nb" onclick="nav('expenses')"><span class="nb-ic">₹</span><span>Expenses</span></button>
+    <div class="sb-sect">People</div>
+    <button class="nb" onclick="nav('customers')"><span class="nb-ic">◉</span><span>Customers</span></button>
+    <div class="sb-sect">Config</div>
+    <button class="nb" onclick="nav('settings')"><span class="nb-ic">⚙</span><span>Settings</span></button>
+  </nav>
+</aside>
+
+<!-- ─── MOBILE TOP BAR ───────────────────────────────────────────────────── -->
+<div class="mobile-topbar">
+  <div class="mobile-topbar-title">Kudagu.</div>
+  <button class="btn btn-p btn-sm" onclick="nav('sales')" style="min-height:36px;padding:6px 12px">+ Sale</button>
+</div>
+
+<!-- ─── MAIN CONTENT ─────────────────────────────────────────────────────── -->
+<div class="main">
+
+  <!-- DASHBOARD -->
+  <div class="view active" id="view-dashboard">
+    <div class="ph">
+      <div><div class="ph-title">Overview</div><div class="ph-sub" id="dd"></div></div>
+      <button class="btn btn-p btn-sm dash-sale-btn" onclick="nav('sales')">＋ Record Sale</button>
+    </div>
+    <div class="stats-merged" id="sg"></div>
+    <div class="stats-merged" id="sg2"></div>
+    <div class="two">
+      <div class="card">
+        <div class="ch"><div class="ct">Recent Orders</div><button class="btn btn-g btn-xs" onclick="nav('orders')">View all →</button></div>
+        <div id="d-orders"></div>
+      </div>
+      <div class="card">
+        <div class="ch"><div class="ct">Alerts <span id="d-ab"></span></div><button class="btn btn-g btn-xs" onclick="nav('alerts')">View all →</button></div>
+        <div id="d-al"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RECORD SALE -->
+  <div class="view" id="view-sales">
+    <div class="ph"><div><div class="ph-title">Record Sale</div><div class="ph-sub">Log a new order</div></div></div>
+    <div class="card" style="max-width:600px">
+      <div class="cb" style="display:flex;flex-direction:column;gap:18px">
+        <div class="fg">
+          <label>Customer <span class="req">*</span></label>
+          <div class="sw">
+            <input type="text" id="cs" placeholder="Search by name, phone or area…" autocomplete="off" oninput="cs_search()" onfocus="cs_search()">
+            <div class="dd" id="cs-dd"></div>
+          </div>
+          <div id="sel-c" style="display:none"></div>
+        </div>
+        <div class="fg">
+          <label>Product / Service <span class="req">*</span></label>
+          <select id="ps" onchange="onProdChange()"><option value="">Select product / service…</option></select>
+        </div>
+        <div class="fg">
+          <label>Pack Size <span class="req">*</span></label>
+          <div class="vr" id="vr-row"></div>
+        </div>
+        <div class="fg">
+          <label>Quantity (packs)</label>
+          <div class="qr">
+            <button class="qb" onclick="aQ(-1)">−</button>
+            <div class="qv" id="qv">1</div>
+            <button class="qb" onclick="aQ(1)">+</button>
+          </div>
+        </div>
+        <div class="fg">
+          <label>Sales Channel <span class="req">*</span></label>
+          <div class="channel-row" id="channel-picker"></div>
+        </div>
+        <div class="fr">
+          <div class="fg">
+            <label>Discount (₹) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <div class="input-prefix"><span>₹</span><input type="number" id="sale-discount" placeholder="0" min="0" inputmode="decimal" oninput="refreshSum()"></div>
+          </div>
+          <div class="fg">
+            <label>Commission (₹) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <div class="input-prefix"><span>₹</span><input type="number" id="sale-commission" placeholder="0" min="0" inputmode="decimal" oninput="refreshSum()"></div>
+          </div>
+        </div>
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-lbl">Already Delivered & Paid</div>
+            <div class="toggle-sub">Mark this order as Completed immediately</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="delivered-toggle" onchange="toggleDelivered()">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div class="fg" id="sale-pm-row" style="display:none">
+          <label>Payment Method <span class="req">*</span></label>
+          <select id="sale-pm">
+            <option value="">— Select —</option>
+            <option>Cash</option><option>UPI</option><option>Card</option>
+            <option>Bank Transfer</option><option>Other</option>
+          </select>
+        </div>
+        <div class="fg">
+          <label>Order Date</label>
+          <input type="date" id="sale-date">
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Defaults to today — edit to backdate</div>
+        </div>
+        <div id="sale-sum" style="display:none">
+          <div class="sl-label">Order Summary</div>
+          <div class="sumbox" id="sum-body"></div>
+        </div>
+        <button class="btn btn-p btn-full" onclick="recSale()">Record Sale</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ORDERS -->
+  <div class="view" id="view-orders">
+    <div class="ph"><div><div class="ph-title">Orders</div><div class="ph-sub" id="os"></div></div></div>
+    <div class="card orders-card">
+      <div id="ob"></div>
+    </div>
+  </div>
+
+  <!-- ALERTS -->
+  <div class="view" id="view-alerts">
+    <div class="ph"><div><div class="ph-title">Re-order Alerts</div><div class="ph-sub">Customers due for a follow-up</div></div></div>
+    <div id="al-body"></div>
+  </div>
+
+  <!-- DISTRIBUTION -->
+  <div class="view" id="view-distribution">
+    <div class="ph">
+      <div>
+        <div class="ph-title">Distribution</div>
+        <div class="ph-sub" id="dist-sub">Distributor batches</div>
+      </div>
+    </div>
+    <div class="stats-merged" style="margin-bottom:14px">
+      <div class="sbox accent-top"><div class="sbox-inner"><div class="sbox-half"><div class="sl">Active Batches</div><div class="sv" id="dist-total-active">0</div><div class="sn" id="dist-active-meta">0 distributors · 0 pcs on hold</div></div><div class="sbox-half"><div class="sl">Completed</div><div class="sv green" id="dist-total-completed">0</div><div class="sn" id="dist-completed-meta">₹0 collected · 0 pcs closed</div></div></div></div>
+      <div class="sbox">
+        <div class="sbox-inner">
+          <div class="sbox-half">
+            <div class="sl">Qty On Hold</div>
+            <div class="sv" id="dist-total-qty">0</div>
+            <div class="sn">Currently on hold with all distributors</div>
+          </div>
+          <div class="sbox-half">
+            <div class="sl">On-Hold Stock Worth</div>
+            <div class="sv" id="dist-hold-worth">₹0</div>
+            <div class="sn">Retail value of active distributor stock</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch"><div class="ct">Create Distributor Batch</div></div>
+      <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+        <div class="fr">
+          <div class="fg">
+            <label>Distributor Name <span class="req">*</span></label>
+            <select id="dist-name" onchange="onDistNameSelectChange()">
+              <option value="">Select distributor…</option>
+            </select>
+            <input type="text" id="dist-name-custom" placeholder="e.g. Kumar Agencies" style="display:none;margin-top:8px">
+          </div>
+          <div class="fg"><label>Quantity (pcs) <span class="req">*</span></label><input type="number" id="dist-qty" min="1" value="1"></div>
+        </div>
+        <div class="fg">
+          <label>Batch Date</label>
+          <input type="date" id="dist-date" onclick="openNativePicker('dist-date')">
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Defaults to today.</div>
+        </div>
+        <div class="fr">
+          <div class="fg"><label>Product / Service <span class="req">*</span></label><select id="dist-prod" onchange="onDistProductChange()"><option value="">Select product / service…</option></select></div>
+          <div class="fg"><label>Size <span class="req">*</span></label><select id="dist-variant"><option value="">Select size…</option></select></div>
+        </div>
+        <div class="fr">
+          <div class="fg">
+            <label>Commission (₹)</label>
+            <div class="input-prefix"><span>₹</span><input type="number" id="dist-commission" min="0" step="0.01" value="0"></div>
+            <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Can be 0.</div>
+          </div>
+          <div class="fg">
+            <label>Commission Scope</label>
+            <div class="toggle-row">
+              <div>
+                <div class="toggle-lbl">Whole Batch Commission</div>
+                <div class="toggle-sub">OFF = per pcs (default)</div>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="dist-comm-batch">
+                <span class="toggle-track"></span>
+              </label>
+            </div>
+          </div>
+        </div>
+        <div class="fg"><label>Notes</label><textarea id="dist-notes" rows="2" placeholder="Optional notes"></textarea></div>
+        <div class="sar">
+          <button class="btn btn-p" onclick="createDistributorBatch()">Create Batch</button>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="ch"><div class="ct">Batches</div></div>
+      <div class="cb" id="dist-body"></div>
+    </div>
+  </div>
+
+  <!-- OPERATIONAL EXPENSES -->
+  <div class="view" id="view-expenses">
+    <div class="ph">
+      <div><div class="ph-title">Operational Expenses</div><div class="ph-sub" id="opx-sub">Track non-order operating spend</div></div>
+    </div>
+    <div class="stats-merged" id="opx-stats" style="margin-bottom:14px"></div>
+    <div class="two">
+      <div class="card">
+        <div class="ch"><div class="ct">Record Expense</div></div>
+        <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+          <div class="fr">
+            <div class="fg">
+              <label>Expense Title <span class="req">*</span></label>
+              <input id="opx-title" type="text" placeholder="e.g. Courier fuel reimbursement">
+            </div>
+            <div class="fg">
+              <label>Category</label>
+              <select id="opx-category" onchange="toggleOperationalExpenseCategoryInput()"></select>
+              <input id="opx-category-custom" type="text" placeholder="Enter new category" style="display:none;margin-top:8px">
+            </div>
+          </div>
+          <div class="fr">
+            <div class="fg">
+              <label>Amount <span class="req">*</span></label>
+              <div class="input-prefix"><span>₹</span><input id="opx-amount" type="number" min="0" step="0.01" placeholder="0"></div>
+            </div>
+            <div class="fg">
+              <label>Expense Date</label>
+              <input id="opx-date" type="date">
+              <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Recorded time and user are captured automatically.</div>
+            </div>
+          </div>
+          <div class="fg">
+            <label>Notes</label>
+            <textarea id="opx-notes" rows="4" placeholder="Add vendor, reason, receipt reference, or any internal note"></textarea>
+          </div>
+          <button class="btn btn-p btn-full" id="opx-save-btn" onclick="saveOperationalExpense()">Record Expense</button>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ch"><div class="ct">Recent Expenses</div></div>
+        <div class="cb" id="opx-body"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MARKETING -->
+  <div class="view" id="view-marketing">
+    <div class="ph"><div><div class="ph-title">Marketing</div><div class="ph-sub">Group campaigns with AI template + semi-automated WhatsApp flow</div></div></div>
+    <div class="card" style="max-width:1050px">
+      <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+        <div class="sl-label">Saved Groups</div>
+        <div class="fr">
+        <div class="fg">
+          <label>Groups from Customers <span style="color:var(--text-3);font-weight:400">(filters live in People → Customers)</span></label>
+          <div id="mkt-groups-row" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+            <div id="mkt-group-buttons" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center"></div>
+          </div>
+        </div>
+        </div>
+
+        <div class="sl-label">Campaign Input</div>
+        <div class="fg">
+          <label>Campaign Goal</label>
+          <input id="mkt-brief" type="text" placeholder="e.g. Bring back regular customers with reorder coupon">
+        </div>
+        <div class="fg">
+          <label>Extra AI Instruction <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <textarea id="mkt-extra" rows="2" placeholder="e.g. Keep tone warm, no emojis, mention COD available"></textarea>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-p" onclick="generateMarketingTemplate()">Generate Template</button>
+        </div>
+
+        <div class="fg">
+          <label>AI Template (tokens as needed)</label>
+          <textarea id="mkt-template" rows="8" placeholder="Hi {{customer_name}}, ..." oninput="previewMarketingTemplate()"></textarea>
+          <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Available tokens: <code>{{brand_name}}</code> <code>{{customer_name}}</code> <code>{{area}}</code> <code>{{order_count}}</code> <code>{{avg_order_value}}</code> <code>{{last_order_date}}</code> <code>{{last_product_name}}</code> <code>{{last_variant}}</code> <code>{{preferred_channel}}</code></div>
+        </div>
+        <div class="fg">
+          <label>Preview</label>
+          <div id="mkt-preview" class="wa-preview"></div>
+        </div>
+
+        <div class="sl-label">Campaign Runner</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div class="fg" style="max-width:130px;min-width:110px;margin:0">
+            <label>Delay (sec)</label>
+            <input id="mkt-delay-sec" type="number" min="3" value="10">
+          </div>
+          <button class="btn btn-p" style="min-width:90px" onclick="startMarketingCampaign()">Go</button>
+          <button id="mkt-toggle-btn" class="btn btn-s" style="min-width:96px;padding:10px 12px" onclick="toggleMarketingRunState()" title="Pause/Resume">Pause</button>
+          <button class="btn btn-danger" style="min-width:96px;padding:10px 12px" onclick="resetMarketingCampaign()" title="Reset">Reset</button>
+        </div>
+
+        <div>
+          <div style="height:10px;background:var(--surface-3);border-radius:999px;overflow:hidden;border:1px solid var(--border)">
+            <div id="mkt-progress-bar" style="height:100%;width:0%;background:var(--accent);transition:width .2s"></div>
+          </div>
+          <div id="mkt-progress-text" style="font-size:12px;color:var(--text-3);margin-top:6px">No campaign running.</div>
+        </div>
+
+        <div id="mkt-meta" style="font-size:12px;color:var(--text-3)"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CUSTOMERS -->
+  <div class="view" id="view-customers">
+    <div class="ph">
+      <div><div class="ph-title">Customers</div><div class="ph-sub" id="cs-sub"></div></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-s btn-sm" onclick="openBulkImportModal()">Import Bulk</button>
+        <button class="btn btn-s btn-sm" id="customers-export-btn" onclick="openCustomerExportModal()" style="display:none">Export Excel</button>
+        <button class="btn btn-p btn-sm" onclick="openAddCustomerModal()">＋ Add</button>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="cb" style="padding:12px">
+        <div class="fg" style="margin:0">
+          <label>Search by Name</label>
+          <input id="customer-name-search" type="text" placeholder="Type customer name..." oninput="handleCustomerNameSearch(this.value)" autocomplete="off">
+        </div>
+      </div>
+    </div>
+    <div class="card" style="margin-bottom:12px">
+      <div class="cb" style="display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+          <div class="sl-label" style="margin-bottom:0;flex:1">Group Filters</div>
+          <button class="btn btn-g btn-sm" id="mkt-filters-toggle-btn" onclick="toggleCustomerFiltersPanel()" title="Expand filters" aria-label="Toggle group filters" style="min-width:72px;padding:6px 10px">Expand</button>
+        </div>
+        <div id="mkt-filters-body" style="display:none">
+          <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;flex-wrap:wrap">
+            <button class="btn btn-s btn-sm" onclick="openSaveMarketingGroupModal()">Save Current Filters</button>
+          </div>
+          <div class="mkt-filter-grid" style="margin-top:8px">
+            <div class="fg">
+              <label>Ordered</label>
+              <select id="mkt-f-has-orders" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="yes">Has orders</option>
+                <option value="no">No orders yet</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Area</label>
+              <select id="mkt-f-area" onchange="refreshMarketingGroup()"><option value="any">All areas</option></select>
+            </div>
+            <div class="fg">
+              <label>Tag</label>
+              <div id="mkt-f-product-tag-picker"></div>
+            </div>
+            <div class="fg">
+              <label>Order Type</label>
+              <select id="mkt-f-channel" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="retail">Retail</option>
+                <option value="whatsapp">WhatsApp</option>
+                <option value="website">Website</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Avg Order Value</label>
+              <div style="display:flex;gap:8px">
+                <select id="mkt-f-aov-mode" onchange="refreshMarketingGroup()">
+                  <option value="any">Any</option>
+                  <option value="above">Above</option>
+                  <option value="below">Below</option>
+                </select>
+                <input id="mkt-f-aov-value" type="number" min="0" placeholder="₹ value" oninput="refreshMarketingGroup()">
+              </div>
+            </div>
+            <div class="fg">
+              <label>Regular Customer</label>
+              <select id="mkt-f-regular" onchange="refreshMarketingGroup()">
+                <option value="any">Any</option>
+                <option value="yes">Regular only</option>
+                <option value="no">Not regular</option>
+              </select>
+            </div>
+            <div class="fg">
+              <label>Regular Rule</label>
+              <div style="display:flex;gap:8px">
+                <input id="mkt-f-reg-min-orders" type="number" min="1" value="3" oninput="refreshMarketingGroup()" title="Minimum orders">
+                <input id="mkt-f-reg-max-gap" type="number" min="1" value="45" oninput="refreshMarketingGroup()" title="Max avg gap days">
+              </div>
+            </div>
+          </div>
+          <div class="mkt-rule-note">Regular rule: min orders, then avg gap days between orders.</div>
+          <div class="card" style="padding:12px;border:1px solid var(--border)">
+            <div id="mkt-group-summary" style="font-size:12.5px;color:var(--text-2)"></div>
+            <div id="mkt-group-sample" style="font-size:11.5px;color:var(--text-3);margin-top:6px"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="cg" id="cg"></div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div class="view" id="view-settings">
+    <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, pricing, coupons & messages</div></div></div>
+      <div class="settings-layout">
+      <div class="settings-menu">
+        <div class="smenu-row">
+          <button class="smenu-item active" data-panel="products" onclick="sPanel('products')">Products / Services</button>
+          <button class="smenu-plus" id="smenu-add-product-btn" onclick="event.stopPropagation();sPanel('new-product')" title="Add Product or Service" aria-label="Add Product or Service">+</button>
+        </div>
+        <button class="smenu-item" data-panel="appearance" onclick="sPanel('appearance')">Appearance</button>
+        <button class="smenu-item" data-panel="wa-messages" onclick="sPanel('wa-messages')">WA Messages</button>
+        <button class="smenu-item" data-panel="marketing-ai" onclick="sPanel('marketing-ai')">Marketing AI</button>
+        <button class="smenu-item" data-panel="coupons" onclick="sPanel('coupons')">Coupons</button>
+        <button class="smenu-item" data-panel="shipping" onclick="sPanel('shipping')">Shipping</button>
+        <button class="smenu-item" data-panel="faq" onclick="sPanel('faq')">FAQ / Help</button>
+      </div>
+      <div>
+        <div class="settings-panel active" id="sp-products"><div id="prod-list-container"></div></div>
+        <div class="settings-panel" id="sp-appearance">
+          <div class="card">
+            <div class="ch"><div class="ct">Theme</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:16px">
+              <div style="font-size:12.5px;color:var(--text-3)">Switch the whole CRM and inventory workspace between light and dark mode.</div>
+              <div class="theme-option-row">
+                <button class="theme-option" id="theme-light-btn" onclick="setTheme('light')">
+                  <div class="theme-option-title">Light</div>
+                  <div class="theme-option-sub">Bright surfaces with dark text.</div>
+                  <div class="theme-preview">
+                    <span class="tp-bg"></span>
+                    <span class="tp-surface"></span>
+                    <span class="tp-accent" style="background:#1a1a18"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-dark-btn" onclick="setTheme('dark')">
+                  <div class="theme-option-title">Dark</div>
+                  <div class="theme-option-sub">Low-glare UI for night work.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#181c20,#21262c);border-color:#313841">
+                    <span class="tp-bg" style="background:#111315;border-color:#313841"></span>
+                    <span class="tp-surface" style="background:#181c20;border-color:#313841"></span>
+                    <span class="tp-accent" style="background:#f3f5f7;border-color:#f3f5f7"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-nord-btn" onclick="setTheme('nord')">
+                  <div class="theme-option-title">Nord</div>
+                  <div class="theme-option-sub">Cool arctic blues from the well-known Nord palette.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#3b4252,#434c5e);border-color:#566277">
+                    <span class="tp-bg" style="background:#2e3440;border-color:#566277"></span>
+                    <span class="tp-surface" style="background:#3b4252;border-color:#566277"></span>
+                    <span class="tp-accent" style="background:#88c0d0;border-color:#88c0d0"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-solarized-btn" onclick="setTheme('solarized')">
+                  <div class="theme-option-title">Solarized</div>
+                  <div class="theme-option-sub">Classic warm-paper theme inspired by Solarized Light.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#fffaf0,#f5edd9);border-color:#e0d6be">
+                    <span class="tp-bg" style="background:#fdf6e3;border-color:#e0d6be"></span>
+                    <span class="tp-surface" style="background:#fffaf0;border-color:#e0d6be"></span>
+                    <span class="tp-accent" style="background:#268bd2;border-color:#268bd2"></span>
+                  </div>
+                </button>
+                <button class="theme-option" id="theme-dracula-btn" onclick="setTheme('dracula')">
+                  <div class="theme-option-title">Dracula</div>
+                  <div class="theme-option-sub">High-contrast neon dark theme inspired by Dracula.</div>
+                  <div class="theme-preview" style="background:linear-gradient(135deg,#313442,#3a3d4f);border-color:#565a70">
+                    <span class="tp-bg" style="background:#282a36;border-color:#565a70"></span>
+                    <span class="tp-surface" style="background:#313442;border-color:#565a70"></span>
+                    <span class="tp-accent" style="background:#bd93f9;border-color:#bd93f9"></span>
+                  </div>
+                </button>
+              </div>
+              <div id="theme-status" style="font-size:12px;color:var(--text-3)"></div>
+            </div>
+          </div>
+        </div>
+        <div class="settings-panel" id="sp-new-product">
+          <div class="card">
+            <div class="ch"><div class="ct">Add New Product / Service</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fg"><label>Product / Service Name <span class="req">*</span></label><input id="np-name" type="text" placeholder="e.g. Coorg Instant Mix or Coffee Tasting Session"></div>
+              <div class="fg">
+                <label>Variants / Plans</label>
+                <div class="fr" style="margin-top:8px">
+                  <div class="fg">
+                    <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Metric / Unit</label>
+                    <select id="np-variant-metric" onchange="refreshVariantBuilderUI()">
+                      <option value="g">Grams (g)</option>
+                      <option value="kg">Kilograms (kg)</option>
+                      <option value="ml">Millilitres (ml)</option>
+                      <option value="l">Litres (L)</option>
+                      <option value="pcs">Pieces (pcs)</option>
+                      <option value="custom">Custom labels</option>
+                    </select>
+                  </div>
+                  <div class="fg" id="np-variant-values-wrap">
+                    <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Values (comma separated)</label>
+                    <input id="np-variant-values" type="text" value="100,250,500,1000" placeholder="e.g. 100,250,500" oninput="refreshVariantBuilderUI()">
+                  </div>
+                </div>
+                <div class="fg" id="np-variant-custom-wrap" style="display:none">
+                  <label style="font-size:11.5px;color:var(--text-3);font-weight:500">Custom Variant Labels</label>
+                  <input id="np-variant-custom" type="text" placeholder="e.g. Small, Medium, Family Pack" oninput="refreshVariantBuilderUI()">
+                </div>
+                <div id="np-variant-preview" style="font-size:12px;color:var(--text-3);margin-top:4px">
+                  Variants preview: 100g, 250g, 500g, 1000g
+                </div>
+              </div>
+              <div class="fg">
+                <label>Composition (from Inventory) <span class="req">*</span></label>
+                <div id="np-comp-rows" style="display:flex;flex-direction:column;gap:8px"></div>
+                <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:4px">
+                  <button class="btn btn-s btn-sm" onclick="addCompositionRow()">＋ Add Ingredient</button>
+                  <div id="np-comp-hint" style="font-size:12px;color:var(--text-3)">Set at least one ingredient. Total must be 100%.</div>
+                </div>
+              </div>
+              <hr><button class="btn btn-p btn-full" onclick="addProduct()">Add Product / Service</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-panel" id="sp-wa-messages">
+          <div class="global-wa-note">
+            Use tokens to personalise messages — replaced with real values when Follow Up is clicked.<br><br>
+            Available: <code>{{customer_name}}</code> <code>{{last_order_date}}</code> <code>{{product_name}}</code> <code>{{variant}}</code> <code>{{qty}}</code>
+          </div>
+          <div class="wa-card">
+            <div class="wa-card-header">
+              <div><div class="wa-card-title">Default Template</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">Used for products or services without a custom message</div></div>
+            </div>
+            <div class="wa-card-body">
+              <div class="fg"><label>Message Template</label><textarea id="wa-tpl-default" rows="3" oninput="previewWa('default')" placeholder="Hi {{customer_name}}, your last order was on {{last_order_date}}…"></textarea></div>
+              <div class="token-chips">
+                <span class="token-chip" onclick="insertToken('wa-tpl-default','{{customer_name}}','default')">{{customer_name}}</span>
+                <span class="token-chip" onclick="insertToken('wa-tpl-default','{{last_order_date}}','default')">{{last_order_date}}</span>
+                <span class="token-chip" onclick="insertToken('wa-tpl-default','{{product_name}}','default')">{{product_name}}</span>
+                <span class="token-chip" onclick="insertToken('wa-tpl-default','{{variant}}','default')">{{variant}}</span>
+                <span class="token-chip" onclick="insertToken('wa-tpl-default','{{qty}}','default')">{{qty}}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-3);margin-top:8px">Preview:</div>
+              <div class="wa-preview" id="wa-prev-default"></div>
+              <div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveWaTpl('default')">Save Default Template</button></div>
+            </div>
+          </div>
+          <div id="wa-prod-cards"></div>
+        </div>
+        <div class="settings-panel" id="sp-marketing-ai">
+          <div class="card">
+            <div class="ch"><div class="ct">Marketing AI Configuration</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fg">
+                <label>AI Base URL</label>
+                <input id="mkt-ai-base-url" type="text" placeholder="https://api.openai.com/v1">
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Use an OpenAI-compatible endpoint. Default is OpenAI.</div>
+              </div>
+              <div class="fg">
+                <label>Model <span class="req">*</span></label>
+                <input id="mkt-ai-model" type="text" placeholder="e.g. gpt-4o-mini">
+              </div>
+              <div class="fg">
+                <label>Brand Name</label>
+                <input id="mkt-ai-brand-name" type="text" placeholder="e.g. Kudagu Kaapi">
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for <code>{{brand_name}}</code> token in templates.</div>
+              </div>
+              <div class="fg">
+                <label>API Key</label>
+                <input id="mkt-ai-api-key" type="password" placeholder="Leave blank to keep existing key">
+                <div id="mkt-ai-key-note" style="font-size:11.5px;color:var(--text-3);margin-top:4px"></div>
+              </div>
+              <div class="fg">
+                <label>System Prompt</label>
+                <textarea id="mkt-ai-system-prompt" rows="6" placeholder="Controls tone and style for generated messages."></textarea>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-p" onclick="saveMarketingSettings()">Save Marketing AI Settings</button>
+                <button class="btn btn-danger" onclick="clearMarketingApiKey()">Clear Saved API Key</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="settings-panel" id="sp-shipping">
+          <div class="card">
+            <div class="ch"><div class="ct">Company Details for Shipping Labels</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fr">
+                <div class="fg"><label>Company Name <span class="req">*</span></label><input id="ship-company" type="text" placeholder="e.g. Kudagu Kaapi"></div>
+                <div class="fg"><label>Phone</label><input id="ship-phone" type="text" placeholder="e.g. +91 9XXXXXXXXX"></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Email</label><input id="ship-email" type="email" placeholder="support@company.com"></div>
+                <div class="fg"><label>GSTIN</label><input id="ship-gstin" type="text" placeholder="Optional"></div>
+              </div>
+              <div class="fg">
+                <label>Website Payment Gateway Commission (%)</label>
+                <input id="ship-pg-commission" type="number" min="0" step="0.01" placeholder="3">
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Applied automatically to all Website orders in profit calculation, regardless of payment method.</div>
+              </div>
+              <div class="fg">
+                <label>Shipped WhatsApp Message Template</label>
+                <textarea id="ship-wa-template" rows="4" placeholder="Hi {{customer_name}}, your order #{{order_id}}..."></textarea>
+                <div class="token-chips">
+                  <span class="token-chip" onclick="insertShippingToken('{{customer_name}}')">{{customer_name}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{order_id}}')">{{order_id}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{product_name}}')">{{product_name}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{ship_date}}')">{{ship_date}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{awb}}')">{{awb}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{courier}}')">{{courier}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{tracking_url}}')">{{tracking_url}}</span>
+                  <span class="token-chip" onclick="insertShippingToken('{{tracking_line}}')">{{tracking_line}}</span>
+                </div>
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">
+                  Tokens: <code>{{customer_name}}</code> <code>{{order_id}}</code> <code>{{product_name}}</code> <code>{{ship_date}}</code> <code>{{awb}}</code> <code>{{courier}}</code> <code>{{tracking_url}}</code> <code>{{tracking_line}}</code>
+                </div>
+              </div>
+              <div class="fg"><label>Company Address <span class="req">*</span></label><textarea id="ship-address" rows="3" placeholder="Full sender address for labels"></textarea></div>
+              <div class="sl-label" style="margin-top:4px">Courier Rules</div>
+              <div style="font-size:12px;color:var(--text-3)">Add courier service names manually. For each one, set tracking URL template and default label type (QR or barcode). Use <code>{{awb}}</code> in the URL.</div>
+              <div id="ship-track-templates" style="display:flex;flex-direction:column;gap:10px"></div>
+              <button type="button" class="btn btn-s btn-sm" onclick="addShippingRow()">+ Add Courier</button>
+              <div style="font-size:12px;color:var(--text-3)">These details are used in Print/Download Label actions. Tracking links can be copied and shared with customers.</div>
+              <button class="btn btn-p btn-full" onclick="saveShippingSettings()">Save Shipping Details</button>
+            </div>
+          </div>
+        </div>
+        <div class="settings-panel" id="sp-coupons">
+          <div class="card">
+            <div class="ch"><div class="ct">Coupons</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:14px">
+              <div class="fr">
+                <div class="fg"><label>Code <span class="req">*</span></label><input id="coupon-code" type="text" placeholder="e.g. COUPON1"></div>
+                <div class="fg"><label>Description</label><input id="coupon-description" type="text" placeholder="Optional internal note"></div>
+              </div>
+              <div class="fr">
+                <div class="fg">
+                  <label>Discount Type</label>
+                  <select id="coupon-discount-type">
+                    <option value="flat">Flat rupee off</option>
+                    <option value="percent">Percentage off</option>
+                  </select>
+                </div>
+                <div class="fg"><label>Discount Value <span class="req">*</span></label><input id="coupon-discount-value" type="number" min="0" step="0.01" placeholder="10"></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Minimum Cart Value</label><div class="input-prefix"><span>₹</span><input id="coupon-min-cart" type="number" min="0" step="0.01" placeholder="0"></div></div>
+                <div class="fg"><label>Global Usage Limit</label><input id="coupon-usage-limit" type="number" min="1" step="1" placeholder="Blank = unlimited"></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Per Customer Usage Limit</label><input id="coupon-user-usage-limit" type="number" min="1" step="1" placeholder="Blank = unlimited"></div>
+                <div class="fg"><label>Customer Limit Basis</label><input type="text" value="Website user account" disabled></div>
+              </div>
+              <div class="fr">
+                <div class="fg"><label>Start Date</label><input id="coupon-start" type="date"></div>
+                <div class="fg"><label>End Date</label><input id="coupon-end" type="date"></div>
+              </div>
+              <label class="checkline"><input id="coupon-active" type="checkbox" checked> Active</label>
+              <input id="coupon-edit-id" type="hidden">
+              <div style="display:flex;gap:8px;flex-wrap:wrap">
+                <button class="btn btn-p" onclick="saveCoupon()">Save Coupon</button>
+                <button class="btn btn-s" onclick="resetCouponForm()">Clear</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="ch"><div class="ct">Active Coupon Rules</div></div>
+            <div class="cb" id="coupons-list"></div>
+          </div>
+        </div>
+        <div class="settings-panel" id="sp-faq">
+          <div class="card">
+            <div class="ch"><div class="ct">FAQ / Help</div></div>
+            <div class="cb" style="display:flex;flex-direction:column;gap:18px">
+              <div style="font-size:12.5px;color:var(--text-3)">Use this page as a quick guide to the main settings areas and the keyboard shortcuts available in the CRM.</div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Keyboard Shortcuts</div>
+                <div class="user-check-grid">
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="display:flex;align-items:center;gap:10px;font-weight:700">
+                        <img src="/assets/letter-r.png" alt="R key icon" style="width:22px;height:22px;object-fit:contain">
+                        <span>Record Sale</span>
+                      </div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Opens the sale form and focuses customer search.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="display:flex;align-items:center;gap:10px;font-weight:700">
+                        <img src="/assets/letter-a.png" alt="A key shortcut icon" style="width:22px;height:22px;object-fit:contain">
+                        <span>Add Customer</span>
+                      </div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Opens the add-customer popup directly.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="display:flex;align-items:center;gap:10px;font-weight:700">
+                        <img src="/assets/letter-s.png" alt="S key shortcut icon" style="width:22px;height:22px;object-fit:contain">
+                        <span>Settings</span>
+                      </div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">Jumps straight to the Settings page.</div>
+                    </div>
+                  </div>
+                  <div class="user-check-item" style="cursor:default">
+                    <div>
+                      <div style="font-weight:700"><code>Enter</code> in Customer Search</div>
+                      <div style="font-size:12px;color:var(--text-3);margin-top:4px">While recording a sale, picks the top customer suggestion without needing the mouse.</div>
+                    </div>
+                  </div>
+                </div>
+                <div style="font-size:12px;color:var(--text-3)">Shortcuts work only when you are not typing inside a field or modal.</div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Settings Explained</div>
+                <div style="display:flex;flex-direction:column;gap:10px">
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Products / Services</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Create products, define variants, set sale prices, add per-pack expenses, configure reorder cycles, and link inventory composition.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Appearance</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Changes the overall visual theme of the CRM for day or night usage.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">WA Messages</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Controls the WhatsApp templates used for reorder reminders, with optional product-specific custom messages.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Marketing AI</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Lets you set the AI endpoint, model, and prompt rules used for marketing draft generation.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Coupons</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Creates website coupon rules for flat or percentage discounts, minimum cart values, dates, and global usage limits.</div>
+                  </div>
+                  <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2)">
+                    <div style="font-weight:700">Shipping</div>
+                    <div style="font-size:12.5px;color:var(--text-3);margin-top:4px">Stores sender details, courier rules, tracking templates, and shipped-message settings for shipping labels.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">Quick Workflow Tips</div>
+                <div style="padding:12px;border:1px solid var(--border);border-radius:12px;background:var(--surface-2);font-size:12.5px;color:var(--text-3);line-height:1.65">
+                  Use <code>R</code> from the dashboard when you want to log a sale quickly.
+                  <br><br>
+                  In the sale form, type the customer name and press <code>Enter</code> to select the top suggestion instantly.
+                  <br><br>
+                  Keep product variant pricing and reorder-cycle settings updated, because those values affect summaries and follow-up timing across the CRM.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+</div><!-- /app -->
+
+<!-- ─── MOBILE BOTTOM TAB BAR ──────────────────────────────────────────── -->
+<nav class="bottom-nav" id="bottom-nav">
+  <button class="bnav-item active" id="bnav-dashboard" onclick="nav('dashboard')">
+    <span class="bnav-icon">◈</span>
+    <span>Home</span>
+  </button>
+  <button class="bnav-item" id="bnav-orders" onclick="nav('orders')">
+    <span class="bnav-icon">≡</span>
+    <span>Orders</span>
+  </button>
+  <button class="bnav-item" id="bnav-alerts" onclick="nav('alerts')">
+    <span class="bnav-icon">◯</span>
+    <span>Alerts</span>
+    <span class="bnav-badge" id="bnav-badge" style="display:none">0</span>
+  </button>
+  <button class="bnav-item" id="bnav-marketing" onclick="nav('marketing')">
+    <span class="bnav-icon">✦</span>
+    <span>Mkt</span>
+  </button>
+  <button class="bnav-item" id="bnav-distribution" onclick="nav('distribution')">
+    <span class="bnav-icon">◫</span>
+    <span>Dist</span>
+  </button>
+  <button class="bnav-item" id="bnav-expenses" onclick="nav('expenses')">
+    <span class="bnav-icon">₹</span>
+    <span>Spend</span>
+  </button>
+  <button class="bnav-item" id="bnav-customers" onclick="nav('customers')">
+    <span class="bnav-icon">◉</span>
+    <span>People</span>
+  </button>
+  <button class="bnav-item" id="bnav-settings" onclick="nav('settings')">
+    <span class="bnav-icon">⚙</span>
+    <span>Settings</span>
+  </button>
+</nav>
+
+<!-- ─── MODAL ────────────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="modal" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box" id="modal-box"></div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script>
+try {
+  const key = 'kudagu-theme';
+  const allowed = new Set(['light', 'dark', 'nord', 'solarized', 'dracula']);
+  const raw = String(localStorage.getItem(key) || '').trim().toLowerCase();
+  if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
+} catch (_) {}
+</script>
+<script src="/static/app.js?v=20260506-01"></script>
+</body>
+</html>

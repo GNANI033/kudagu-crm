@@ -1,0 +1,5460 @@
+"""
+Kudagu Kaapi CRM — app.py
+FastAPI + uvicorn backend.
+
+All data is stored in SQLite (data.sqlite3), with one-time import from data.json.
+The frontend (index.html, app.js) is served as static files from ./static/.
+
+Run:
+    python app.py
+    # or directly:
+    uvicorn app:app --host 0.0.0.0 --port 8000
+
+Reverse proxy (nginx example):
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+"""
+
+import json
+import os
+import copy
+import time
+import threading
+import textwrap
+import re
+import base64
+import csv
+import socket
+import ipaddress
+import sqlite3
+import secrets
+import hashlib
+import hmac
+from contextlib import asynccontextmanager
+from io import BytesIO, StringIO
+from pathlib import Path
+from typing import Any
+from urllib import error as urlerror
+from urllib import request as urlrequest
+from urllib import parse as urlparse
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+
+import app_config
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if not key or key in os.environ:
+            continue
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+            value = value[1:-1]
+        os.environ[key] = value
+
+
+# ── Paths ──────────────────────────────────────────────────────────────────
+BASE_DIR   = Path(__file__).parent
+_load_env_file(BASE_DIR / ".env")
+DB_FILE = BASE_DIR / "data.sqlite3"
+LEGACY_DATA_FILE = BASE_DIR / "data.json"
+STATE_KEY = "root"
+STATIC_DIR = BASE_DIR / "static"
+ASSETS_DIR = BASE_DIR / "assets"
+UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
+INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
+CRM_SERVICE_API_KEYS_RAW = os.environ.get("CRM_SERVICE_API_KEYS", os.environ.get("SERVICE_API_KEYS", ""))
+WEBSITE_KEYS_RAW = os.environ.get("WEBSITE_KEYS", os.environ.get("WEBSITE_KEY", ""))
+UI_HELPER_KEYS_RAW = os.environ.get("UI_HELPER_KEYS", os.environ.get("UI_HELPER_KEY", ""))
+AUTHZ_SCOPE_MODE = str(os.environ.get("AUTHZ_SCOPE_MODE", "enforce")).strip().lower()
+WEBSITE_ALLOW_ORDER_SYNC = str(os.environ.get("WEBSITE_ALLOW_ORDER_SYNC", "1")).strip().lower() in ("1", "true", "yes", "on")
+SERVICE_NAME = "crm"
+SERVICE_API_KEYS = tuple(
+    dict.fromkeys(str(part).strip() for part in CRM_SERVICE_API_KEYS_RAW.split(",") if str(part).strip())
+)
+SERVICE_OUTBOUND_API_KEY = (
+    str(os.environ.get("CRM_OUTBOUND_API_KEY", os.environ.get("SERVICE_OUTBOUND_API_KEY", ""))).strip()
+    or (SERVICE_API_KEYS[0] if SERVICE_API_KEYS else "")
+)
+CORS_ALLOWED_ORIGINS = [
+    origin
+    for origin in (
+        str(part).strip()
+        for part in os.environ.get(
+            "CORS_ALLOWED_ORIGINS",
+            "http://localhost:5000,http://127.0.0.1:5000,http://localhost:8000,http://127.0.0.1:8000",
+        ).split(",")
+    )
+    if origin
+]
+SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
+SYNC_LOCK = threading.Lock()
+INVENTORY_BACKOFF_SECONDS = max(1, int(os.environ.get("INVENTORY_BACKOFF_SECONDS", "20")))
+INVENTORY_CIRCUIT_LOCK = threading.Lock()
+INVENTORY_CIRCUIT_UNTIL = 0.0
+DISABLE_IN_MEMORY_CACHE = str(os.environ.get("DISABLE_IN_MEMORY_CACHE", "")).strip().lower() in ("1", "true", "yes", "on")
+MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
+ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
+DATA_LOCK = threading.RLock()
+UI_PREFS_LOCK = threading.RLock()
+DATA_CACHE: dict | None = None
+DASHBOARD_CACHE_LOCK = threading.RLock()
+DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
+DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
+ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
+SCHEMA_VERSION = 4
+AUTH_COOKIE_NAME = "kudagu_crm_session"
+PASSWORD_HASH_ITERATIONS = 310_000
+AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
+AUTH_RATE_LIMIT_WINDOW_SECONDS = 15 * 60
+AUTH_RATE_LIMIT_MAX_ATTEMPTS = 10
+AUTH_THROTTLE_LOCK = threading.Lock()
+AUTH_THROTTLE_STATE: dict[str, list[float]] = {}
+
+KEY_METADATA_LOCK = threading.Lock()
+KEY_METADATA: dict[str, dict[str, Any]] = {}
+
+PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
+DASHBOARD_CARD_KEYS = (
+    "revenue",
+    "profit",
+    "momChange",
+    "analytics",
+    "avgOrderValue",
+    "inventoryMoved",
+    "customers",
+    "alerts",
+)
+ACTION_KEYS: dict[str, tuple[str, ...]] = {
+    "customers": ("create", "edit", "delete"),
+    "orders": ("create", "edit", "delete"),
+    "distribution": ("create", "edit", "delete", "complete"),
+    "expenses": ("create",),
+    "products": ("create", "edit", "delete"),
+    "settings": ("view", "manage"),
+    "marketing": ("view", "generate"),
+    "shipping": ("labels",),
+    "inventory": ("sync",),
+    "users": ("manage",),
+}
+
+
+def _validate_service_api_key_config() -> None:
+    known_keys = [
+        *[str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()],
+        *[str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()],
+        *SERVICE_API_KEYS,
+    ]
+    if not known_keys:
+        raise RuntimeError(
+            "At least one API key is required (WEBSITE_KEY/UI_HELPER_KEY/CRM_SERVICE_API_KEYS)."
+        )
+    weak = [key for key in known_keys if len(key) < 32]
+    if weak:
+        raise RuntimeError("Every API key value must be at least 32 characters for security.")
+    _warn_on_scope_key_overlap()
+
+
+def _warn_on_scope_key_overlap() -> None:
+    website_keys = {str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()}
+    ui_keys = {str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()}
+    service_keys = {str(k).strip() for k in SERVICE_API_KEYS if str(k).strip()}
+    overlaps: list[str] = []
+    if website_keys & ui_keys:
+        overlaps.append("WEBSITE_KEY <-> UI_HELPER_KEY")
+    if website_keys & service_keys:
+        overlaps.append("WEBSITE_KEY <-> CRM_SERVICE_API_KEYS")
+    if ui_keys & service_keys:
+        overlaps.append("UI_HELPER_KEY <-> CRM_SERVICE_API_KEYS")
+    if overlaps:
+        print(
+            f"[CRM][WARN] API key reuse detected across scopes: {', '.join(overlaps)}. "
+            "Use distinct keys per scope to avoid authorization ambiguity."
+        )
+
+
+def _extract_api_key(request: Request) -> str:
+    header_key = str(request.headers.get("x-api-key") or "").strip()
+    if header_key:
+        return header_key
+    auth_header = str(request.headers.get("authorization") or "").strip()
+    if auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return ""
+
+
+def _build_key_candidates() -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for idx, key in enumerate([str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"website_key_{idx}",
+                "owner": "ecommerce_backend",
+                "scope": "website",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate([str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()], start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"ui_helper_key_{idx}",
+                "owner": "ui_helper",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    for idx, key in enumerate(SERVICE_API_KEYS, start=1):
+        candidates.append(
+            {
+                "value": key,
+                "key_id": f"service_key_{idx}",
+                "owner": "internal_service",
+                "scope": "internal",
+                "created_at": None,
+                "expires_at": None,
+                "revoked_at": None,
+            }
+        )
+    return candidates
+
+
+def _is_loopback_client(request: Request) -> bool:
+    host = str((request.client.host if request.client else "") or "").strip()
+    return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def _resolve_api_key_meta(value: str, request: Request) -> dict[str, Any] | None:
+    if not value:
+        return None
+    matches = [row for row in _build_key_candidates() if hmac.compare_digest(value, str(row["value"]))]
+    if not matches:
+        return None
+    if len(matches) == 1:
+        return matches[0]
+    # When the same secret is accidentally reused across scopes, prefer internal
+    # scope for loopback service calls so CRM<->Inventory traffic is not blocked.
+    if _is_loopback_client(request):
+        internal = next((row for row in matches if str(row.get("scope")) != "website"), None)
+        if internal:
+            return internal
+    # For non-loopback callers, prefer website scope (most restrictive).
+    website = next((row for row in matches if str(row.get("scope")) == "website"), None)
+    if website:
+        return website
+    return matches[0]
+    return None
+
+
+def _track_key_usage(meta: dict[str, Any]) -> None:
+    key_id = str(meta.get("key_id") or "")
+    if not key_id:
+        return
+    now_ms = int(time.time() * 1000)
+    with KEY_METADATA_LOCK:
+        record = KEY_METADATA.get(key_id) or {
+            "key_id": key_id,
+            "owner": meta.get("owner"),
+            "scope": meta.get("scope"),
+            "created_at": meta.get("created_at"),
+            "expires_at": meta.get("expires_at"),
+            "revoked_at": meta.get("revoked_at"),
+            "last_used_at": None,
+        }
+        record["last_used_at"] = now_ms
+        KEY_METADATA[key_id] = record
+
+
+def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str]:
+    exact_routes: dict[str, set[str]] = {
+        "/api/website/auth/signup": {"POST"},
+        "/api/website/auth/login": {"POST"},
+        "/api/website/auth/google/check": {"POST"},
+        "/api/website/auth/google/signup": {"POST"},
+        "/api/website/coupons/validate": {"POST"},
+        "/api/website/orders": {"GET"},
+    }
+    if WEBSITE_ALLOW_ORDER_SYNC:
+        exact_routes["/api/website/orders/sync"] = {"POST"}
+
+    if path in exact_routes:
+        if method in exact_routes[path]:
+            return True, "ok"
+        return False, "auth_method_denied"
+
+    user_match = re.match(r"^/api/website/users/\d+$", path)
+    if user_match:
+        if method in {"GET", "PUT"}:
+            return True, "ok"
+        return False, "auth_method_denied"
+
+    return False, "auth_scope_denied"
+
+
+def _authz_audit_log(request: Request, meta: dict[str, Any] | None, allowed: bool, reason: str) -> None:
+    payload = {
+        "event": "authz",
+        "service": SERVICE_NAME,
+        "key_id": (meta or {}).get("key_id"),
+        "owner": (meta or {}).get("owner"),
+        "scope": (meta or {}).get("scope"),
+        "route": request.url.path,
+        "method": request.method.upper(),
+        "allow": bool(allowed),
+        "reason": reason,
+        "timestamp": int(time.time() * 1000),
+        "caller_ip": (request.client.host if request.client else ""),
+    }
+    print(json.dumps(payload, ensure_ascii=False))
+
+
+def _require_website_user_context(request: Request, expected_user_id: int) -> None:
+    raw = str(request.headers.get("x-website-user-id") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Missing website user context."})
+    try:
+        ctx_id = int(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Invalid website user context."})
+    if int(ctx_id) != int(expected_user_id):
+        raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Cross-user access is not allowed."})
+
+
+def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra or {})
+    if SERVICE_OUTBOUND_API_KEY:
+        headers["X-API-Key"] = SERVICE_OUTBOUND_API_KEY
+    return headers
+
+
+def _inventory_circuit_open() -> bool:
+    with INVENTORY_CIRCUIT_LOCK:
+        return time.time() < INVENTORY_CIRCUIT_UNTIL
+
+
+def _mark_inventory_failure(reason: str = "") -> None:
+    global INVENTORY_CIRCUIT_UNTIL
+    with INVENTORY_CIRCUIT_LOCK:
+        INVENTORY_CIRCUIT_UNTIL = time.time() + INVENTORY_BACKOFF_SECONDS
+    if reason:
+        print(f"[CRM] Inventory circuit open for {INVENTORY_BACKOFF_SECONDS}s: {reason}")
+
+
+def _mark_inventory_success() -> None:
+    global INVENTORY_CIRCUIT_UNTIL
+    with INVENTORY_CIRCUIT_LOCK:
+        INVENTORY_CIRCUIT_UNTIL = 0.0
+
+# ── Default initial data (used only when neither SQLite nor legacy JSON exist) ──────
+DEFAULT_DATA: dict = {
+    "customers": [],
+    "customerProductTags": [],
+    "orders": [],
+    "distributorBatches": [],
+    "distributionChannels": [],
+    "operationalExpenses": [],
+    "closedFollowUps": [],
+    "users": [],
+    "websiteUsers": [],
+    "authSessions": [],
+    "coupons": [],
+    "couponQuotes": [],
+    "cid": 1,
+    "oid": 1,
+    "dbid": 1,
+    "exid": 1,
+    "couponId": 1,
+    "couponQuoteId": 1,
+    "pid": 6,
+    "uid": 1,
+    "wuid": 1,
+    "waDefaultTpl": (
+        "Hi {{customer_name}}, your last order was on {{last_order_date}}. "
+        "Would you like to order {{product_name}} ({{variant}}) again? "
+        "We'd love to offer you a great deal!"
+    ),
+    "shippingProfile": {
+        "companyName": "",
+        "address": "",
+        "phone": "",
+        "email": "",
+        "gstin": "",
+        "shippedWaTemplate": (
+            "Hi {{customer_name}}, your order #{{order_id}} for {{product_name}} "
+            "has been shipped on {{ship_date}}.\n"
+            "AWB: {{awb}}\n"
+            "Courier: {{courier}}{{tracking_line}}"
+        ),
+        "paymentGatewayCommissionPct": 3.0,
+        "couriers": [],
+        "trackingTemplates": {},
+    },
+    "marketingSettings": {
+        "aiBaseUrl": "https://api.openai.com/v1",
+        "aiModel": "",
+        "aiApiKey": "",
+        "brandName": "",
+        "systemPrompt": (
+            "You are a concise marketing assistant for a premium coffee brand in India. "
+            "Write a warm, personalized WhatsApp message in plain text. Keep it short, "
+            "specific to the customer context, and include a clear but soft call to action. "
+            "Avoid markdown, hashtags, and overhyped claims."
+        ),
+    },
+    "products": [
+        {"id": "p1", "name": "Coorg Filter Coffee Powder", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p2", "name": "Coorg Pure Arabica",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p3", "name": "Coorg Dark Roast Blend",      "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p4", "name": "Chicory Blend",               "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p5", "name": "Instant Coffee Mix",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+    ],
+}
+
+
+def _auth_enabled() -> bool:
+    return bool(getattr(app_config, "USERNAME_PASSWORD_AUTH_ENABLED", False))
+
+
+def _rbac_enabled() -> bool:
+    return _auth_enabled() and bool(getattr(app_config, "ROLE_BASED_ACCESS_ENABLED", False))
+
+
+def _default_permissions_for_role(role: str) -> dict:
+    if role == "employee":
+        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "customers"} for key in PAGE_KEYS}
+        cards = {
+            "revenue": False,
+            "profit": False,
+            "momChange": True,
+            "analytics": True,
+            "avgOrderValue": False,
+            "inventoryMoved": True,
+            "customers": True,
+            "alerts": True,
+        }
+        actions = {
+            "customers": {"create": True, "edit": True, "delete": False},
+            "orders": {"create": True, "edit": True, "delete": False},
+            "distribution": {"create": False, "edit": False, "delete": False, "complete": False},
+            "expenses": {"create": False},
+            "products": {"create": False, "edit": False, "delete": False},
+            "settings": {"view": False, "manage": False},
+            "marketing": {"view": False, "generate": False},
+            "shipping": {"labels": True},
+            "inventory": {"sync": False},
+            "users": {"manage": False},
+        }
+    elif role == "partner":
+        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "marketing", "distribution", "customers"} for key in PAGE_KEYS}
+        cards = {key: True for key in DASHBOARD_CARD_KEYS}
+        actions = {
+            "customers": {"create": True, "edit": True, "delete": False},
+            "orders": {"create": True, "edit": True, "delete": False},
+            "distribution": {"create": True, "edit": True, "delete": False, "complete": True},
+            "expenses": {"create": False},
+            "products": {"create": False, "edit": False, "delete": False},
+            "settings": {"view": False, "manage": False},
+            "marketing": {"view": True, "generate": True},
+            "shipping": {"labels": True},
+            "inventory": {"sync": False},
+            "users": {"manage": False},
+        }
+    else:
+        pages = {key: True for key in PAGE_KEYS}
+        cards = {key: True for key in DASHBOARD_CARD_KEYS}
+        actions = {section: {action: True for action in keys} for section, keys in ACTION_KEYS.items()}
+    return {"pages": pages, "dashboardCards": cards, "actions": actions}
+
+
+def _normalize_permissions(role: str, raw: Any = None) -> dict:
+    base = _default_permissions_for_role(role)
+    if role == "admin":
+        return base
+    incoming = raw if isinstance(raw, dict) else {}
+    pages = incoming.get("pages") if isinstance(incoming.get("pages"), dict) else {}
+    cards = incoming.get("dashboardCards") if isinstance(incoming.get("dashboardCards"), dict) else {}
+    actions_in = incoming.get("actions") if isinstance(incoming.get("actions"), dict) else {}
+    for key in PAGE_KEYS:
+        if key in pages:
+            base["pages"][key] = bool(pages[key])
+    for key in DASHBOARD_CARD_KEYS:
+        if key in cards:
+            base["dashboardCards"][key] = bool(cards[key])
+    for section, keys in ACTION_KEYS.items():
+        section_in = actions_in.get(section) if isinstance(actions_in.get(section), dict) else {}
+        for key in keys:
+            if key in section_in:
+                base["actions"][section][key] = bool(section_in[key])
+    return base
+
+
+def _normalize_product_access(values: Any, known_products: list[dict]) -> list[str]:
+    allowed_ids = {str(p.get("id")) for p in known_products if isinstance(p, dict) and p.get("id")}
+    if not isinstance(values, list):
+        values = []
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        pid = str(raw or "").strip()
+        if not pid or pid not in allowed_ids or pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pid)
+    return out
+
+
+def _default_variant_cycle_days(variant: Any) -> int:
+    raw = str(variant or "").strip().lower()
+    if not raw:
+        return 10
+    match = re.match(r"^([0-9]*\.?[0-9]+)\s*(kg|g|l|ml|pcs)\s*$", raw)
+    if not match:
+        return 10
+    try:
+        qty = float(match.group(1) or 0)
+    except (TypeError, ValueError):
+        return 10
+    unit = str(match.group(2) or "").lower()
+    if qty <= 0:
+        return 10
+    if unit in {"kg", "g"}:
+        grams = qty * 1000 if unit == "kg" else qty
+        if grams <= 120:
+            return 7
+        if grams <= 300:
+            return 10
+        if grams <= 600:
+            return 14
+        if grams <= 1200:
+            return 30
+        return 45
+    if unit in {"l", "ml"}:
+        ml = qty * 1000 if unit == "l" else qty
+        if ml <= 120:
+            return 7
+        if ml <= 300:
+            return 10
+        if ml <= 600:
+            return 14
+        if ml <= 1200:
+            return 30
+        return 45
+    if unit == "pcs":
+        if qty <= 1:
+            return 7
+        if qty <= 3:
+            return 14
+        if qty <= 6:
+            return 21
+        return 30
+    return 10
+
+
+def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> dict:
+    if not isinstance(pricing, dict):
+        pricing = {}
+    normalized: dict[str, dict] = {}
+    size_values = [str(s or "").strip() for s in (sizes or []) if str(s or "").strip()]
+    for size, raw_row in pricing.items():
+        key = str(size or "").strip()
+        if not key:
+            continue
+        row = raw_row if isinstance(raw_row, dict) else {}
+        sale_prices = row.get("salePrices") or {}
+        if "salePrice" in row and "salePrices" not in row:
+            old = row.get("salePrice")
+            sale_prices = {"retail": old, "website": old, "whatsapp": old}
+        normalized_row = {
+            "salePrices": {
+                "retail": _safe_float((sale_prices or {}).get("retail")),
+                "website": _safe_float((sale_prices or {}).get("website")),
+                "whatsapp": _safe_float((sale_prices or {}).get("whatsapp")),
+            },
+            "expenses": [],
+            "reorderCycleDays": _default_variant_cycle_days(key),
+        }
+        expenses = row.get("expenses") or []
+        if isinstance(expenses, list):
+            normalized_row["expenses"] = [
+                {
+                    "name": str(e.get("name") or "").strip(),
+                    "cost": _safe_float(e.get("cost")),
+                }
+                for e in expenses
+                if isinstance(e, dict) and (str(e.get("name") or "").strip() or _safe_float(e.get("cost")) > 0)
+            ]
+        reorder_cycle_days = row.get("reorderCycleDays")
+        try:
+            reorder_cycle_days = int(float(reorder_cycle_days))
+        except (TypeError, ValueError):
+            reorder_cycle_days = normalized_row["reorderCycleDays"]
+        normalized_row["reorderCycleDays"] = reorder_cycle_days if reorder_cycle_days > 0 else normalized_row["reorderCycleDays"]
+        normalized[key] = normalized_row
+    for size in size_values:
+        normalized.setdefault(
+            size,
+            {
+                "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
+                "expenses": [],
+                "reorderCycleDays": _default_variant_cycle_days(size),
+            },
+        )
+    return normalized
+
+
+def _expense_creator_payload(user: dict | None) -> dict:
+    if not user:
+        return {"id": 0, "username": "local", "displayName": "Local User"}
+    return {
+        "id": int(user.get("id") or 0),
+        "username": str(user.get("username") or "").strip() or "unknown",
+        "displayName": str(user.get("displayName") or user.get("username") or "Unknown User").strip() or "Unknown User",
+    }
+
+
+def _normalize_operational_expense(raw: dict, fallback_id: int = 0) -> dict:
+    title = str(raw.get("title") or raw.get("name") or "").strip()
+    if not title:
+        title = "Operational Expense"
+    category = str(raw.get("category") or "").strip()
+    notes = str(raw.get("notes") or raw.get("note") or "").strip()
+    try:
+        amount = round(float(raw.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        amount = 0.0
+    if amount < 0:
+        amount = 0.0
+    expense_at = int(raw.get("expenseAt") or raw.get("at") or raw.get("createdAt") or int(time.time() * 1000))
+    created_at = int(raw.get("createdAt") or expense_at or int(time.time() * 1000))
+    creator = raw.get("createdBy") if isinstance(raw.get("createdBy"), dict) else {}
+    created_by = {
+        "id": int(creator.get("id") or raw.get("createdById") or 0),
+        "username": str(creator.get("username") or raw.get("createdByUsername") or "").strip() or "local",
+        "displayName": str(creator.get("displayName") or raw.get("createdByName") or "").strip() or "Local User",
+    }
+    return {
+        "id": int(raw.get("id") or fallback_id or 0),
+        "title": title,
+        "category": category,
+        "amount": amount,
+        "expenseAt": expense_at,
+        "createdAt": created_at,
+        "notes": notes,
+        "createdBy": created_by,
+    }
+
+
+def _normalize_username(value: Any) -> str:
+    return re.sub(r"\s+", "", str(value or "").strip().lower())
+
+
+def _password_hash(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    derived = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, PASSWORD_HASH_ITERATIONS)
+    return "pbkdf2_sha256${}${}${}".format(
+        PASSWORD_HASH_ITERATIONS,
+        base64.b64encode(salt).decode("ascii"),
+        base64.b64encode(derived).decode("ascii"),
+    )
+
+
+def _verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, iterations_raw, salt_b64, digest_b64 = str(encoded or "").split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_raw)
+        salt = base64.b64decode(salt_b64.encode("ascii"))
+        expected = base64.b64decode(digest_b64.encode("ascii"))
+    except Exception:
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
+
+
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _prune_expired_sessions(data: dict) -> None:
+    now = int(time.time())
+    data["authSessions"] = [
+        s for s in (data.get("authSessions", []) or [])
+        if isinstance(s, dict) and int(s.get("expiresAt") or 0) > now
+    ]
+
+
+def _create_session(data: dict, user_id: int) -> str:
+    _prune_expired_sessions(data)
+    token = secrets.token_urlsafe(32)
+    now = int(time.time())
+    data.setdefault("authSessions", []).append(
+        {
+            "tokenHash": _hash_session_token(token),
+            "userId": int(user_id),
+            "createdAt": now,
+            "expiresAt": now + AUTH_SESSION_TTL_SECONDS,
+            "lastSeenAt": now,
+        }
+    )
+    return token
+
+
+def _delete_session(data: dict, token: str) -> None:
+    hashed = _hash_session_token(token)
+    data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if s.get("tokenHash") != hashed]
+
+
+def _delete_sessions_for_user(data: dict, user_id: int) -> None:
+    data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if int(s.get("userId") or 0) != int(user_id)]
+
+
+def _request_is_https(request: Request) -> bool:
+    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    if forwarded_proto == "https":
+        return True
+    forwarded_ssl = str(request.headers.get("x-forwarded-ssl") or "").strip().lower()
+    if forwarded_ssl in {"on", "1", "true", "yes"}:
+        return True
+    return str(request.url.scheme or "").lower() == "https"
+
+
+def _set_auth_cookie(response: Response, token: str, request: Request) -> None:
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        token,
+        max_age=AUTH_SESSION_TTL_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_request_is_https(request),
+        path="/",
+    )
+
+
+def _clear_auth_cookie(response: Response) -> None:
+    response.delete_cookie(AUTH_COOKIE_NAME, path="/")
+
+
+def _auth_rate_limit_key(request: Request, username: Any) -> str:
+    forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_host = forwarded_for or str((request.client.host if request.client else "") or "unknown")
+    return f"{client_host}::{_normalize_username(username)}"
+
+
+def _enforce_auth_rate_limit(request: Request, username: Any) -> str:
+    key = _auth_rate_limit_key(request, username)
+    now = time.time()
+    with AUTH_THROTTLE_LOCK:
+        attempts = [ts for ts in AUTH_THROTTLE_STATE.get(key, []) if now - ts <= AUTH_RATE_LIMIT_WINDOW_SECONDS]
+        AUTH_THROTTLE_STATE[key] = attempts
+        if len(attempts) >= AUTH_RATE_LIMIT_MAX_ATTEMPTS:
+            raise HTTPException(
+                status_code=429,
+                detail="Too many authentication attempts. Please wait 15 minutes and try again.",
+            )
+    return key
+
+
+def _record_auth_failure(rate_limit_key: str) -> None:
+    now = time.time()
+    with AUTH_THROTTLE_LOCK:
+        attempts = [ts for ts in AUTH_THROTTLE_STATE.get(rate_limit_key, []) if now - ts <= AUTH_RATE_LIMIT_WINDOW_SECONDS]
+        attempts.append(now)
+        AUTH_THROTTLE_STATE[rate_limit_key] = attempts
+
+
+def _clear_auth_failures(rate_limit_key: str) -> None:
+    with AUTH_THROTTLE_LOCK:
+        AUTH_THROTTLE_STATE.pop(rate_limit_key, None)
+
+
+def _find_user_by_id(data: dict, user_id: Any) -> dict | None:
+    try:
+        numeric_id = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    return next((u for u in data.get("users", []) if int(u.get("id", 0)) == numeric_id), None)
+
+
+def _find_user_by_username(data: dict, username: Any) -> dict | None:
+    key = _normalize_username(username)
+    return next((u for u in data.get("users", []) if _normalize_username(u.get("username")) == key), None)
+
+
+def _auth_user_payload(user: dict | None) -> dict | None:
+    if not user:
+        return None
+    return {
+        "id": int(user.get("id", 0)),
+        "username": str(user.get("username") or ""),
+        "displayName": str(user.get("displayName") or user.get("username") or ""),
+        "role": str(user.get("role") or "admin"),
+        "allowedProductIds": list(user.get("allowedProductIds", []) or []),
+        "permissions": _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")),
+    }
+
+
+def _has_financial_access(user: dict | None) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    cards = _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")).get("dashboardCards", {})
+    return bool(cards.get("revenue") or cards.get("profit") or cards.get("avgOrderValue"))
+
+
+def _allowed_product_ids_for_user(user: dict | None, data: dict) -> set[str] | None:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return None
+    allowed = _normalize_product_access(user.get("allowedProductIds"), data.get("products", []) or [])
+    return set(allowed)
+
+
+def _user_can_view_page(user: dict | None, page: str) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    return bool(_normalize_permissions(str(user.get("role") or "admin"), user.get("permissions")).get("pages", {}).get(page, False))
+
+
+def _user_can_do(user: dict | None, section: str, action: str) -> bool:
+    if not user or not _rbac_enabled() or str(user.get("role") or "") == "admin":
+        return True
+    perms = _normalize_permissions(str(user.get("role") or "admin"), user.get("permissions"))
+    return bool(perms.get("actions", {}).get(section, {}).get(action, False))
+
+
+def _build_auth_context(data: dict, request: Request) -> dict:
+    if not _auth_enabled():
+        return {"enabled": False, "authenticated": True, "setupRequired": False, "user": None}
+    _prune_expired_sessions(data)
+    setup_required = not any(str(u.get("role") or "admin") == "admin" for u in data.get("users", []))
+    token = request.cookies.get(AUTH_COOKIE_NAME) or ""
+    if not token:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    hashed = _hash_session_token(token)
+    now = int(time.time())
+    session = next((s for s in data.get("authSessions", []) if s.get("tokenHash") == hashed and int(s.get("expiresAt") or 0) > now), None)
+    if not session:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    user = _find_user_by_id(data, session.get("userId"))
+    if not user:
+        return {"enabled": True, "authenticated": False, "setupRequired": setup_required, "user": None}
+    session["lastSeenAt"] = now
+    return {"enabled": True, "authenticated": True, "setupRequired": setup_required, "user": user}
+
+
+def _require_signed_in(request: Request, data: dict) -> dict:
+    ctx = _build_auth_context(data, request)
+    if not ctx["enabled"]:
+        return ctx
+    if ctx["setupRequired"]:
+        raise HTTPException(status_code=403, detail="Setup is required before sign in.")
+    if not ctx["authenticated"] or not ctx["user"]:
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    return ctx
+
+
+def _require_admin(request: Request, data: dict) -> dict:
+    ctx = _require_signed_in(request, data)
+    user = ctx.get("user")
+    if _rbac_enabled() and str(user.get("role") or "") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access is required.")
+    return ctx
+
+
+def _ensure_page_access(user: dict | None, page: str) -> None:
+    if not _user_can_view_page(user, page):
+        raise HTTPException(status_code=403, detail=f"Access denied for page '{page}'.")
+
+
+def _ensure_action_access(user: dict | None, section: str, action: str) -> None:
+    if not _user_can_do(user, section, action):
+        raise HTTPException(status_code=403, detail=f"Access denied for {section}:{action}.")
+
+
+def _ensure_product_scope(user: dict | None, data: dict, product_id: Any) -> None:
+    allowed = _allowed_product_ids_for_user(user, data)
+    if allowed is None:
+        return
+    if str(product_id or "") not in allowed:
+        raise HTTPException(status_code=403, detail="Access denied for this product.")
+
+
+def _customer_owner_user_id(customer: dict | None) -> int:
+    if not isinstance(customer, dict):
+        return 0
+    try:
+        return int(customer.get("createdByUserId") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _visible_customer_ids_for_user(user: dict | None, data: dict) -> set[int] | None:
+    allowed = _allowed_product_ids_for_user(user, data)
+    if allowed is None:
+        return None
+    visible_customer_ids = {
+        int(o.get("cid") or 0)
+        for o in data.get("orders", [])
+        if int(o.get("cid") or 0) > 0 and str(o.get("prodId") or "") in allowed
+    }
+    current_user_id = int((user or {}).get("id") or 0)
+    if current_user_id > 0:
+        visible_customer_ids.update(
+            int(c.get("id") or 0)
+            for c in data.get("customers", [])
+            if int(c.get("id") or 0) > 0 and _customer_owner_user_id(c) == current_user_id
+        )
+    return visible_customer_ids
+
+
+def _ensure_customer_scope(user: dict | None, data: dict, customer_id: Any) -> None:
+    visible_customer_ids = _visible_customer_ids_for_user(user, data)
+    if visible_customer_ids is None:
+        return
+    try:
+        cid = int(customer_id or 0)
+    except (TypeError, ValueError):
+        cid = 0
+    if cid not in visible_customer_ids:
+        raise HTTPException(status_code=403, detail="Access denied for this customer.")
+
+
+def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
+    safe = copy.deepcopy(data)
+    allowed_product_ids = _allowed_product_ids_for_user(user, data)
+    if allowed_product_ids is not None:
+        safe["products"] = [p for p in safe.get("products", []) if str(p.get("id")) in allowed_product_ids]
+        safe["orders"] = [o for o in safe.get("orders", []) if str(o.get("prodId")) in allowed_product_ids]
+        safe["distributorBatches"] = [b for b in safe.get("distributorBatches", []) if str(b.get("prodId")) in allowed_product_ids]
+        allowed_customer_ids = _visible_customer_ids_for_user(user, data) or set()
+        safe["customers"] = [c for c in safe.get("customers", []) if int(c.get("id") or 0) in allowed_customer_ids]
+        safe["closedFollowUps"] = [
+            r for r in safe.get("closedFollowUps", [])
+            if int(r.get("cid") or 0) in allowed_customer_ids and int(r.get("orderId") or 0) in {int(o.get("id") or 0) for o in safe.get("orders", [])}
+        ]
+    if not _has_financial_access(user):
+        for product in safe.get("products", []):
+            pricing = product.get("pricing") or {}
+            product["pricing"] = {
+                str(size): {"reorderCycleDays": _safe_float((row or {}).get("reorderCycleDays"))}
+                for size, row in pricing.items()
+                if isinstance(row, dict)
+            }
+        for order in safe.get("orders", []):
+            order["discount"] = None
+            order["commission"] = None
+            order["realizedRevenue"] = None
+        if isinstance(safe.get("shippingProfile"), dict):
+            safe["shippingProfile"]["paymentGatewayCommissionPct"] = 0.0
+        safe["operationalExpenses"] = []
+    elif not _user_can_view_page(user, "expenses"):
+        safe["operationalExpenses"] = []
+    if not _user_can_view_page(user, "settings"):
+        safe["coupons"] = []
+    safe.pop("users", None)
+    safe.pop("websiteUsers", None)
+    safe.pop("authSessions", None)
+    return safe
+
+
+def _filtered_order_response(data: dict, user: dict | None, order_id: int) -> dict:
+    filtered = _filtered_data_for_user(data, user)
+    order = next((o for o in filtered.get("orders", []) if int(o.get("id", 0)) == int(order_id)), None)
+    if order is None:
+        raise HTTPException(status_code=403, detail="Access denied for this order.")
+    return order
+
+
+def _auth_context_payload(data: dict, request: Request) -> dict:
+    ctx = _build_auth_context(data, request)
+    user_payload = _auth_user_payload(ctx.get("user"))
+    return {
+        "enabled": _auth_enabled(),
+        "roleModelEnabled": _rbac_enabled(),
+        "setupRequired": bool(ctx.get("setupRequired")),
+        "authenticated": bool(ctx.get("authenticated")),
+        "user": user_payload,
+    }
+
+
+def _sanitize_dashboard_metrics_for_user(metrics: dict, user: dict | None) -> dict:
+    safe = copy.deepcopy(metrics)
+    if _has_financial_access(user):
+        return safe
+    for key in ("revAll", "profAll", "revM", "profM", "mom", "yoy", "completedOrders", "ordersPerCustomer", "retentionPct"):
+        if key in safe:
+            safe[key] = None
+    return safe
+
+
+def _allowed_inventory_product_ids_for_user(user: dict | None, data: dict) -> set[str] | None:
+    allowed_product_ids = _allowed_product_ids_for_user(user, data)
+    if allowed_product_ids is None:
+        return None
+    allowed_inventory_ids: set[str] = set()
+    for product in data.get("products", []) or []:
+        if str(product.get("id") or "") not in allowed_product_ids:
+            continue
+        for row in product.get("composition", []) or []:
+            inv_id = str(row.get("inventoryProductId") or "").strip()
+            if inv_id:
+                allowed_inventory_ids.add(inv_id)
+    return allowed_inventory_ids
+
+
+def _normalize_user_record(raw: dict, data: dict, *, preserve_password_hash: str = "") -> dict:
+    username = _normalize_username(raw.get("username"))
+    if not username:
+        raise HTTPException(status_code=400, detail="Username is required.")
+    role = str(raw.get("role") or "admin").strip().lower()
+    if role not in {"admin", "partner", "employee"}:
+        role = "admin"
+    if not _rbac_enabled():
+        role = "admin"
+    record = {
+        "id": int(raw.get("id") or 0),
+        "username": username,
+        "displayName": str(raw.get("displayName") or username).strip() or username,
+        "role": role,
+        "allowedProductIds": _normalize_product_access(raw.get("allowedProductIds"), data.get("products", []) or []),
+        "permissions": _normalize_permissions(role, raw.get("permissions")),
+        "passwordHash": preserve_password_hash,
+        "createdAt": int(raw.get("createdAt") or int(time.time() * 1000)),
+        "updatedAt": int(time.time() * 1000),
+    }
+    if role == "admin":
+        record["allowedProductIds"] = []
+        record["permissions"] = _normalize_permissions("admin")
+    return record
+
+
+def _normalize_email(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "") -> dict:
+    email = _normalize_email(raw.get("email"))
+    phone = _normalize_customer_phone(raw.get("phone"))
+    if not email and not phone:
+        raise HTTPException(status_code=400, detail="Website user requires email or phone.")
+    now_ms = int(time.time() * 1000)
+    auth_provider = str(raw.get("authProvider") or raw.get("auth_provider") or "").strip().lower()
+    google_sub = str(raw.get("googleSub") or raw.get("google_sub") or "").strip()
+    if auth_provider not in {"password", "google"}:
+        auth_provider = "google" if google_sub and not preserve_password_hash else "password"
+    return {
+        "id": int(raw.get("id") or 0),
+        "email": email,
+        "phone": phone,
+        "name": str(raw.get("name") or "").strip(),
+        "area": str(raw.get("area") or "").strip(),
+        "address": str(raw.get("address") or "").strip(),
+        "notes": str(raw.get("notes") or "").strip(),
+        "customerId": int(raw.get("customerId") or 0),
+        "passwordHash": preserve_password_hash,
+        "authProvider": auth_provider,
+        "googleSub": google_sub,
+        "emailVerified": bool(raw.get("emailVerified", raw.get("email_verified", False))),
+        "isActive": bool(raw.get("isActive", True)),
+        "createdAt": int(raw.get("createdAt") or now_ms),
+        "updatedAt": now_ms,
+        "lastLoginAt": int(raw.get("lastLoginAt") or 0),
+    }
+
+# ── Data helpers ────────────────────────────────────────────────────────────
+def _connect_db() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_FILE, timeout=30)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=5000")
+    return conn
+
+
+def _json_serialize(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _load_state_from_db(conn: sqlite3.Connection) -> dict:
+    rows = conn.execute("SELECT section, value FROM app_state_sections").fetchall()
+    data: dict = {}
+    for section, payload in rows:
+        data[section] = json.loads(payload)
+    return data
+
+
+def _save_state_to_db(conn: sqlite3.Connection, old_data: dict, new_data: dict) -> None:
+    now = int(time.time())
+    old_keys = set(old_data.keys())
+    new_keys = set(new_data.keys())
+
+    for section in old_keys - new_keys:
+        conn.execute("DELETE FROM app_state_sections WHERE section = ?", (section,))
+
+    for section in new_keys:
+        new_payload = _json_serialize(new_data[section])
+        if section in old_data and _json_serialize(old_data[section]) == new_payload:
+            continue
+        conn.execute(
+            """
+            INSERT INTO app_state_sections (section, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(section) DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (section, new_payload, now),
+        )
+
+
+def _set_schema_version(conn: sqlite3.Connection, version: int) -> None:
+    conn.execute(
+        """
+        INSERT INTO app_meta (key, value)
+        VALUES ('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        """,
+        (str(version),),
+    )
+
+
+def _get_schema_version(conn: sqlite3.Connection) -> int:
+    row = conn.execute("SELECT value FROM app_meta WHERE key = 'schema_version'").fetchone()
+    if not row:
+        return 0
+    try:
+        return int(row[0])
+    except (TypeError, ValueError):
+        return 0
+
+
+def _init_storage() -> None:
+    global DATA_CACHE
+    with DATA_LOCK:
+        with _connect_db() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_state_sections (
+                    section TEXT PRIMARY KEY,
+                    value TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS app_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_app_state_sections_updated_at ON app_state_sections(updated_at)"
+            )
+
+            section_count = conn.execute("SELECT COUNT(1) FROM app_state_sections").fetchone()[0]
+            if section_count == 0:
+                seed_data: dict | None = None
+                legacy_row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name='app_state'"
+                ).fetchone()
+                if legacy_row:
+                    row = conn.execute(
+                        "SELECT value FROM app_state WHERE key = ?",
+                        (STATE_KEY,),
+                    ).fetchone()
+                    if row:
+                        seed_data = json.loads(row[0])
+                if seed_data is None and LEGACY_DATA_FILE.exists():
+                    with open(LEGACY_DATA_FILE, "r", encoding="utf-8") as f:
+                        seed_data = json.load(f)
+                if seed_data is None:
+                    seed_data = copy.deepcopy(DEFAULT_DATA)
+                seed_data = migrate(seed_data)
+                _save_state_to_db(conn, {}, seed_data)
+                _set_schema_version(conn, SCHEMA_VERSION)
+                DATA_CACHE = copy.deepcopy(seed_data)
+                return
+
+            db_state = _load_state_from_db(conn)
+            schema_version = _get_schema_version(conn)
+            if schema_version < SCHEMA_VERSION:
+                migrated = migrate(copy.deepcopy(db_state))
+                _save_state_to_db(conn, db_state, migrated)
+                _set_schema_version(conn, SCHEMA_VERSION)
+                DATA_CACHE = copy.deepcopy(migrated)
+            elif DATA_CACHE is None:
+                DATA_CACHE = copy.deepcopy(db_state)
+
+
+def read_data() -> dict:
+    """Read app data from SQLite with an in-memory read cache."""
+    global DATA_CACHE
+    _init_storage()
+    with DATA_LOCK:
+        with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                return copy.deepcopy(_load_state_from_db(conn))
+            if DATA_CACHE is None:
+                DATA_CACHE = _load_state_from_db(conn)
+            return copy.deepcopy(DATA_CACHE)
+
+
+def write_data(data: dict) -> None:
+    """Persist app data, writing only changed top-level sections."""
+    global DATA_CACHE
+    _init_storage()
+    migrated = migrate(copy.deepcopy(data))
+    with DATA_LOCK:
+        with _connect_db() as conn:
+            if DISABLE_IN_MEMORY_CACHE:
+                current = _load_state_from_db(conn)
+            else:
+                current = copy.deepcopy(DATA_CACHE) if DATA_CACHE is not None else _load_state_from_db(conn)
+            _save_state_to_db(conn, current, migrated)
+            _set_schema_version(conn, SCHEMA_VERSION)
+        if DISABLE_IN_MEMORY_CACHE:
+            DATA_CACHE = None
+        else:
+            DATA_CACHE = migrated
+    with DASHBOARD_CACHE_LOCK:
+        DASHBOARD_METRICS_CACHE["expires_at"] = 0.0
+        DASHBOARD_METRICS_CACHE["payload"] = None
+
+
+def migrate(data: dict) -> dict:
+    """Apply any schema migrations in-place and return the data."""
+    # Ensure top-level lists exist
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons", "couponQuotes"):
+        if key not in data:
+            data[key] = []
+    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid", "couponId", "couponQuoteId"):
+        if key not in data:
+            data[key] = 1
+    if "pid" not in data:
+        data["pid"] = len(data["products"]) + 1
+    if "waDefaultTpl" not in data:
+        data["waDefaultTpl"] = DEFAULT_DATA["waDefaultTpl"]
+    if "shippingProfile" not in data or not isinstance(data.get("shippingProfile"), dict):
+        data["shippingProfile"] = copy.deepcopy(DEFAULT_DATA["shippingProfile"])
+    if "marketingSettings" not in data or not isinstance(data.get("marketingSettings"), dict):
+        data["marketingSettings"] = copy.deepcopy(DEFAULT_DATA["marketingSettings"])
+    ms = data["marketingSettings"]
+    if "aiBaseUrl" not in ms or not isinstance(ms.get("aiBaseUrl"), str):
+        ms["aiBaseUrl"] = DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+    if "aiModel" not in ms or not isinstance(ms.get("aiModel"), str):
+        ms["aiModel"] = DEFAULT_DATA["marketingSettings"]["aiModel"]
+    if "aiApiKey" not in ms or not isinstance(ms.get("aiApiKey"), str):
+        ms["aiApiKey"] = DEFAULT_DATA["marketingSettings"]["aiApiKey"]
+    if "brandName" not in ms or not isinstance(ms.get("brandName"), str):
+        ms["brandName"] = DEFAULT_DATA["marketingSettings"]["brandName"]
+    if "systemPrompt" not in ms or not isinstance(ms.get("systemPrompt"), str):
+        ms["systemPrompt"] = DEFAULT_DATA["marketingSettings"]["systemPrompt"]
+    if "trackingTemplates" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("trackingTemplates"), dict):
+        data["shippingProfile"]["trackingTemplates"] = {}
+    if "shippedWaTemplate" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("shippedWaTemplate"), str):
+        data["shippingProfile"]["shippedWaTemplate"] = DEFAULT_DATA["shippingProfile"]["shippedWaTemplate"]
+    try:
+        data["shippingProfile"]["paymentGatewayCommissionPct"] = float(
+            data["shippingProfile"].get(
+                "paymentGatewayCommissionPct",
+                DEFAULT_DATA["shippingProfile"]["paymentGatewayCommissionPct"],
+            )
+            or 0
+        )
+    except (TypeError, ValueError):
+        data["shippingProfile"]["paymentGatewayCommissionPct"] = DEFAULT_DATA["shippingProfile"]["paymentGatewayCommissionPct"]
+    if data["shippingProfile"]["paymentGatewayCommissionPct"] < 0:
+        data["shippingProfile"]["paymentGatewayCommissionPct"] = 0.0
+    if "couriers" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("couriers"), list):
+        data["shippingProfile"]["couriers"] = _couriers_from_templates(data["shippingProfile"]["trackingTemplates"])
+    data["shippingProfile"]["couriers"] = _normalize_couriers(data["shippingProfile"]["couriers"])
+    if not data["shippingProfile"]["trackingTemplates"] and data["shippingProfile"]["couriers"]:
+        data["shippingProfile"]["trackingTemplates"] = {
+            c["name"]: c.get("trackingTemplate", "") for c in data["shippingProfile"]["couriers"]
+        }
+    normalized_expenses: list[dict] = []
+    for idx, raw_expense in enumerate(data.get("operationalExpenses", []) or [], start=1):
+        if not isinstance(raw_expense, dict):
+            continue
+        normalized_expenses.append(_normalize_operational_expense(raw_expense, idx))
+    data["operationalExpenses"] = sorted(
+        normalized_expenses,
+        key=lambda row: int(row.get("createdAt") or row.get("expenseAt") or 0),
+        reverse=True,
+    )
+    next_expense_id = max([int(e.get("id") or 0) for e in data["operationalExpenses"]] + [0]) + 1
+    data["exid"] = max(int(data.get("exid") or 1), next_expense_id)
+
+    normalized_coupons: list[dict] = []
+    seen_coupon_codes: set[str] = set()
+    for idx, raw_coupon in enumerate(data.get("coupons", []) or [], start=1):
+        if not isinstance(raw_coupon, dict):
+            continue
+        coupon = _normalize_coupon(raw_coupon, fallback_id=idx)
+        code_key = str(coupon.get("code") or "").upper()
+        if not code_key or code_key in seen_coupon_codes:
+            continue
+        seen_coupon_codes.add(code_key)
+        normalized_coupons.append(coupon)
+    data["coupons"] = sorted(normalized_coupons, key=lambda row: int(row.get("id") or 0))
+    next_coupon_id = max([int(c.get("id") or 0) for c in data["coupons"]] + [0]) + 1
+    data["couponId"] = max(int(data.get("couponId") or 1), next_coupon_id)
+
+    # Migrate old salePrice → salePrices
+    for p in data["products"]:
+        if "waTpl" not in p:
+            p["waTpl"] = ""
+        if "pricing" not in p:
+            p["pricing"] = {}
+        p["composition"] = _normalize_composition(p.get("composition", []))
+        p["pricing"] = _normalize_product_pricing(p.get("pricing", {}), p.get("sizes", []))
+
+    # Ensure all orders have required fields
+    for o in data["orders"]:
+        if "channel" not in o:
+            o["channel"] = "retail"
+        if "status" not in o:
+            o["status"] = "pending" if o.get("channel") in ("website", "whatsapp") else "confirmed"
+        if "discount" not in o:
+            o["discount"] = 0
+        if "commission" not in o:
+            o["commission"] = 0
+        if "paymentMethod" not in o:
+            o["paymentMethod"] = ""
+        if "inventorySynced" not in o:
+            o["inventorySynced"] = False
+        if "inventorySyncedAt" not in o:
+            o["inventorySyncedAt"] = None
+        if "shipping" not in o or not isinstance(o.get("shipping"), dict):
+            o["shipping"] = {}
+        if "realizedRevenue" not in o:
+            o["realizedRevenue"] = None
+        if "distribution" not in o or not isinstance(o.get("distribution"), dict):
+            o["distribution"] = {}
+        if "websiteOrderId" not in o:
+            o["websiteOrderId"] = ""
+        if "websiteCartId" not in o:
+            o["websiteCartId"] = str(o.get("websiteOrderId") or "").strip()
+        if "websiteOrderItemId" not in o:
+            o["websiteOrderItemId"] = ""
+        if "websiteUserId" not in o:
+            o["websiteUserId"] = 0
+        if "subscriptionFrequency" not in o:
+            o["subscriptionFrequency"] = ""
+        if "subscriptionDuration" not in o:
+            o["subscriptionDuration"] = ""
+        if "subscriptionTag" not in o:
+            o["subscriptionTag"] = ""
+        if "notes" not in o:
+            o["notes"] = ""
+        if "websiteStatusOriginal" not in o:
+            o["websiteStatusOriginal"] = ""
+        if "couponCode" not in o:
+            o["couponCode"] = ""
+        if "couponId" not in o:
+            o["couponId"] = None
+        if "couponDiscountType" not in o:
+            o["couponDiscountType"] = ""
+        if "couponDiscountValue" not in o:
+            o["couponDiscountValue"] = 0
+        if "couponMinCartValue" not in o:
+            o["couponMinCartValue"] = 0
+        # Migrate old delivered/payment_received → completed
+        if o["status"] in ("delivered", "payment_received"):
+            o["status"] = "completed"
+
+    for b in data["distributorBatches"]:
+        if "status" not in b:
+            b["status"] = "active"
+        if "commissionMode" not in b:
+            b["commissionMode"] = "per_pcs"
+        if b["commissionMode"] not in ("per_pcs", "batch"):
+            b["commissionMode"] = "per_pcs"
+        try:
+            b["commission"] = float(b.get("commission", 0) or 0)
+        except (TypeError, ValueError):
+            b["commission"] = 0.0
+        if b["commission"] < 0:
+            b["commission"] = 0.0
+        try:
+            b["qty"] = max(1, int(b.get("qty", 1) or 1))
+        except (TypeError, ValueError):
+            b["qty"] = 1
+        if "amountCollected" not in b:
+            b["amountCollected"] = None
+        if "paymentMethod" not in b:
+            b["paymentMethod"] = ""
+        if "completedAt" not in b:
+            b["completedAt"] = None
+        if "orderId" not in b:
+            b["orderId"] = None
+
+    if "distributionChannels" not in data or not isinstance(data.get("distributionChannels"), list):
+        data["distributionChannels"] = []
+    seeded_channels = list(data.get("distributionChannels", []))
+    seeded_channels.extend([b.get("distributorName", "") for b in data["distributorBatches"]])
+    data["distributionChannels"] = _normalize_distribution_channels(seeded_channels)
+    if "customerProductTags" not in data or not isinstance(data.get("customerProductTags"), list):
+        data["customerProductTags"] = []
+
+    cleaned_closed: list[dict] = []
+    for row in data.get("closedFollowUps", []):
+        if not isinstance(row, dict):
+            continue
+        try:
+            cid = int(row.get("cid", 0) or 0)
+            order_id = int(row.get("orderId", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid <= 0 or order_id <= 0:
+            continue
+        cleaned_closed.append(
+            {
+                "cid": cid,
+                "orderId": order_id,
+                "note": str(row.get("note", "") or "").strip(),
+                "closedAt": int(row.get("closedAt") or int(time.time() * 1000)),
+            }
+        )
+    data["closedFollowUps"] = cleaned_closed
+
+    for c in data["customers"]:
+        c["source"] = _normalize_customer_source(c.get("source"))
+        if "importBatchId" not in c:
+            c["importBatchId"] = ""
+        if "notes" not in c:
+            c["notes"] = ""
+        c["phone"] = _normalize_customer_phone(c.get("phone"))
+        c["productTags"] = _normalize_customer_product_tags(c.get("productTags", []))
+        try:
+            c["createdByUserId"] = int(c.get("createdByUserId") or 0)
+        except (TypeError, ValueError):
+            c["createdByUserId"] = 0
+        c["createdByUsername"] = str(c.get("createdByUsername") or "").strip()
+        c["createdByName"] = str(c.get("createdByName") or c.get("createdByUsername") or "").strip()
+    _add_customer_product_tags(data, [tag for c in data["customers"] for tag in c.get("productTags", [])])
+
+    normalized_users: list[dict] = []
+    highest_uid = int(data.get("uid", 1) or 1)
+    for idx, raw_user in enumerate(data.get("users", []) or [], start=1):
+        if not isinstance(raw_user, dict):
+            continue
+        password_hash = str(raw_user.get("passwordHash") or "").strip()
+        if not password_hash:
+            continue
+        merged = _normalize_user_record(
+            {
+                **raw_user,
+                "id": int(raw_user.get("id") or idx),
+                "createdAt": int(raw_user.get("createdAt") or int(time.time() * 1000)),
+            },
+            data,
+            preserve_password_hash=password_hash,
+        )
+        highest_uid = max(highest_uid, int(merged["id"]) + 1)
+        normalized_users.append(merged)
+    data["users"] = normalized_users
+    data["uid"] = max(highest_uid, int(data.get("uid", 1) or 1))
+
+    normalized_website_users: list[dict] = []
+    highest_wuid = int(data.get("wuid", 1) or 1)
+    for idx, raw_user in enumerate(data.get("websiteUsers", []) or [], start=1):
+        if not isinstance(raw_user, dict):
+            continue
+        password_hash = str(raw_user.get("passwordHash") or "").strip()
+        google_sub = str(raw_user.get("googleSub") or raw_user.get("google_sub") or "").strip()
+        auth_provider = str(raw_user.get("authProvider") or raw_user.get("auth_provider") or "").strip().lower()
+        if not password_hash and not (auth_provider == "google" or google_sub):
+            continue
+        merged = _normalize_website_user_record(
+            {
+                **raw_user,
+                "id": int(raw_user.get("id") or idx),
+                "createdAt": int(raw_user.get("createdAt") or int(time.time() * 1000)),
+            },
+            preserve_password_hash=password_hash,
+        )
+        highest_wuid = max(highest_wuid, int(merged["id"]) + 1)
+        normalized_website_users.append(merged)
+    data["websiteUsers"] = normalized_website_users
+    data["wuid"] = max(highest_wuid, int(data.get("wuid", 1) or 1))
+    _prune_expired_sessions(data)
+
+    return data
+
+
+def _normalize_commission_mode(raw: Any) -> str:
+    return "batch" if str(raw or "").strip().lower() == "batch" else "per_pcs"
+
+
+def _normalize_distribution_channels(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        name = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _normalize_customer_product_tags(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        values = [values]
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        name = re.sub(r"\s+", " ", str(raw or "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(name)
+    return out
+
+
+def _add_customer_product_tags(data: dict, tags: Any) -> None:
+    existing = list(data.get("customerProductTags", []))
+    existing.extend(_normalize_customer_product_tags(tags))
+    data["customerProductTags"] = _normalize_customer_product_tags(existing)
+
+
+def _add_distribution_channel(data: dict, channel_name: Any) -> None:
+    existing = list(data.get("distributionChannels", []))
+    existing.append(channel_name)
+    data["distributionChannels"] = _normalize_distribution_channels(existing)
+
+
+def _normalize_customer_source(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in ("website", "web", "site"):
+        return "website"
+    return "bulk_import" if raw in ("bulk_import", "bulk", "import") else "manual"
+
+
+def _normalize_customer_phone(phone: Any) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    return digits
+
+
+def _build_customer(
+    cid: int,
+    name: str,
+    phone: str,
+    area: str,
+    email: str = "",
+    address: str = "",
+    notes: str = "",
+    at: Any = None,
+    source: str = "manual",
+    import_batch_id: str = "",
+    created_by_user: dict | None = None,
+    product_tags: Any = None,
+) -> dict:
+    creator = created_by_user or {}
+    return {
+        "id": cid,
+        "name": str(name or "").strip(),
+        "phone": _normalize_customer_phone(phone),
+        "area": str(area or "").strip(),
+        "email": str(email or "").strip(),
+        "address": str(address or "").strip(),
+        "notes": str(notes or "").strip(),
+        "at": at,
+        "source": _normalize_customer_source(source),
+        "importBatchId": str(import_batch_id or "").strip(),
+        "productTags": _normalize_customer_product_tags(product_tags),
+        "createdByUserId": int(creator.get("id") or 0),
+        "createdByUsername": str(creator.get("username") or "").strip(),
+        "createdByName": str(creator.get("displayName") or creator.get("username") or "").strip(),
+    }
+
+
+def _website_user_public_payload(user: dict) -> dict:
+    return {
+        "id": int(user.get("id") or 0),
+        "email": _normalize_email(user.get("email")),
+        "phone": _normalize_customer_phone(user.get("phone")),
+        "name": str(user.get("name") or "").strip(),
+        "area": str(user.get("area") or "").strip(),
+        "address": str(user.get("address") or "").strip(),
+        "notes": str(user.get("notes") or "").strip(),
+        "customerId": int(user.get("customerId") or 0),
+        "isActive": bool(user.get("isActive", True)),
+        "createdAt": int(user.get("createdAt") or 0),
+        "updatedAt": int(user.get("updatedAt") or 0),
+        "lastLoginAt": int(user.get("lastLoginAt") or 0),
+        "authProvider": str(user.get("authProvider") or "password").strip() or "password",
+    }
+
+
+def _find_website_user(data: dict, *, website_user_id: int = 0, email: str = "", phone: str = "") -> dict | None:
+    normalized_email = _normalize_email(email)
+    normalized_phone = _normalize_customer_phone(phone)
+    for row in data.get("websiteUsers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if website_user_id and int(row.get("id") or 0) == int(website_user_id):
+            return row
+        if normalized_email and _normalize_email(row.get("email")) == normalized_email:
+            return row
+        if normalized_phone and _normalize_customer_phone(row.get("phone")) == normalized_phone:
+            return row
+    return None
+
+
+def _upsert_customer_for_website_user(data: dict, user: dict) -> int:
+    phone = _normalize_customer_phone(user.get("phone"))
+    email = _normalize_email(user.get("email"))
+    idx = None
+    if phone:
+        idx = next((i for i, c in enumerate(data.get("customers", [])) if _normalize_customer_phone(c.get("phone")) == phone), None)
+    if idx is None and email:
+        idx = next((i for i, c in enumerate(data.get("customers", [])) if _normalize_email(c.get("email")) == email), None)
+
+    if idx is None:
+        customer = _build_customer(
+            int(data.get("cid") or 1),
+            user.get("name") or "Website Customer",
+            phone,
+            user.get("area") or "",
+            email=email,
+            address=user.get("address") or "",
+            notes=user.get("notes") or "",
+            at=int(time.time() * 1000),
+            source="website",
+            product_tags=[],
+        )
+        data.setdefault("customers", []).append(customer)
+        data["cid"] = int(data.get("cid") or 1) + 1
+        return int(customer["id"])
+
+    existing = data["customers"][idx]
+    existing["name"] = str(user.get("name") or existing.get("name") or "").strip()
+    if phone:
+        existing["phone"] = phone
+    if email:
+        existing["email"] = email
+    existing["area"] = str(user.get("area") or existing.get("area") or "").strip()
+    existing["address"] = str(user.get("address") or existing.get("address") or "").strip()
+    existing["notes"] = str(user.get("notes") or existing.get("notes") or "").strip()
+    existing["source"] = "website"
+    return int(existing.get("id") or 0)
+
+
+def _normalize_website_order_status(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"completed", "success", "delivered", "paid", "captured"}:
+        return "completed"
+    if raw in {"confirmed"}:
+        return "confirmed"
+    if raw in {"cancelled", "canceled", "failed"}:
+        return "cancelled"
+    if raw in {"active", "processing", "in_progress", "pending"}:
+        return "pending"
+    return "pending"
+
+
+def _normalize_subscription_value(value: Any, max_len: int = 80) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"\s+", " ", text)
+    return text[:max_len]
+
+
+def _order_subscription_payload(order: dict) -> dict:
+    frequency = _normalize_subscription_value(order.get("subscriptionFrequency"), max_len=80)
+    duration = _normalize_subscription_value(order.get("subscriptionDuration"), max_len=80)
+    tag = _normalize_subscription_value(order.get("subscriptionTag"), max_len=140)
+    if not tag:
+        tag = _normalize_subscription_value(order.get("notes"), max_len=140)
+    if not tag and (frequency or duration):
+        if frequency and duration:
+            tag = f"{frequency}. {duration} plan"
+        elif frequency:
+            tag = frequency
+        else:
+            tag = duration
+    return {
+        "frequency": frequency,
+        "duration": duration,
+        "tag": tag,
+    }
+
+
+def _website_safe_order_payload(order: dict) -> dict:
+    subscription = _order_subscription_payload(order)
+    return {
+        "id": int(order.get("id") or 0),
+        "websiteOrderId": str(order.get("websiteOrderId") or "").strip(),
+        "websiteCartId": str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip(),
+        "websiteOrderItemId": str(order.get("websiteOrderItemId") or "").strip(),
+        "websiteUserId": int(order.get("websiteUserId") or 0),
+        "customerId": int(order.get("cid") or 0),
+        "customerName": str(order.get("cname") or "").strip(),
+        "customerPhone": str(order.get("cphone") or "").strip(),
+        "customerArea": str(order.get("carea") or "").strip(),
+        "productId": str(order.get("prodId") or "").strip(),
+        "productName": str(order.get("prod") or "").strip(),
+        "variant": str(order.get("variant") or "").strip(),
+        "qty": float(order.get("qty") or 0),
+        "status": str(order.get("status") or "").strip(),
+        "channel": str(order.get("channel") or "website").strip(),
+        "paymentMethod": str(order.get("paymentMethod") or "").strip(),
+        "at": int(order.get("at") or 0),
+        "shipping": order.get("shipping", {}) if isinstance(order.get("shipping"), dict) else {},
+        "subscription": subscription,
+        "notes": str(order.get("notes") or "").strip(),
+        "discount": _safe_float(order.get("discount")),
+        "couponCode": _normalize_coupon_code(order.get("couponCode")),
+        "couponId": order.get("couponId"),
+        "couponDiscountType": str(order.get("couponDiscountType") or "").strip(),
+        "couponDiscountValue": _safe_float(order.get("couponDiscountValue")),
+        "couponMinCartValue": _safe_float(order.get("couponMinCartValue")),
+        "realizedRevenue": order.get("realizedRevenue"),
+        "websiteStatusOriginal": str(order.get("websiteStatusOriginal") or "").strip(),
+    }
+
+
+def _extract_vcf_value(line: str) -> str:
+    if ":" not in line:
+        return ""
+    return line.split(":", 1)[1].strip()
+
+
+def _parse_vcf_contacts(vcf_text: str) -> list[dict]:
+    contacts: list[dict] = []
+    blocks = re.findall(r"BEGIN:VCARD(.*?)END:VCARD", vcf_text, flags=re.IGNORECASE | re.DOTALL)
+    for block in blocks:
+        lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+        name = ""
+        phone = ""
+        email = ""
+        address = ""
+        area = ""
+        for ln in lines:
+            up = ln.upper()
+            if up.startswith("FN"):
+                name = _extract_vcf_value(ln)
+            elif up.startswith("N:") and not name:
+                raw = _extract_vcf_value(ln)
+                parts = [p for p in raw.split(";") if p]
+                if parts:
+                    name = " ".join(parts[::-1]).strip()
+            elif up.startswith("TEL") and not phone:
+                phone = _extract_vcf_value(ln)
+            elif up.startswith("EMAIL") and not email:
+                email = _extract_vcf_value(ln)
+            elif up.startswith("ADR") and not address:
+                adr = _extract_vcf_value(ln)
+                adr_parts = [p.strip() for p in adr.split(";") if p.strip()]
+                address = ", ".join(adr_parts)
+                if adr_parts:
+                    area = adr_parts[1] if len(adr_parts) >= 2 else adr_parts[-1]
+        if name and phone:
+            contacts.append(
+                {
+                    "name": name.strip(),
+                    "phone": _normalize_customer_phone(phone),
+                    "area": area.strip(),
+                    "email": email.strip(),
+                    "address": address.strip(),
+                }
+            )
+    return contacts
+
+
+def _guess_row_value(row: dict, keys: list[str]) -> str:
+    for k in keys:
+        for rk, rv in row.items():
+            norm = str(rk or "").strip().lower().replace("_", "").replace(" ", "")
+            if norm == k:
+                return str(rv or "").strip()
+    return ""
+
+
+def _parse_excel_contacts(file_bytes: bytes) -> list[dict]:
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excel import requires openpyxl: {exc}") from exc
+    wb = openpyxl.load_workbook(BytesIO(file_bytes), data_only=True)
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [str(h or "").strip() for h in rows[0]]
+    contacts: list[dict] = []
+    for vals in rows[1:]:
+        row = {headers[i]: (vals[i] if i < len(vals) else "") for i in range(len(headers))}
+        name = _guess_row_value(row, ["name", "customername", "fullname", "clientname"])
+        phone = _guess_row_value(row, ["phone", "mobile", "phonenumber", "contact", "whatsapp", "whatsappnumber"])
+        if not name or not phone:
+            continue
+        area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
+        email = _guess_row_value(row, ["email", "mail", "emailid"])
+        address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        notes = _guess_row_value(row, ["notes", "note", "remarks", "comment"])
+        tags_raw = _guess_row_value(row, ["tags", "tag", "producttags", "customertags"])
+        source = _guess_row_value(row, ["source"])
+        contacts.append(
+            {
+                "name": name.strip(),
+                "phone": _normalize_customer_phone(phone),
+                "area": area.strip(),
+                "email": email.strip(),
+                "address": address.strip(),
+                "notes": notes.strip(),
+                "productTags": _normalize_customer_product_tags(re.split(r"[,\n;|]+", tags_raw)) if tags_raw else [],
+                "source": source.strip() or "bulk_import",
+            }
+        )
+    return contacts
+
+
+def _parse_csv_contacts(file_bytes: bytes) -> list[dict]:
+    text = file_bytes.decode("utf-8-sig", errors="ignore")
+    rdr = csv.DictReader(text.splitlines())
+    contacts: list[dict] = []
+    for row in rdr:
+        name = _guess_row_value(row, ["name", "customername", "fullname", "clientname"])
+        phone = _guess_row_value(row, ["phone", "mobile", "phonenumber", "contact", "whatsapp", "whatsappnumber"])
+        if not name or not phone:
+            continue
+        area = _guess_row_value(row, ["area", "locality", "city", "location", "place"])
+        email = _guess_row_value(row, ["email", "mail", "emailid"])
+        address = _guess_row_value(row, ["address", "fulladdress", "street"])
+        notes = _guess_row_value(row, ["notes", "note", "remarks", "comment"])
+        tags_raw = _guess_row_value(row, ["tags", "tag", "producttags", "customertags"])
+        source = _guess_row_value(row, ["source"])
+        contacts.append(
+            {
+                "name": name.strip(),
+                "phone": _normalize_customer_phone(phone),
+                "area": area.strip(),
+                "email": email.strip(),
+                "address": address.strip(),
+                "notes": notes.strip(),
+                "productTags": _normalize_customer_product_tags(re.split(r"[,\n;|]+", tags_raw)) if tags_raw else [],
+                "source": source.strip() or "bulk_import",
+            }
+        )
+    return contacts
+
+
+def _client_safe_data(data: dict, request: Request | None = None, auth_source_data: dict | None = None) -> dict:
+    """Return payload safe for frontend (avoid returning raw API key)."""
+    safe = copy.deepcopy(data)
+    if isinstance(safe.get("coupons"), list):
+        safe["coupons"] = [
+            _coupon_public_payload(c, _coupon_usage_count(data, c))
+            for c in safe.get("coupons", [])
+            if isinstance(c, dict)
+        ]
+    ms = safe.get("marketingSettings")
+    if isinstance(ms, dict):
+        raw_key = str(ms.get("aiApiKey") or "").strip()
+        ms["hasApiKey"] = bool(raw_key)
+        ms["apiKeyPreview"] = ("*" * max(0, len(raw_key) - 4)) + raw_key[-4:] if raw_key else ""
+        ms["aiApiKey"] = ""
+    safe["uiPreferences"] = read_ui_preferences()
+    if request is not None:
+        safe["authContext"] = _auth_context_payload(auth_source_data or data, request)
+    return safe
+
+
+def read_ui_preferences() -> dict:
+    with UI_PREFS_LOCK:
+        if UI_PREFS_FILE.exists():
+            try:
+                prefs = json.loads(UI_PREFS_FILE.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                prefs = {}
+        else:
+            prefs = {}
+        theme = str(prefs.get("theme") or DEFAULT_UI_PREFERENCES["theme"]).strip().lower()
+        if theme not in ALLOWED_THEMES:
+            theme = DEFAULT_UI_PREFERENCES["theme"]
+        return {"theme": theme}
+
+
+def write_ui_preferences(incoming: dict) -> dict:
+    current = read_ui_preferences()
+    theme = str((incoming or {}).get("theme") or current["theme"]).strip().lower()
+    if theme not in ALLOWED_THEMES:
+        theme = current["theme"]
+    updated = {"theme": theme}
+    with UI_PREFS_LOCK:
+        UI_PREFS_FILE.write_text(json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8")
+    return updated
+
+
+def _safe_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _normalize_coupon_code(value: Any) -> str:
+    return re.sub(r"[^A-Z0-9_-]+", "", str(value or "").strip().upper())[:40]
+
+
+def _normalize_discount_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"percent", "percentage", "%"}:
+        return "percent"
+    return "flat"
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        parsed = int(float(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _normalize_coupon(raw: dict, fallback_id: int | None = None) -> dict:
+    now_ms = int(time.time() * 1000)
+    try:
+        coupon_id = int(raw.get("id") or fallback_id or 0)
+    except (TypeError, ValueError):
+        coupon_id = int(fallback_id or 0)
+    discount_type = _normalize_discount_type(raw.get("discountType"))
+    discount_value = _safe_float(raw.get("discountValue"))
+    if discount_value < 0:
+        discount_value = 0.0
+    if discount_type == "percent" and discount_value > 100:
+        discount_value = 100.0
+    min_cart_value = _safe_float(raw.get("minCartValue"))
+    if min_cart_value < 0:
+        min_cart_value = 0.0
+    usage_limit = _safe_int_or_none(raw.get("usageLimit"))
+    per_customer_usage_limit = _safe_int_or_none(raw.get("perCustomerUsageLimit"))
+    created_at = _safe_int_or_none(raw.get("createdAt")) or now_ms
+    updated_at = _safe_int_or_none(raw.get("updatedAt")) or created_at
+    return {
+        "id": coupon_id,
+        "code": _normalize_coupon_code(raw.get("code")),
+        "description": str(raw.get("description") or "").strip()[:240],
+        "isActive": bool(raw.get("isActive", True)),
+        "discountType": discount_type,
+        "discountValue": round(discount_value, 2),
+        "minCartValue": round(min_cart_value, 2),
+        "startAt": _safe_int_or_none(raw.get("startAt")),
+        "endAt": _safe_int_or_none(raw.get("endAt")),
+        "usageLimit": usage_limit,
+        "perCustomerUsageLimit": per_customer_usage_limit,
+        "createdAt": created_at,
+        "updatedAt": updated_at,
+    }
+
+
+def _coupon_public_payload(coupon: dict, usage_count: int = 0) -> dict:
+    payload = copy.deepcopy(coupon)
+    payload["usageCount"] = int(usage_count or 0)
+    return payload
+
+
+def _coupon_order_counts_as_usage(order: dict) -> bool:
+    status = str(order.get("status") or "").strip().lower()
+    return status not in {"cancelled", "canceled", "returned", "failed"}
+
+
+def _coupon_usage_count(data: dict, coupon: dict, exclude_website_order_id: str = "") -> int:
+    code = _normalize_coupon_code(coupon.get("code"))
+    coupon_id = int(coupon.get("id") or 0)
+    exclude = str(exclude_website_order_id or "").strip()
+    used_groups: set[str] = set()
+    for order in data.get("orders", []) or []:
+        if not isinstance(order, dict):
+            continue
+        if not _coupon_order_counts_as_usage(order):
+            continue
+        group_id = str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip()
+        order_id = str(order.get("websiteOrderId") or "").strip()
+        if exclude and (group_id == exclude or order_id == exclude):
+            continue
+        order_coupon_id = int(order.get("couponId") or 0)
+        order_code = _normalize_coupon_code(order.get("couponCode"))
+        if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
+            used_groups.add(group_id or order_id or f"order:{order.get('id')}")
+    return len(used_groups)
+
+
+def _coupon_user_usage_count(
+    data: dict,
+    coupon: dict,
+    website_user_id: int,
+    exclude_website_order_id: str = "",
+    customer_id: int = 0,
+) -> int:
+    if website_user_id <= 0 and customer_id <= 0:
+        return 0
+    code = _normalize_coupon_code(coupon.get("code"))
+    coupon_id = int(coupon.get("id") or 0)
+    exclude = str(exclude_website_order_id or "").strip()
+    used_groups: set[str] = set()
+    for order in data.get("orders", []) or []:
+        if not isinstance(order, dict):
+            continue
+        if not _coupon_order_counts_as_usage(order):
+            continue
+        group_id = str(order.get("websiteCartId") or order.get("websiteOrderId") or "").strip()
+        order_id = str(order.get("websiteOrderId") or "").strip()
+        if exclude and (group_id == exclude or order_id == exclude):
+            continue
+        try:
+            order_website_user_id = int(order.get("websiteUserId") or 0)
+        except (TypeError, ValueError):
+            order_website_user_id = 0
+        try:
+            order_customer_id = int(order.get("cid") or 0)
+        except (TypeError, ValueError):
+            order_customer_id = 0
+        same_website_user = website_user_id > 0 and order_website_user_id == int(website_user_id)
+        same_customer = customer_id > 0 and order_customer_id == int(customer_id)
+        if not (same_website_user or same_customer):
+            continue
+        order_coupon_id = int(order.get("couponId") or 0)
+        order_code = _normalize_coupon_code(order.get("couponCode"))
+        if (coupon_id and order_coupon_id == coupon_id) or (code and order_code == code):
+            used_groups.add(group_id or order_id or f"order:{order.get('id')}")
+    return len(used_groups)
+
+
+def _coupon_invalid_payload() -> dict:
+    return {"ok": False, "code": "coupon_invalid", "detail": "Coupon is not valid."}
+
+
+def _website_unit_price(product: dict, variant: str) -> float:
+    pricing = product.get("pricing") or {}
+    row = pricing.get(variant) or {}
+    sale_prices = row.get("salePrices") or {}
+    val = _safe_float(sale_prices.get("website"))
+    if val > 0:
+        return val
+    return _safe_float(sale_prices.get("retail"))
+
+
+def _website_cart_items_from_body(body: dict) -> list[dict]:
+    raw_items = body.get("items")
+    if isinstance(raw_items, list) and raw_items:
+        source_items = raw_items
+    else:
+        source_items = [
+            {
+                "websiteOrderItemId": body.get("websiteOrderItemId"),
+                "prodId": body.get("prodId"),
+                "variant": body.get("variant"),
+                "qty": body.get("qty"),
+            }
+        ]
+    items: list[dict] = []
+    seen_item_ids: set[str] = set()
+    for idx, raw in enumerate(source_items, start=1):
+        if not isinstance(raw, dict):
+            raise HTTPException(status_code=400, detail="Each cart item must be an object.")
+        prod_id = str(raw.get("prodId") or raw.get("productId") or raw.get("id") or "").strip()
+        variant = str(raw.get("variant") or raw.get("size") or "").strip()
+        try:
+            qty = float(raw.get("qty") if "qty" in raw else raw.get("quantity"))
+        except (TypeError, ValueError):
+            qty = 0.0
+        if not prod_id:
+            raise HTTPException(status_code=400, detail="Each cart item requires prodId.")
+        if not variant:
+            raise HTTPException(status_code=400, detail="Each cart item requires variant.")
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="Each cart item qty must be greater than 0.")
+        item_id = str(raw.get("websiteOrderItemId") or raw.get("lineId") or raw.get("cartItemId") or idx).strip()
+        if item_id in seen_item_ids:
+            raise HTTPException(status_code=400, detail="Each cart item requires a unique websiteOrderItemId.")
+        seen_item_ids.add(item_id)
+        items.append(
+            {
+                "websiteOrderItemId": item_id[:80],
+                "prodId": prod_id,
+                "variant": variant,
+                "qty": qty,
+            }
+        )
+    return items
+
+
+def _website_cart_lines(data: dict, items: list[dict]) -> list[dict]:
+    lines: list[dict] = []
+    for item in items:
+        product = next((p for p in data.get("products", []) if str(p.get("id") or "") == item["prodId"]), None)
+        if not product:
+            raise HTTPException(status_code=400, detail=f"prodId not found in CRM products: {item['prodId']}")
+        unit_price = _website_unit_price(product, item["variant"])
+        if unit_price <= 0:
+            raise HTTPException(status_code=400, detail=f"Website price is not configured for {item['prodId']} / {item['variant']}.")
+        subtotal = round(unit_price * float(item["qty"]), 2)
+        lines.append({**item, "product": product, "unitPrice": unit_price, "subtotal": subtotal})
+    return lines
+
+
+def _allocate_discount_to_lines(total_discount: float, lines: list[dict]) -> list[float]:
+    total = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
+    if total <= 0 or total_discount <= 0 or not lines:
+        return [0.0 for _ in lines]
+    remaining = round(min(total_discount, total), 2)
+    allocations: list[float] = []
+    for idx, line in enumerate(lines):
+        if idx == len(lines) - 1:
+            amount = remaining
+        else:
+            amount = round(min(remaining, total_discount * (_safe_float(line.get("subtotal")) / total)), 2)
+        allocations.append(amount)
+        remaining = round(remaining - amount, 2)
+    return allocations
+
+
+def _coupon_cart_fingerprint(items: list[dict]) -> str:
+    normalized = [
+        {
+            "websiteOrderItemId": str(item.get("websiteOrderItemId") or "").strip(),
+            "prodId": str(item.get("prodId") or "").strip(),
+            "variant": str(item.get("variant") or "").strip(),
+            "qty": round(float(item.get("qty") or 0), 6),
+        }
+        for item in items
+    ]
+    return hashlib.sha256(json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _coupon_quote_public_payload(quote: dict) -> dict:
+    return {
+        "couponQuoteId": str(quote.get("id") or "").strip(),
+        "expiresAt": int(quote.get("expiresAt") or 0),
+    }
+
+
+def _create_coupon_quote(
+    data: dict,
+    *,
+    website_user_id: int,
+    customer_id: int,
+    items: list[dict],
+    result: dict,
+) -> dict:
+    coupon = result.get("coupon") or {}
+    now_ms = int(time.time() * 1000)
+    quote_num = int(data.get("couponQuoteId") or 1)
+    quote_id = f"cq_{quote_num}_{secrets.token_urlsafe(12)}"
+    quote = {
+        "id": quote_id,
+        "websiteUserId": int(website_user_id or 0),
+        "customerId": int(customer_id or 0),
+        "couponCode": _normalize_coupon_code(coupon.get("code")),
+        "couponId": int(coupon.get("id") or 0),
+        "couponDiscountType": _normalize_discount_type(coupon.get("discountType")),
+        "couponDiscountValue": _safe_float(coupon.get("discountValue")),
+        "couponMinCartValue": _safe_float(coupon.get("minCartValue")),
+        "cartFingerprint": _coupon_cart_fingerprint(items),
+        "cartSubtotal": _safe_float(result.get("cartSubtotal")),
+        "discount": _safe_float(result.get("discount")),
+        "payableAmount": _safe_float(result.get("payableAmount")),
+        "createdAt": now_ms,
+        "expiresAt": now_ms + 60 * 60 * 1000,
+        "usedAt": None,
+        "websiteOrderId": "",
+    }
+    data.setdefault("couponQuotes", []).append(quote)
+    data["couponQuoteId"] = quote_num + 1
+    return quote
+
+
+def _coupon_result_from_quote(
+    data: dict,
+    *,
+    quote_id: Any,
+    coupon_code: str,
+    website_user_id: int,
+    customer_id: int,
+    website_order_id: str,
+    items: list[dict],
+) -> dict | None:
+    quote_key = str(quote_id or "").strip()
+    if not quote_key:
+        return None
+    quote = next((q for q in data.get("couponQuotes", []) or [] if isinstance(q, dict) and str(q.get("id") or "") == quote_key), None)
+    if not quote:
+        return None
+    now_ms = int(time.time() * 1000)
+    if int(quote.get("expiresAt") or 0) and now_ms > int(quote.get("expiresAt") or 0):
+        return None
+    if _normalize_coupon_code(quote.get("couponCode")) != _normalize_coupon_code(coupon_code):
+        return None
+    quote_order_id = str(quote.get("websiteOrderId") or "").strip()
+    if quote_order_id and quote_order_id != str(website_order_id or "").strip():
+        return None
+    quote_user_id = int(quote.get("websiteUserId") or 0)
+    quote_customer_id = int(quote.get("customerId") or 0)
+    same_user = quote_user_id > 0 and quote_user_id == int(website_user_id or 0)
+    same_customer = quote_customer_id > 0 and quote_customer_id == int(customer_id or 0)
+    if not (same_user or same_customer):
+        return None
+    if str(quote.get("cartFingerprint") or "") != _coupon_cart_fingerprint(items):
+        return None
+    return {
+        "coupon": {
+            "id": int(quote.get("couponId") or 0),
+            "code": _normalize_coupon_code(quote.get("couponCode")),
+            "discountType": _normalize_discount_type(quote.get("couponDiscountType")),
+            "discountValue": _safe_float(quote.get("couponDiscountValue")),
+            "minCartValue": _safe_float(quote.get("couponMinCartValue")),
+        },
+        "cartSubtotal": _safe_float(quote.get("cartSubtotal")),
+        "discount": _safe_float(quote.get("discount")),
+        "payableAmount": _safe_float(quote.get("payableAmount")),
+        "quote": quote,
+    }
+
+
+def _find_coupon(data: dict, code: Any) -> dict | None:
+    normalized = _normalize_coupon_code(code)
+    if not normalized:
+        return None
+    return next((c for c in data.get("coupons", []) or [] if _normalize_coupon_code(c.get("code")) == normalized), None)
+
+
+def _existing_website_cart_coupon_snapshot(data: dict, website_order_id: str, coupon_code: str) -> dict | None:
+    cart_id = str(website_order_id or "").strip()
+    code = _normalize_coupon_code(coupon_code)
+    if not cart_id or not code:
+        return None
+    rows = [
+        row
+        for row in data.get("orders", []) or []
+        if isinstance(row, dict)
+        and str(row.get("channel") or "") == "website"
+        and str(row.get("websiteCartId") or row.get("websiteOrderId") or "").strip() == cart_id
+        and _normalize_coupon_code(row.get("couponCode")) == code
+        and _coupon_order_counts_as_usage(row)
+    ]
+    if not rows:
+        return None
+    first = rows[0]
+    total_discount = round(sum(_safe_float(row.get("discount")) for row in rows), 2)
+    return {
+        "coupon": {
+            "id": first.get("couponId"),
+            "code": code,
+            "discountType": str(first.get("couponDiscountType") or "").strip(),
+            "discountValue": _safe_float(first.get("couponDiscountValue")),
+            "minCartValue": _safe_float(first.get("couponMinCartValue")),
+        },
+        "discount": total_discount,
+    }
+
+
+def _validate_coupon_for_cart(
+    data: dict,
+    code: Any,
+    prod_id: Any,
+    variant: Any,
+    qty: Any,
+    *,
+    items: list[dict] | None = None,
+    website_user_id: int = 0,
+    customer_id: int = 0,
+    exclude_website_order_id: str = "",
+) -> dict | None:
+    coupon = _find_coupon(data, code)
+    if not coupon or not bool(coupon.get("isActive", True)):
+        return None
+    now_ms = int(time.time() * 1000)
+    start_at = _safe_int_or_none(coupon.get("startAt"))
+    end_at = _safe_int_or_none(coupon.get("endAt"))
+    if start_at and now_ms < start_at:
+        return None
+    if end_at and now_ms > end_at:
+        return None
+    usage_limit = _safe_int_or_none(coupon.get("usageLimit"))
+    usage_count = _coupon_usage_count(data, coupon, exclude_website_order_id=exclude_website_order_id)
+    if usage_limit is not None and usage_count >= usage_limit:
+        return None
+    per_customer_usage_limit = _safe_int_or_none(coupon.get("perCustomerUsageLimit"))
+    user_usage_count = _coupon_user_usage_count(
+        data,
+        coupon,
+        int(website_user_id or 0),
+        exclude_website_order_id=exclude_website_order_id,
+        customer_id=int(customer_id or 0),
+    )
+    if per_customer_usage_limit is not None and user_usage_count >= per_customer_usage_limit:
+        return None
+    try:
+        cart_items = items if items is not None else _website_cart_items_from_body({"prodId": prod_id, "variant": variant, "qty": qty})
+        lines = _website_cart_lines(data, cart_items)
+    except HTTPException:
+        return None
+    subtotal = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
+    min_cart_value = _safe_float(coupon.get("minCartValue"))
+    if subtotal < min_cart_value:
+        return None
+    discount_type = _normalize_discount_type(coupon.get("discountType"))
+    discount_value = _safe_float(coupon.get("discountValue"))
+    if discount_type == "percent":
+        discount = subtotal * (min(discount_value, 100.0) / 100.0)
+    else:
+        discount = discount_value
+    discount = round(max(0.0, min(discount, subtotal)), 2)
+    return {
+        "coupon": coupon,
+        "cartSubtotal": subtotal,
+        "discount": discount,
+        "payableAmount": round(max(0.0, subtotal - discount), 2),
+        "usageCount": usage_count,
+        "userUsageCount": user_usage_count,
+        "items": [
+            {
+                "websiteOrderItemId": line["websiteOrderItemId"],
+                "prodId": line["prodId"],
+                "variant": line["variant"],
+                "qty": line["qty"],
+                "unitPrice": line["unitPrice"],
+                "subtotal": line["subtotal"],
+            }
+            for line in lines
+        ],
+    }
+
+
+def _order_is_completed(order: dict) -> bool:
+    return str(order.get("status") or "").strip().lower() == "completed"
+
+
+def _payment_gateway_commission_pct(data: dict) -> float:
+    pct = _safe_float((data.get("shippingProfile") or {}).get("paymentGatewayCommissionPct"))
+    return pct if pct >= 0 else 3.0
+
+
+def _sale_price_for_order(products_by_id: dict, order: dict) -> float:
+    product = products_by_id.get(order.get("prodId")) or {}
+    pricing = product.get("pricing") or {}
+    row = pricing.get(order.get("variant")) or {}
+    sale_prices = row.get("salePrices") or {}
+    channel = str(order.get("channel") or "retail")
+    val = _safe_float(sale_prices.get(channel))
+    if val > 0:
+        return val
+    return _safe_float(sale_prices.get("retail"))
+
+
+def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
+    product = products_by_id.get(order.get("prodId")) or {}
+    pricing = product.get("pricing") or {}
+    row = pricing.get(order.get("variant")) or {}
+    expenses = row.get("expenses") or []
+    return sum(_safe_float(e.get("cost")) for e in expenses if isinstance(e, dict))
+
+
+def _order_revenue(products_by_id: dict, order: dict) -> float:
+    raw_realized = order.get("realizedRevenue")
+    if raw_realized is not None and str(raw_realized).strip() != "":
+        realized = _safe_float(raw_realized)
+        if realized >= 0:
+            return realized
+    unit = _sale_price_for_order(products_by_id, order)
+    qty = _safe_float(order.get("qty")) or 1.0
+    return unit * qty
+
+
+def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> float | None:
+    qty = _safe_float(order.get("qty")) or 1.0
+    revenue = _order_revenue(products_by_id, order)
+    unit_cost = _total_cost_for_order(products_by_id, order)
+    gross = revenue - (unit_cost * qty)
+    if revenue <= 0 and unit_cost <= 0:
+        return None
+    discount = _safe_float(order.get("discount"))
+    manual_comm = _safe_float(order.get("commission"))
+    gateway_comm = 0.0
+    if str(order.get("channel") or "").strip().lower() == "website":
+        gateway_base = max(0.0, revenue - discount)
+        gateway_comm = gateway_base * (gateway_pct / 100.0)
+    return gross - discount - manual_comm - gateway_comm
+
+
+def _month_range(now_ts: float, month_offset: int = 0) -> tuple[float, float]:
+    now = time.localtime(now_ts)
+    year = now.tm_year
+    month = now.tm_mon + month_offset
+    while month <= 0:
+        year -= 1
+        month += 12
+    while month > 12:
+        year += 1
+        month -= 12
+    start = time.mktime((year, month, 1, 0, 0, 0, 0, 0, -1))
+    if month == 12:
+        next_start = time.mktime((year + 1, 1, 1, 0, 0, 0, 0, 0, -1))
+    else:
+        next_start = time.mktime((year, month + 1, 1, 0, 0, 0, 0, 0, -1))
+    return start * 1000.0, next_start * 1000.0
+
+
+def _compute_dashboard_metrics(data: dict) -> dict:
+    orders = data.get("orders", []) or []
+    customers = data.get("customers", []) or []
+    products_by_id = {p.get("id"): p for p in (data.get("products", []) or []) if isinstance(p, dict)}
+    gateway_pct = _payment_gateway_commission_pct(data)
+    now_ms = time.time() * 1000.0
+    day_start = time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)) * 1000.0
+    cm_s, cm_e = _month_range(time.time(), 0)
+    pm_s, pm_e = _month_range(time.time(), -1)
+
+    def rev_sum(seq: list[dict]) -> float:
+        return sum(_order_revenue(products_by_id, o) for o in seq if _order_is_completed(o))
+
+    def profit_sum(seq: list[dict]) -> float:
+        total = 0.0
+        for o in seq:
+            if not _order_is_completed(o):
+                continue
+            p = _order_profit(products_by_id, o, gateway_pct)
+            total += p if p is not None else 0.0
+        return total
+
+    cur_month = [o for o in orders if cm_s <= _safe_float(o.get("at")) < cm_e]
+    prev_month = [o for o in orders if pm_s <= _safe_float(o.get("at")) < pm_e]
+    completed_orders = [o for o in orders if _order_is_completed(o)]
+
+    rev_all = rev_sum(orders)
+    rev_m = rev_sum(cur_month)
+    rev_pm = rev_sum(prev_month)
+    prof_all = profit_sum(orders)
+    prof_m = profit_sum(cur_month)
+    mom = ((rev_m - rev_pm) / rev_pm * 100.0) if rev_pm > 0 else None
+
+    active_count = sum(
+        1
+        for o in orders
+        if (not _order_is_completed(o)) and str(o.get("status") or "") not in ("cancelled", "returned")
+    )
+    completed_today = sum(1 for o in completed_orders if _safe_float(o.get("at")) >= day_start)
+    total_customers = len(customers)
+    total_orders = len(orders)
+    completed_count = len(completed_orders)
+    orders_per_customer = (total_orders / total_customers) if total_customers > 0 else 0.0
+    counts_by_customer: dict[int, int] = {}
+    for o in orders:
+        cid = int(_safe_float(o.get("cid")))
+        if cid > 0:
+            counts_by_customer[cid] = counts_by_customer.get(cid, 0) + 1
+    ordered_customers = len(counts_by_customer)
+    repeat_customers = sum(1 for n in counts_by_customer.values() if n >= 2)
+    retention_pct = (repeat_customers / ordered_customers * 100.0) if ordered_customers > 0 else None
+
+    return {
+        "revAll": rev_all,
+        "profAll": prof_all,
+        "revM": rev_m,
+        "profM": prof_m,
+        "activeCount": active_count,
+        "completedToday": completed_today,
+        "mom": mom,
+        "yoy": None,
+        "totalCustomers": total_customers,
+        "totalOrders": total_orders,
+        "completedOrders": completed_count,
+        "ordersPerCustomer": orders_per_customer,
+        "retentionPct": retention_pct,
+        "generatedAt": int(now_ms),
+    }
+
+
+def _get_cached_dashboard_metrics(data: dict, ttl_seconds: int = 60) -> dict:
+    now = time.time()
+    with DASHBOARD_CACHE_LOCK:
+        if DASHBOARD_METRICS_CACHE["payload"] is not None and now < float(DASHBOARD_METRICS_CACHE["expires_at"]):
+            return copy.deepcopy(DASHBOARD_METRICS_CACHE["payload"])
+    metrics = _compute_dashboard_metrics(data)
+    with DASHBOARD_CACHE_LOCK:
+        DASHBOARD_METRICS_CACHE["payload"] = metrics
+        DASHBOARD_METRICS_CACHE["expires_at"] = now + max(1, ttl_seconds)
+    return copy.deepcopy(metrics)
+
+
+def _digits_only(value: str) -> str:
+    return re.sub(r"\D+", "", str(value or ""))
+
+
+def _to_whatsapp_phone(phone: str) -> str:
+    digits = _digits_only(phone)
+    if digits.startswith("91") and len(digits) >= 12:
+        return digits
+    if len(digits) == 10:
+        return "91" + digits
+    return digits
+
+
+def _order_summary_line(order: dict) -> str:
+    when = time.strftime("%d %b %Y", time.localtime((int(order.get("at") or 0)) / 1000)) if order.get("at") else "-"
+    prod = str(order.get("prod") or "").strip() or "-"
+    var = str(order.get("variant") or "").strip() or "-"
+    qty = int(order.get("qty") or 0)
+    status = str(order.get("status") or "").strip() or "-"
+    return f"{when}: {prod} ({var}) x{qty}, status={status}"
+
+
+def _build_customer_context(data: dict, customer: dict) -> str:
+    cid = customer.get("id")
+    orders = [o for o in data.get("orders", []) if o.get("cid") == cid]
+    orders_sorted = sorted(orders, key=lambda x: int(x.get("at") or 0), reverse=True)
+    last = orders_sorted[0] if orders_sorted else {}
+    recent_lines = [_order_summary_line(o) for o in orders_sorted[:5]]
+    lines = [
+        f"Customer Name: {str(customer.get('name') or '').strip() or '-'}",
+        f"Phone: {str(customer.get('phone') or '').strip() or '-'}",
+        f"Area: {str(customer.get('area') or '').strip() or '-'}",
+        f"Email: {str(customer.get('email') or '').strip() or '-'}",
+        f"Address: {str(customer.get('address') or '').strip() or '-'}",
+        f"Total Orders: {len(orders_sorted)}",
+        f"Last Ordered Product: {str(last.get('prod') or '-').strip() or '-'}",
+        f"Last Ordered Variant: {str(last.get('variant') or '-').strip() or '-'}",
+        f"Last Order Date: {time.strftime('%d %b %Y', time.localtime((int(last.get('at') or 0)) / 1000)) if last else '-'}",
+        "Recent Orders:",
+    ]
+    if recent_lines:
+        lines.extend([f"- {ln}" for ln in recent_lines])
+    else:
+        lines.append("- No orders yet")
+    return "\n".join(lines)
+
+
+def _extract_message_text(payload: dict) -> str:
+    """Extract assistant text from OpenAI-compatible responses."""
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if isinstance(msg, dict):
+            content = msg.get("content")
+            if isinstance(content, str):
+                return content.strip()
+            if isinstance(content, list):
+                parts: list[str] = []
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(str(block.get("text") or ""))
+                return "\n".join([p for p in parts if p]).strip()
+    return ""
+
+
+def _is_private_or_local_host(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower()
+    if not host:
+        return True
+    if host in ("localhost",):
+        return True
+
+    def _ip_is_private(raw_ip: str) -> bool:
+        try:
+            ip = ipaddress.ip_address(raw_ip)
+            return (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip.is_multicast
+                or ip.is_reserved
+                or ip.is_unspecified
+            )
+        except ValueError:
+            return False
+
+    if _ip_is_private(host):
+        return True
+
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except Exception:
+        # If hostname cannot be resolved now, do not block by default.
+        return False
+    for info in infos:
+        ip = info[4][0] if info and len(info) >= 5 and info[4] else ""
+        if ip and _ip_is_private(ip):
+            return True
+    return False
+
+
+def _sanitize_ai_base_url(raw_value: Any) -> str:
+    raw = str(raw_value or "").strip() or DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
+    parsed = urlparse.urlparse(raw)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="AI Base URL must be a valid http(s) URL.")
+    if not ALLOW_PRIVATE_AI_BASE_URL and _is_private_or_local_host(parsed.hostname or ""):
+        raise HTTPException(
+            status_code=400,
+            detail="AI Base URL cannot target localhost/private network hosts.",
+        )
+    clean = f"{parsed.scheme}://{parsed.netloc}{parsed.path}".rstrip("/")
+    if not clean.endswith("/v1"):
+        clean = clean + "/v1"
+    return clean
+
+
+def _ai_chat_draft(base_url: str, api_key: str, model: str, system_prompt: str, user_prompt: str) -> str:
+    endpoint = _sanitize_ai_base_url(base_url).rstrip("/") + "/chat/completions"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.7,
+    }
+    req = urlrequest.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=45) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urlerror.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        print(f"[CRM] AI provider HTTP error {exc.code}: {detail[:400]}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"AI provider request failed with HTTP {exc.code}. Verify model, API key, and prompt.",
+        ) from exc
+    except urlerror.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach AI provider: {exc}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"AI draft failed: {exc}") from exc
+    text = _extract_message_text(payload)
+    if not text:
+        raise HTTPException(status_code=502, detail="AI provider returned an empty response.")
+    return text
+
+
+def _template_token_issues(template: str) -> list[str]:
+    txt = str(template or "")
+    issues: list[str] = []
+    # order_count is count of orders, never weight/pack quantity.
+    if re.search(r"\{\{\s*order_count\s*\}\}\s*(kg|g|grams?|packs?)", txt, flags=re.IGNORECASE):
+        issues.append("{{order_count}} used with weight/pack unit")
+    if re.search(r"(kg|g|grams?|packs?)\s*\{\{\s*order_count\s*\}\}", txt, flags=re.IGNORECASE):
+        issues.append("weight/pack unit used with {{order_count}}")
+    # last_order_date is historical date, never validity date.
+    if re.search(r"(valid|validity|expires?|expiry|until)\b[^\n]*\{\{\s*last_order_date\s*\}\}", txt, flags=re.IGNORECASE):
+        issues.append("{{last_order_date}} used as validity/expiry")
+    return issues
+
+
+def _normalize_composition(composition: Any) -> list[dict]:
+    """Normalize product composition rows to a safe internal shape."""
+    if not isinstance(composition, list):
+        return []
+    rows: list[dict] = []
+    for row in composition:
+        if not isinstance(row, dict):
+            continue
+        inv_id = str(row.get("inventoryProductId", "")).strip()
+        inv_name = str(row.get("inventoryProductName", "")).strip()
+        try:
+            pct = float(row.get("percentage", 0) or 0)
+        except (TypeError, ValueError):
+            pct = 0.0
+        if not inv_id or pct <= 0:
+            continue
+        rows.append(
+            {
+                "inventoryProductId": inv_id,
+                "inventoryProductName": inv_name,
+                "percentage": pct,
+            }
+        )
+    return rows
+
+
+def _variant_to_grams(variant: str) -> float:
+    if variant in SIZE_TO_GRAMS:
+        return SIZE_TO_GRAMS[variant]
+    v = str(variant or "").strip().lower()
+    # Support generic variant units, not just hard-coded pack sizes.
+    # For volume (ml/l), we use a 1:1 approximation to grams for inventory deduction.
+    m = re.match(r"^\s*([0-9]*\.?[0-9]+)\s*(kg|g|l|ml)\s*$", v)
+    if m:
+        try:
+            qty = float(m.group(1))
+        except ValueError:
+            return 0.0
+        unit = m.group(2)
+        if qty <= 0:
+            return 0.0
+        if unit == "kg":
+            return qty * 1000.0
+        if unit == "g":
+            return qty
+        if unit == "l":
+            return qty * 1000.0
+        if unit == "ml":
+            return qty
+    return 0.0
+
+
+def _draw_wrapped_text(c, text: str, x: float, y: float, max_chars: int, line_height: float = 13.0) -> float:
+    """Draw wrapped text and return next y-coordinate below drawn content."""
+    raw = str(text or "").strip()
+    if not raw:
+        return y
+    lines: list[str] = []
+    for part in raw.splitlines() or [raw]:
+        wrapped = textwrap.wrap(part, width=max_chars) or [""]
+        lines.extend(wrapped)
+    for line in lines:
+        c.drawString(x, y, line)
+        y -= line_height
+    return y
+
+
+def _build_shipping_label_pdf(order: dict, customer: dict, profile: dict, ship: dict) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+    from reportlab.graphics.barcode import code128, qr
+    from reportlab.graphics.shapes import Drawing
+    from reportlab.graphics import renderPDF
+
+    awb = str(ship.get("awb", "")).strip()
+    courier = str(ship.get("courier", "")).strip()
+    ship_date = str(ship.get("shipDate", "")).strip()
+    code_type = _normalize_code_type(ship.get("codeType"))
+
+    w, h = A4
+    left = 40
+    right = w - 40
+    top = h - 40
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+
+    # Header
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 17)
+    c.drawString(left, top, f"Shipping Label  -  Order #{order.get('id')}")
+    c.setFont("Helvetica", 10)
+    c.setFillColor(colors.HexColor("#666666"))
+    c.drawRightString(right, top + 1, f"Generated: {time.strftime('%d %b %Y %H:%M')}")
+
+    # Meta pills (plain text line)
+    y = top - 26
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica", 10.5)
+    meta = [
+        f"Courier: {courier or '-'}",
+        f"AWB: {awb or '-'}",
+        f"Ship Date: {ship_date or '-'}",
+        f"Channel: {order.get('channel') or '-'}",
+    ]
+    c.drawString(left, y, "   |   ".join(meta))
+
+    # From / To boxes
+    box_y_top = y - 18
+    box_h = 165
+    gap = 14
+    box_w = (right - left - gap) / 2.0
+    c.setStrokeColor(colors.HexColor("#D9D9D9"))
+    c.roundRect(left, box_y_top - box_h, box_w, box_h, 8, stroke=1, fill=0)
+    c.roundRect(left + box_w + gap, box_y_top - box_h, box_w, box_h, 8, stroke=1, fill=0)
+
+    # From
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.HexColor("#444444"))
+    c.drawString(left + 10, box_y_top - 16, "FROM")
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(left + 10, box_y_top - 34, str(profile.get("companyName", "")).strip() or "-")
+    c.setFont("Helvetica", 10.5)
+    fy = box_y_top - 50
+    fy = _draw_wrapped_text(c, str(profile.get("address", "")).strip() or "-", left + 10, fy, max_chars=42, line_height=12)
+    _draw_wrapped_text(c, str(profile.get("phone", "")).strip(), left + 10, fy - 4, max_chars=42, line_height=12)
+
+    # To
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.HexColor("#444444"))
+    c.drawString(left + box_w + gap + 10, box_y_top - 16, "TO")
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(left + box_w + gap + 10, box_y_top - 34, str(customer.get("name") or order.get("cname") or "-").strip())
+    c.setFont("Helvetica", 10.5)
+    ty = box_y_top - 50
+    to_addr = str(customer.get("address", "")).strip()
+    to_area = str(customer.get("area") or order.get("carea") or "").strip()
+    to_phone = str(customer.get("phone") or order.get("cphone") or "").strip()
+    ty = _draw_wrapped_text(c, to_addr or "-", left + box_w + gap + 10, ty, max_chars=42, line_height=12)
+    if to_area:
+        ty = _draw_wrapped_text(c, to_area, left + box_w + gap + 10, ty - 2, max_chars=42, line_height=12)
+    _draw_wrapped_text(c, to_phone, left + box_w + gap + 10, ty - 4, max_chars=42, line_height=12)
+
+    # Shipment details
+    details_top = box_y_top - box_h - 14
+    c.roundRect(left, details_top - 75, right - left, 75, 8, stroke=1, fill=0)
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.HexColor("#444444"))
+    c.drawString(left + 10, details_top - 16, "SHIPMENT DETAILS")
+    c.setFont("Helvetica", 10.5)
+    c.setFillColor(colors.HexColor("#111111"))
+    product_line = f"{order.get('prod', '')} - {order.get('variant', '')} x {order.get('qty', 1)}"
+    c.drawString(left + 10, details_top - 34, f"Product: {product_line}")
+    payment_method = str(order.get("paymentMethod", "")).strip()
+    c.drawString(left + 10, details_top - 50, f"Payment: {payment_method or '-'}")
+
+    # Code area (QR / Barcode)
+    code_top = details_top - 95
+    c.roundRect(left, code_top - 145, right - left, 145, 8, stroke=1, fill=0)
+    c.setFont("Helvetica-Bold", 10)
+    c.setFillColor(colors.HexColor("#444444"))
+    c.drawString(left + 10, code_top - 16, f"{'QR CODE' if code_type == 'qr' else 'BARCODE'}")
+    c.setFillColor(colors.HexColor("#111111"))
+
+    if code_type == "qr":
+        qr_widget = qr.QrCodeWidget(awb or "NA")
+        bounds = qr_widget.getBounds()
+        bw = bounds[2] - bounds[0]
+        bh = bounds[3] - bounds[1]
+        size = 98
+        d = Drawing(size, size, transform=[size / bw, 0, 0, size / bh, 0, 0])
+        d.add(qr_widget)
+        renderPDF.draw(d, c, left + 18, code_top - 122)
+        c.setFont("Helvetica", 10)
+        c.drawString(left + 130, code_top - 70, f"AWB: {awb or '-'}")
+    else:
+        barcode = code128.Code128(awb or "NA", barHeight=52, barWidth=1.0, humanReadable=True)
+        barcode.drawOn(c, left + 18, code_top - 108)
+
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.read()
+
+
+def _normalize_code_type(value: Any) -> str:
+    return "qr" if str(value or "").strip().lower() == "qr" else "barcode"
+
+
+def _normalize_couriers(rows: Any) -> list[dict]:
+    if not isinstance(rows, list):
+        return []
+    cleaned: list[dict] = []
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(row.get("name", "")).strip()
+        if not name:
+            continue
+        key = name.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(
+            {
+                "name": name,
+                "trackingTemplate": str(row.get("trackingTemplate", "")).strip(),
+                "codeType": _normalize_code_type(row.get("codeType")),
+            }
+        )
+    return cleaned
+
+
+def _couriers_from_templates(templates: Any) -> list[dict]:
+    if not isinstance(templates, dict):
+        return []
+    rows: list[dict] = []
+    for k, v in templates.items():
+        name = str(k).strip()
+        if not name:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "trackingTemplate": str(v or "").strip(),
+                "codeType": "barcode",
+            }
+        )
+    return _normalize_couriers(rows)
+
+
+def _post_inventory_movement(product_id: str, grams: float, note: str, at: int) -> None:
+    if _inventory_circuit_open():
+        raise urlerror.URLError("Inventory service temporarily in backoff")
+    payload = json.dumps(
+        {"type": "out", "grams": grams, "note": note, "at": at}
+    ).encode("utf-8")
+    req = urlrequest.Request(
+        f"{INVENTORY_URL}/api/products/{product_id}/movements",
+        data=payload,
+        headers=_service_headers({"Content-Type": "application/json"}),
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=2.5):
+            _mark_inventory_success()
+            return
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        _mark_inventory_failure(str(exc))
+        raise
+
+
+def _post_inventory_replace_movements(movements: list[dict]) -> dict:
+    if _inventory_circuit_open():
+        raise urlerror.URLError("Inventory service temporarily in backoff")
+    payload = json.dumps(
+        {"notePrefix": "CRM Order #", "movements": movements}
+    ).encode("utf-8")
+    req = urlrequest.Request(
+        f"{INVENTORY_URL}/api/crm/replace-movements",
+        data=payload,
+        headers=_service_headers({"Content-Type": "application/json"}),
+        method="POST",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=20.0) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else {"ok": True}
+            _mark_inventory_success()
+            return parsed
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
+        raise
+
+
+def _get_inventory_data() -> dict | None:
+    if _inventory_circuit_open():
+        return None
+    req = urlrequest.Request(
+        f"{INVENTORY_URL}/api/data",
+        headers=_service_headers(),
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=3.0) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw)
+            _mark_inventory_success()
+            return parsed
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
+        print(f"[CRM] Inventory data fetch failed: {exc}")
+        return None
+
+
+def _get_inventory_stock() -> list[dict] | None:
+    if _inventory_circuit_open():
+        return None
+    req = urlrequest.Request(
+        f"{INVENTORY_URL}/api/stock",
+        headers=_service_headers(),
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=3.0) as resp:
+            raw = resp.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else []
+            _mark_inventory_success()
+            return parsed if isinstance(parsed, list) else []
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        _mark_inventory_failure(str(exc))
+        print(f"[CRM] Inventory stock fetch failed: {exc}")
+        return None
+
+
+def _delete_inventory_movement(product_id: str, movement_id: int) -> bool:
+    if _inventory_circuit_open():
+        return False
+    req = urlrequest.Request(
+        f"{INVENTORY_URL}/api/products/{product_id}/movements/{movement_id}",
+        headers=_service_headers(),
+        method="DELETE",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=2.5):
+            _mark_inventory_success()
+            return True
+    except (urlerror.URLError, TimeoutError, OSError) as exc:
+        _mark_inventory_failure(str(exc))
+        print(f"[CRM] Inventory movement delete failed: {exc}")
+        return False
+
+
+def _remove_inventory_movements_for_order(order_id: int) -> bool:
+    """
+    Remove all inventory movements previously generated for a CRM order.
+    Matches by note prefix: "CRM Order #<id>".
+    """
+    data = _get_inventory_data()
+    if not data or "products" not in data:
+        return False
+    # Match exactly this order's movement note prefix.
+    marker = f"CRM Order #{order_id} ·"
+    ok = True
+    for p in data.get("products", []):
+        pid = p.get("id")
+        for m in p.get("movements", []):
+            note = str(m.get("note", ""))
+            if note.startswith(marker):
+                if not _delete_inventory_movement(pid, int(m.get("id"))):
+                    ok = False
+    return ok
+
+
+def _remove_all_crm_inventory_movements() -> tuple[bool, int]:
+    """
+    Remove all inventory movements generated by CRM orders.
+    Matches note prefix: 'CRM Order #'.
+    """
+    data = _get_inventory_data()
+    if not data or "products" not in data:
+        return False, 0
+    ok = True
+    deleted = 0
+    for p in data.get("products", []):
+        pid = p.get("id")
+        for m in p.get("movements", []):
+            note = str(m.get("note", ""))
+            if note.startswith("CRM Order #"):
+                if _delete_inventory_movement(pid, int(m.get("id"))):
+                    deleted += 1
+                else:
+                    ok = False
+    return ok, deleted
+
+
+def _build_crm_movements_from_completed_orders(data: dict) -> list[dict]:
+    movements: list[dict] = []
+    products_by_id = {p.get("id"): p for p in data.get("products", [])}
+    for o in data.get("orders", []):
+        if o.get("status") != "completed":
+            continue
+        product = products_by_id.get(o.get("prodId"))
+        if not product:
+            continue
+        composition = _normalize_composition(product.get("composition", []))
+        if not composition:
+            continue
+        pack_grams = _variant_to_grams(o.get("variant", ""))
+        qty = float(o.get("qty", 0) or 0)
+        if pack_grams <= 0 or qty <= 0:
+            continue
+        total_grams = pack_grams * qty
+        note = f"CRM Order #{o.get('id')} · {o.get('prod')} {o.get('variant')} x{o.get('qty')}"
+        for row in composition:
+            grams = round(total_grams * (float(row["percentage"]) / 100.0), 3)
+            if grams <= 0:
+                continue
+            movements.append(
+                {
+                    "productId": row["inventoryProductId"],
+                    "type": "out",
+                    "grams": grams,
+                    "note": note,
+                    "at": int(o.get("at") or 0),
+                }
+            )
+    return movements
+
+
+def _sync_inventory_for_order(product: dict, order: dict) -> bool:
+    """
+    Deduct inventory by CRM product composition.
+    If inventory service is unavailable, fail gracefully without blocking order creation.
+    """
+    composition = _normalize_composition(product.get("composition", []))
+    if not composition:
+        return True
+    pack_grams = _variant_to_grams(order.get("variant", ""))
+    qty = float(order.get("qty", 0) or 0)
+    if pack_grams <= 0 or qty <= 0:
+        return True
+    total_grams = pack_grams * qty
+    note = (
+        f"CRM Order #{order.get('id')} · {order.get('prod')} "
+        f"{order.get('variant')} x{order.get('qty')}"
+    )
+    all_ok = True
+    for row in composition:
+        grams = round(total_grams * (float(row["percentage"]) / 100.0), 3)
+        if grams <= 0:
+            continue
+        try:
+            _post_inventory_movement(row["inventoryProductId"], grams, note, int(order.get("at") or 0))
+        except (urlerror.URLError, TimeoutError, OSError) as exc:
+            all_ok = False
+            print(f"[CRM] Inventory sync skipped for order #{order.get('id')}: {exc}")
+    return all_ok
+
+
+def _inventory_fields_changed(prev: dict, curr: dict) -> bool:
+    keys = ("status", "prodId", "variant", "qty", "at")
+    return any(prev.get(k) != curr.get(k) for k in keys)
+
+
+def _reconcile_order_inventory(data: dict, order_idx: int, prev_order: dict | None = None, force: bool = False) -> bool:
+    """
+    Keep inventory movements in sync with the current order state.
+    - If previously synced/complete and inventory-relevant fields changed, remove old movements.
+    - If currently completed, create fresh movements.
+    """
+    order = data["orders"][order_idx]
+
+    if prev_order is not None and not force and not _inventory_fields_changed(prev_order, order):
+        return bool(order.get("inventorySynced"))
+
+    removed_ok = True
+    if prev_order is not None and (prev_order.get("inventorySynced") or prev_order.get("status") == "completed"):
+        removed_ok = _remove_inventory_movements_for_order(int(prev_order.get("id")))
+    order["inventorySynced"] = False
+    order["inventorySyncedAt"] = None
+
+    if order.get("status") != "completed":
+        return removed_ok
+
+    product = next((p for p in data["products"] if p.get("id") == order.get("prodId")), None)
+    if not product:
+        return False
+    synced_ok = _sync_inventory_for_order(product, order)
+    if synced_ok:
+        order["inventorySynced"] = True
+        order["inventorySyncedAt"] = int(time.time() * 1000)
+    return removed_ok and synced_ok
+
+
+# ── FastAPI app ─────────────────────────────────────────────────────────────
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _validate_service_api_key_config()
+    _init_storage()
+    yield
+
+
+app = FastAPI(title="Kudagu Kaapi CRM", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-API-Key"],
+)
+
+# Serve static files (index.html, app.js) from ./static/
+if not STATIC_DIR.exists():
+    STATIC_DIR.mkdir(parents=True)
+
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+if ASSETS_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(ASSETS_DIR)), name="assets")
+
+
+# ── Index route — serves the SPA ──────────────────────────────────────────
+@app.get("/", include_in_schema=False)
+async def serve_index():
+    index = STATIC_DIR / "index.html"
+    if not index.exists():
+        raise HTTPException(status_code=404, detail="index.html not found in static/")
+    return FileResponse(str(index))
+
+
+HEALTH_HEADERS = {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    "Pragma": "no-cache",
+    "X-Robots-Tag": "noindex, nofollow",
+}
+
+
+@app.api_route("/healthz", methods=["GET", "HEAD"], include_in_schema=False)
+async def healthcheck(request: Request):
+    if request.method == "HEAD":
+        return Response(status_code=200, headers=HEALTH_HEADERS)
+    return JSONResponse({"ok": True}, headers=HEALTH_HEADERS)
+
+
+@app.middleware("http")
+async def disable_ui_asset_caching(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/":
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    elif path.startswith("/static/") or path.startswith("/assets/"):
+        if request.query_params.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+            if "Pragma" in response.headers:
+                del response.headers["Pragma"]
+            if "Expires" in response.headers:
+                del response.headers["Expires"]
+        else:
+            response.headers["Cache-Control"] = "public, max-age=300"
+    return response
+
+
+@app.middleware("http")
+async def require_api_key_for_api_routes(request: Request, call_next):
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    if request.method.upper() == "OPTIONS":
+        return await call_next(request)
+    key_value = _extract_api_key(request)
+    key_meta = _resolve_api_key_meta(key_value, request)
+    if not key_meta:
+        _authz_audit_log(request, None, False, "auth_invalid_key")
+        return JSONResponse(status_code=401, content={"code": "auth_invalid_key", "detail": "Invalid API key."})
+    _track_key_usage(key_meta)
+    request.state.auth_key_scope = str(key_meta.get("scope") or "internal")
+    request.state.auth_key_id = str(key_meta.get("key_id") or "")
+
+    scope = str(key_meta.get("scope") or "internal")
+    if scope == "website":
+        allowed, reason = _authz_decision_for_website_scope(request.method.upper(), request.url.path)
+        if not allowed:
+            if AUTHZ_SCOPE_MODE == "monitor":
+                _authz_audit_log(request, key_meta, True, f"monitor_{reason}")
+            elif AUTHZ_SCOPE_MODE == "enforce":
+                _authz_audit_log(request, key_meta, False, reason)
+                return JSONResponse(status_code=403, content={"code": reason, "detail": "Route/method is not allowed for website key."})
+    response = await call_next(request)
+    _authz_audit_log(request, key_meta, True, "ok")
+    return response
+
+
+def _require_api_key_context(request: Request) -> None:
+    if str(getattr(request.state, "auth_key_id", "") or "").strip():
+        return
+    key_value = _extract_api_key(request)
+    key_meta = _resolve_api_key_meta(key_value, request)
+    if not key_meta:
+        _authz_audit_log(request, None, False, "auth_invalid_key")
+        raise HTTPException(
+            status_code=401,
+            detail={"code": "auth_invalid_key", "message": "Invalid API key."},
+        )
+    _track_key_usage(key_meta)
+    request.state.auth_key_scope = str(key_meta.get("scope") or "internal")
+    request.state.auth_key_id = str(key_meta.get("key_id") or "")
+
+    scope = str(key_meta.get("scope") or "internal")
+    if scope == "website":
+        allowed, reason = _authz_decision_for_website_scope(request.method.upper(), request.url.path)
+        if not allowed:
+            if AUTHZ_SCOPE_MODE == "monitor":
+                _authz_audit_log(request, key_meta, True, f"monitor_{reason}")
+            elif AUTHZ_SCOPE_MODE == "enforce":
+                _authz_audit_log(request, key_meta, False, reason)
+                raise HTTPException(
+                    status_code=403,
+                    detail={"code": reason, "message": "Route/method is not allowed for website key."},
+                )
+
+
+@app.post("/api/website/auth/signup")
+async def website_signup(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    email = _normalize_email(body.get("email"))
+    phone = _normalize_customer_phone(body.get("phone"))
+    if not email and not phone:
+        raise HTTPException(status_code=400, detail="Email or phone is required.")
+    data = read_data()
+    if _find_website_user(data, email=email, phone=phone):
+        raise HTTPException(status_code=409, detail="Website user already exists.")
+    now_ms = int(time.time() * 1000)
+    website_user = _normalize_website_user_record(
+        {
+            "id": int(data.get("wuid") or 1),
+            "email": email,
+            "phone": phone,
+            "name": body.get("name") or "",
+            "area": body.get("area") or "",
+            "address": body.get("address") or "",
+            "notes": body.get("notes") or "",
+            "customerId": 0,
+            "isActive": True,
+            "createdAt": now_ms,
+            "lastLoginAt": now_ms,
+        },
+        preserve_password_hash=_password_hash(password),
+    )
+    customer_id = _upsert_customer_for_website_user(data, website_user)
+    website_user["customerId"] = customer_id
+    data.setdefault("websiteUsers", []).append(website_user)
+    data["wuid"] = int(data.get("wuid") or 1) + 1
+    write_data(data)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(website_user),
+        "customer": {
+            "id": customer_id,
+            "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or website_user.get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or website_user.get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or website_user.get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or website_user.get("address") or "").strip(),
+        },
+    }
+
+
+@app.post("/api/website/auth/login")
+async def website_login(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if not password:
+        raise HTTPException(status_code=400, detail="Password is required.")
+    email = _normalize_email(body.get("email") or body.get("identifier"))
+    phone = _normalize_customer_phone(body.get("phone") or body.get("identifier"))
+    data = read_data()
+    user = _find_website_user(data, email=email, phone=phone)
+    if not user or not _verify_password(password, str(user.get("passwordHash") or "")):
+        raise HTTPException(status_code=401, detail="Invalid website credentials.")
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(status_code=403, detail="Website user is inactive.")
+    user["lastLoginAt"] = int(time.time() * 1000)
+    user["updatedAt"] = int(time.time() * 1000)
+    customer_id = _upsert_customer_for_website_user(data, user)
+    user["customerId"] = customer_id
+    write_data(data)
+    return {"ok": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/auth/google/check")
+async def website_google_check(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    email = _normalize_email(body.get("email"))
+    google_sub = str(body.get("googleSub") or body.get("google_sub") or "").strip()
+    email_verified = bool(body.get("emailVerified", body.get("email_verified", False)))
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    if not email_verified:
+        raise HTTPException(status_code=400, detail="Google email must be verified.")
+
+    data = read_data()
+    user = _find_website_user(data, email=email)
+    if not user:
+        return {"ok": True, "exists": False, "email": email}
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(status_code=403, detail="Website user is inactive.")
+
+    user["authProvider"] = str(user.get("authProvider") or "password").strip() or "password"
+    if google_sub:
+        existing_google_sub = str(user.get("googleSub") or "").strip()
+        if existing_google_sub and existing_google_sub != google_sub:
+            raise HTTPException(status_code=409, detail="Google account is already linked to another identity.")
+        user["googleSub"] = google_sub
+        user["emailVerified"] = True
+    user["lastLoginAt"] = int(time.time() * 1000)
+    user["updatedAt"] = int(time.time() * 1000)
+    user["customerId"] = _upsert_customer_for_website_user(data, user)
+    write_data(data)
+    return {"ok": True, "exists": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/auth/google/signup")
+async def website_google_signup(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    email = _normalize_email(body.get("email"))
+    phone = _normalize_customer_phone(body.get("phone"))
+    name = str(body.get("name") or "").strip()
+    google_sub = str(body.get("googleSub") or body.get("google_sub") or "").strip()
+    email_verified = bool(body.get("emailVerified", body.get("email_verified", False)))
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    if not email_verified:
+        raise HTTPException(status_code=400, detail="Google email must be verified.")
+    if not google_sub:
+        raise HTTPException(status_code=400, detail="Google subject is required.")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone is required.")
+
+    data = read_data()
+    existing_by_email = _find_website_user(data, email=email)
+    if existing_by_email:
+        raise HTTPException(status_code=409, detail="Website user already exists.")
+    existing_by_phone = _find_website_user(data, phone=phone)
+    if existing_by_phone:
+        raise HTTPException(status_code=409, detail="Phone already exists.")
+    for row in data.get("websiteUsers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if google_sub and str(row.get("googleSub") or "").strip() == google_sub:
+            raise HTTPException(status_code=409, detail="Google account already exists.")
+
+    now_ms = int(time.time() * 1000)
+    website_user = _normalize_website_user_record(
+        {
+            "id": int(data.get("wuid") or 1),
+            "email": email,
+            "phone": phone,
+            "name": name,
+            "area": body.get("area") or "",
+            "address": body.get("address") or "",
+            "notes": body.get("notes") or "",
+            "customerId": 0,
+            "authProvider": "google",
+            "googleSub": google_sub,
+            "emailVerified": True,
+            "isActive": True,
+            "createdAt": now_ms,
+            "lastLoginAt": now_ms,
+        },
+        preserve_password_hash="",
+    )
+    customer_id = _upsert_customer_for_website_user(data, website_user)
+    website_user["customerId"] = customer_id
+    data.setdefault("websiteUsers", []).append(website_user)
+    data["wuid"] = int(data.get("wuid") or 1) + 1
+    write_data(data)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(website_user),
+        "customer": {
+            "id": customer_id,
+            "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or website_user.get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or website_user.get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or website_user.get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or website_user.get("address") or "").strip(),
+        },
+    }
+
+
+@app.post("/api/website/coupons/validate")
+async def website_validate_coupon(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    data = read_data()
+    try:
+        website_user_id = int(body.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        if website_user_id <= 0:
+            return _coupon_invalid_payload()
+        _require_website_user_context(request, website_user_id)
+    coupon_customer_id = 0
+    if website_user_id > 0:
+        user = _find_website_user(data, website_user_id=website_user_id)
+        if user:
+            website_user_id = int(user.get("id") or website_user_id)
+            coupon_customer_id = int(user.get("customerId") or 0)
+    try:
+        cart_items = _website_cart_items_from_body(body)
+    except HTTPException:
+        return _coupon_invalid_payload()
+    result = _validate_coupon_for_cart(
+        data,
+        body.get("code"),
+        body.get("prodId"),
+        body.get("variant"),
+        body.get("qty"),
+        items=cart_items,
+        website_user_id=website_user_id,
+        customer_id=coupon_customer_id,
+    )
+    if not result:
+        return _coupon_invalid_payload()
+    coupon = result["coupon"]
+    quote = _create_coupon_quote(
+        data,
+        website_user_id=website_user_id,
+        customer_id=coupon_customer_id,
+        items=cart_items,
+        result=result,
+    )
+    write_data(data)
+    return {
+        "ok": True,
+        "coupon": {
+            "code": _normalize_coupon_code(coupon.get("code")),
+            "discountType": _normalize_discount_type(coupon.get("discountType")),
+            "discountValue": _safe_float(coupon.get("discountValue")),
+        },
+        **_coupon_quote_public_payload(quote),
+        "cartSubtotal": result["cartSubtotal"],
+        "discount": result["discount"],
+        "payableAmount": result["payableAmount"],
+    }
+
+
+@app.get("/api/website/users/{website_user_id}")
+async def website_user_detail(website_user_id: int, request: Request):
+    _require_api_key_context(request)
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, website_user_id)
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == int(user.get("customerId") or 0)), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(user),
+        "customer": {
+            "id": int((customer or {}).get("id") or 0),
+            "name": str((customer or {}).get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or "").strip(),
+        },
+    }
+
+
+@app.put("/api/website/users/{website_user_id}")
+async def website_user_sync_profile(website_user_id: int, request: Request):
+    _require_api_key_context(request)
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, website_user_id)
+    body = await request.json()
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    next_email = _normalize_email(body.get("email", user.get("email")))
+    next_phone = _normalize_customer_phone(body.get("phone", user.get("phone")))
+    if not next_email and not next_phone:
+        raise HTTPException(status_code=400, detail="Email or phone is required.")
+    for row in data.get("websiteUsers", []):
+        if not isinstance(row, dict) or int(row.get("id") or 0) == int(website_user_id):
+            continue
+        if next_email and _normalize_email(row.get("email")) == next_email:
+            raise HTTPException(status_code=409, detail="Email already exists.")
+        if next_phone and _normalize_customer_phone(row.get("phone")) == next_phone:
+            raise HTTPException(status_code=409, detail="Phone already exists.")
+    user["email"] = next_email
+    user["phone"] = next_phone
+    user["name"] = str(body.get("name", user.get("name")) or "").strip()
+    user["area"] = str(body.get("area", user.get("area")) or "").strip()
+    user["address"] = str(body.get("address", user.get("address")) or "").strip()
+    user["notes"] = str(body.get("notes", user.get("notes")) or "").strip()
+    if "isActive" in body:
+        user["isActive"] = bool(body.get("isActive"))
+    user["updatedAt"] = int(time.time() * 1000)
+    user["customerId"] = _upsert_customer_for_website_user(data, user)
+    write_data(data)
+    return {"ok": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/orders/sync")
+async def website_sync_order(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        extra_fields = set(body.keys()) - {
+            "websiteOrderId",
+            "websiteUserId",
+            "email",
+            "phone",
+            "profile",
+            "items",
+            "prodId",
+            "variant",
+            "qty",
+            "websiteOrderItemId",
+            "paymentMethod",
+            "shipping",
+            "status",
+            "at",
+            "subscriptionFrequency",
+            "subscriptionDuration",
+            "subscriptionTag",
+            "notes",
+            "couponCode",
+            "couponQuoteId",
+            "realizedRevenue",
+        }
+        if extra_fields:
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "Unexpected fields in website order sync payload."})
+        if "websiteUserId" not in body:
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "websiteUserId is required for website key."})
+    website_order_id = str(body.get("websiteOrderId") or "").strip()
+    if not website_order_id:
+        raise HTTPException(status_code=400, detail="websiteOrderId is required.")
+    data = read_data()
+
+    try:
+        website_user_id = int(body.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    user = _find_website_user(
+        data,
+        website_user_id=website_user_id,
+        email=body.get("email"),
+        phone=body.get("phone"),
+    )
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found. Signup first.")
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        _require_website_user_context(request, int(user.get("id") or 0))
+    website_user_id = int(user.get("id") or website_user_id or 0)
+
+    if isinstance(body.get("profile"), dict):
+        profile = body.get("profile") or {}
+        user["name"] = str(profile.get("name", user.get("name")) or "").strip()
+        user["area"] = str(profile.get("area", user.get("area")) or "").strip()
+        user["address"] = str(profile.get("address", user.get("address")) or "").strip()
+        user["notes"] = str(profile.get("notes", user.get("notes")) or "").strip()
+        next_email = _normalize_email(profile.get("email", user.get("email")))
+        next_phone = _normalize_customer_phone(profile.get("phone", user.get("phone")))
+        if next_email:
+            user["email"] = next_email
+        if next_phone:
+            user["phone"] = next_phone
+
+    customer_id = _upsert_customer_for_website_user(data, user)
+    user["customerId"] = customer_id
+    user["updatedAt"] = int(time.time() * 1000)
+
+    cart_items = _website_cart_items_from_body(body)
+    lines = _website_cart_lines(data, cart_items)
+    cart_subtotal = round(sum(_safe_float(line.get("subtotal")) for line in lines), 2)
+    coupon_code = _normalize_coupon_code(body.get("couponCode"))
+    coupon_result = None
+    if coupon_code:
+        coupon_result = _coupon_result_from_quote(
+            data,
+            quote_id=body.get("couponQuoteId"),
+            coupon_code=coupon_code,
+            website_user_id=website_user_id,
+            customer_id=customer_id,
+            website_order_id=website_order_id,
+            items=cart_items,
+        )
+        if not coupon_result:
+            coupon_result = _validate_coupon_for_cart(
+                data,
+                coupon_code,
+                None,
+                None,
+                None,
+                items=cart_items,
+                website_user_id=website_user_id,
+                customer_id=customer_id,
+                exclude_website_order_id=website_order_id,
+            )
+            if not coupon_result:
+                existing_coupon_snapshot = _existing_website_cart_coupon_snapshot(data, website_order_id, coupon_code)
+                if not existing_coupon_snapshot:
+                    raise HTTPException(status_code=400, detail="Coupon is not valid.")
+                coupon_result = {
+                    **existing_coupon_snapshot,
+                    "cartSubtotal": cart_subtotal,
+                    "payableAmount": round(max(0.0, cart_subtotal - _safe_float(existing_coupon_snapshot.get("discount"))), 2),
+                }
+    coupon = (coupon_result or {}).get("coupon") or {}
+    coupon_discount = _safe_float((coupon_result or {}).get("discount"))
+    coupon_quote = (coupon_result or {}).get("quote")
+    if isinstance(coupon_quote, dict):
+        coupon_quote["usedAt"] = int(time.time() * 1000)
+        coupon_quote["websiteOrderId"] = website_order_id
+    discount_allocations = _allocate_discount_to_lines(coupon_discount, lines)
+    profile_payload = body.get("profile") if isinstance(body.get("profile"), dict) else {}
+    subscription_frequency = _normalize_subscription_value(
+        body.get("subscriptionFrequency") or profile_payload.get("subscriptionFrequency"),
+        max_len=80,
+    )
+    subscription_duration = _normalize_subscription_value(
+        body.get("subscriptionDuration") or profile_payload.get("subscriptionDuration"),
+        max_len=80,
+    )
+    subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+    order_notes = str(body.get("notes") or profile_payload.get("notes") or "").strip()
+    if not subscription_tag and order_notes:
+        subscription_tag = _normalize_subscription_value(order_notes, max_len=140)
+    if not subscription_tag and (subscription_frequency or subscription_duration):
+        if subscription_frequency and subscription_duration:
+            subscription_tag = f"{subscription_frequency}. {subscription_duration} plan"
+        elif subscription_frequency:
+            subscription_tag = subscription_frequency
+        else:
+            subscription_tag = subscription_duration
+    status = _normalize_website_order_status(body.get("status"))
+    website_status_original = str(body.get("status") or "").strip()
+    at_ms = _normalized_order_time_ms(body.get("at") or int(time.time() * 1000))
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None) or {}
+
+    explicit_items = isinstance(body.get("items"), list)
+    touched_order_ids: set[int] = set()
+    response_orders: list[dict] = []
+    for idx, line in enumerate(lines):
+        line_item_id = str(line.get("websiteOrderItemId") or idx + 1).strip()
+        line_order_id = website_order_id if (len(lines) == 1 and not explicit_items) else f"{website_order_id}-{line_item_id}"
+        line_discount = discount_allocations[idx] if idx < len(discount_allocations) else 0.0
+        existing_idx = next(
+            (
+                i
+                for i, row in enumerate(data.get("orders", []))
+                if str(row.get("channel") or "") == "website"
+                and (
+                    (
+                        str(row.get("websiteCartId") or "").strip() == website_order_id
+                        and str(row.get("websiteOrderItemId") or "").strip() == line_item_id
+                    )
+                    or str(row.get("websiteOrderId") or "").strip() == line_order_id
+                    or (len(lines) == 1 and not explicit_items and str(row.get("websiteOrderId") or "").strip() == website_order_id)
+                )
+            ),
+            None,
+        )
+        product = line["product"]
+        common = {
+            "websiteOrderId": line_order_id,
+            "websiteCartId": website_order_id,
+            "websiteOrderItemId": line_item_id,
+            "websiteUserId": website_user_id,
+            "cid": customer_id,
+            "cname": str(customer.get("name") or user.get("name") or "").strip(),
+            "cphone": str(customer.get("phone") or user.get("phone") or "").strip(),
+            "carea": str(customer.get("area") or user.get("area") or "").strip(),
+            "prod": str(product.get("name") or "").strip(),
+            "prodId": line["prodId"],
+            "variant": line["variant"],
+            "qty": line["qty"],
+            "channel": "website",
+            "status": status,
+            "websiteStatusOriginal": website_status_original,
+            "discount": line_discount if coupon_code else 0.0,
+            "couponCode": coupon_code,
+            "couponId": int(coupon.get("id") or 0) if coupon_code else None,
+            "couponDiscountType": _normalize_discount_type(coupon.get("discountType")) if coupon_code else "",
+            "couponDiscountValue": _safe_float(coupon.get("discountValue")) if coupon_code else 0,
+            "couponMinCartValue": _safe_float(coupon.get("minCartValue")) if coupon_code else 0,
+            "paymentMethod": str(body.get("paymentMethod") or "").strip(),
+            "at": at_ms,
+            "realizedRevenue": body.get("realizedRevenue") if (len(lines) == 1 and not explicit_items and "realizedRevenue" in body) else None,
+            "notes": order_notes,
+            "shipping": body.get("shipping", {}) if isinstance(body.get("shipping"), dict) else {},
+            "subscriptionFrequency": subscription_frequency,
+            "subscriptionDuration": subscription_duration,
+            "subscriptionTag": subscription_tag,
+        }
+        if existing_idx is None:
+            order = {
+                "id": int(data.get("oid") or 1),
+                **common,
+                "commission": float(body.get("commission") or 0) if (len(lines) == 1 and not explicit_items and "commission" in body) else 0.0,
+                "distribution": {},
+                "inventorySynced": False,
+                "inventorySyncedAt": None,
+            }
+            data.setdefault("orders", []).insert(0, order)
+            data["oid"] = int(data.get("oid") or 1) + 1
+            _reconcile_order_inventory(data, 0, prev_order=None, force=True)
+        else:
+            prev = copy.deepcopy(data["orders"][existing_idx])
+            order = data["orders"][existing_idx]
+            order.update(common)
+            if "commission" in body:
+                order["commission"] = float(body.get("commission") or 0)
+            if len(lines) == 1 and not explicit_items and "realizedRevenue" in body:
+                order["realizedRevenue"] = body.get("realizedRevenue")
+            if "shipping" not in body:
+                order["shipping"] = order.get("shipping", {})
+            _reconcile_order_inventory(data, existing_idx, prev_order=prev, force=False)
+        touched_order_ids.add(int(order.get("id") or 0))
+        response_orders.append(_website_safe_order_payload(order))
+
+    obsolete_indices = [
+        i
+        for i, row in enumerate(data.get("orders", []))
+        if str(row.get("channel") or "") == "website"
+        and str(row.get("websiteCartId") or "").strip() == website_order_id
+        and int(row.get("id") or 0) not in touched_order_ids
+        and str(row.get("status") or "") not in {"completed", "cancelled", "returned"}
+    ]
+    for obsolete_idx in obsolete_indices:
+        prev = copy.deepcopy(data["orders"][obsolete_idx])
+        data["orders"][obsolete_idx]["status"] = "cancelled"
+        data["orders"][obsolete_idx]["discount"] = 0.0
+        data["orders"][obsolete_idx]["couponCode"] = ""
+        data["orders"][obsolete_idx]["couponId"] = None
+        data["orders"][obsolete_idx]["couponDiscountType"] = ""
+        data["orders"][obsolete_idx]["couponDiscountValue"] = 0
+        data["orders"][obsolete_idx]["couponMinCartValue"] = 0
+        _reconcile_order_inventory(data, obsolete_idx, prev_order=prev, force=False)
+    write_data(data)
+    return {
+        "ok": True,
+        "order": response_orders[0] if response_orders else None,
+        "orders": response_orders,
+        "cartSubtotal": cart_subtotal,
+        "discount": coupon_discount,
+        "payableAmount": round(max(0.0, cart_subtotal - coupon_discount), 2),
+        "user": _website_user_public_payload(user),
+    }
+
+
+@app.get("/api/website/orders")
+async def website_orders(request: Request):
+    _require_api_key_context(request)
+    try:
+        website_user_id = int(request.query_params.get("websiteUserId") or 0)
+    except (TypeError, ValueError):
+        website_user_id = 0
+    email = request.query_params.get("email") or ""
+    phone = request.query_params.get("phone") or ""
+    if str(getattr(request.state, "auth_key_scope", "")) == "website":
+        if not request.query_params.get("websiteUserId"):
+            raise HTTPException(status_code=403, detail={"code": "auth_scope_denied", "message": "websiteUserId is required for website key."})
+        _require_website_user_context(request, website_user_id)
+    data = read_data()
+    user = _find_website_user(data, website_user_id=website_user_id, email=email, phone=phone)
+    if not user:
+        raise HTTPException(status_code=404, detail="Website user not found.")
+    customer_id = int(user.get("customerId") or 0)
+    rows = [
+        _website_safe_order_payload(row)
+        for row in sorted(
+            data.get("orders", []),
+            key=lambda o: _normalized_order_time_ms(o.get("at")),
+            reverse=True,
+        )
+        if int(row.get("cid") or 0) == customer_id and str(row.get("channel") or "") == "website"
+    ]
+    return {"ok": True, "orders": rows}
+
+
+@app.get("/api/auth/status")
+async def auth_status(request: Request):
+    data = read_data()
+    return {
+        "auth": _auth_context_payload(data, request),
+        "featureConfig": {
+            "usernamePasswordAuthEnabled": _auth_enabled(),
+            "roleBasedAccessEnabled": _rbac_enabled(),
+        },
+    }
+
+
+@app.post("/api/auth/setup")
+async def auth_setup(request: Request):
+    if not _auth_enabled():
+        raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
+    body = await request.json()
+    username = _normalize_username(body.get("username"))
+    rate_limit_key = _enforce_auth_rate_limit(request, username)
+    password = str(body.get("password") or "")
+    display_name = str(body.get("displayName") or username).strip() or username
+    if len(username) < 3:
+        _record_auth_failure(rate_limit_key)
+        raise HTTPException(status_code=400, detail="Username must be at least 3 characters.")
+    if len(password) < 8:
+        _record_auth_failure(rate_limit_key)
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    data = read_data()
+    if any(str(u.get("role") or "admin") == "admin" for u in data.get("users", [])):
+        _record_auth_failure(rate_limit_key)
+        raise HTTPException(status_code=400, detail="Initial setup is already complete.")
+    user = _normalize_user_record(
+        {"id": data.get("uid", 1), "username": username, "displayName": display_name, "role": "admin"},
+        data,
+        preserve_password_hash=_password_hash(password),
+    )
+    data["users"].append(user)
+    data["uid"] = int(data.get("uid", 1) or 1) + 1
+    token = _create_session(data, user["id"])
+    write_data(data)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "auth": {
+                "enabled": True,
+                "roleModelEnabled": _rbac_enabled(),
+                "setupRequired": False,
+                "authenticated": True,
+                "user": _auth_user_payload(user),
+            },
+        }
+    )
+    _clear_auth_failures(rate_limit_key)
+    _set_auth_cookie(response, token, request)
+    return response
+
+
+@app.post("/api/auth/login")
+async def auth_login(request: Request):
+    if not _auth_enabled():
+        raise HTTPException(status_code=400, detail="Authentication is disabled in app_config.py.")
+    body = await request.json()
+    username = _normalize_username(body.get("username"))
+    rate_limit_key = _enforce_auth_rate_limit(request, username)
+    password = str(body.get("password") or "")
+    data = read_data()
+    if not data.get("users"):
+        _record_auth_failure(rate_limit_key)
+        raise HTTPException(status_code=403, detail="Initial setup is required before sign in.")
+    user = _find_user_by_username(data, username)
+    if not user or not _verify_password(password, str(user.get("passwordHash") or "")):
+        _record_auth_failure(rate_limit_key)
+        raise HTTPException(status_code=401, detail="Invalid username or password.")
+    token = _create_session(data, int(user["id"]))
+    write_data(data)
+    response = JSONResponse(
+        {
+            "ok": True,
+            "auth": {
+                "enabled": True,
+                "roleModelEnabled": _rbac_enabled(),
+                "setupRequired": False,
+                "authenticated": True,
+                "user": _auth_user_payload(user),
+            },
+        }
+    )
+    _clear_auth_failures(rate_limit_key)
+    _set_auth_cookie(response, token, request)
+    return response
+
+
+@app.post("/api/auth/logout")
+async def auth_logout(request: Request):
+    data = read_data()
+    token = request.cookies.get(AUTH_COOKIE_NAME) or ""
+    if token:
+        _delete_session(data, token)
+        write_data(data)
+    response = JSONResponse({"ok": True})
+    _clear_auth_cookie(response)
+    return response
+
+
+@app.get("/api/users")
+async def list_users(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    users = []
+    for user in data.get("users", []):
+        payload = _auth_user_payload(user) or {}
+        payload["createdAt"] = int(user.get("createdAt") or 0)
+        payload["updatedAt"] = int(user.get("updatedAt") or 0)
+        users.append(payload)
+    return {"users": users}
+
+
+@app.post("/api/users")
+async def create_user(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    if _find_user_by_username(data, body.get("username")):
+        raise HTTPException(status_code=400, detail="Username already exists.")
+    record = _normalize_user_record(
+        {"id": data.get("uid", 1), **body},
+        data,
+        preserve_password_hash=_password_hash(password),
+    )
+    data["users"].append(record)
+    data["uid"] = int(data.get("uid", 1) or 1) + 1
+    write_data(data)
+    return _auth_user_payload(record)
+
+
+@app.put("/api/users/{user_id}")
+async def update_user(user_id: int, request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    user = _find_user_by_id(data, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    body = await request.json()
+    if "username" in body:
+        existing = _find_user_by_username(data, body.get("username"))
+        if existing and int(existing.get("id", 0)) != user_id:
+            raise HTTPException(status_code=400, detail="Username already exists.")
+    replacement = _normalize_user_record(
+        {**user, **body, "id": user_id, "createdAt": user.get("createdAt")},
+        data,
+        preserve_password_hash=str(user.get("passwordHash") or ""),
+    )
+    if int(user_id) == int(((_build_auth_context(data, request).get("user") or {}).get("id") or 0)) and replacement["role"] != "admin":
+        raise HTTPException(status_code=400, detail="You cannot remove your own admin role.")
+    idx = next(i for i, row in enumerate(data["users"]) if int(row.get("id", 0)) == user_id)
+    data["users"][idx] = replacement
+    write_data(data)
+    return _auth_user_payload(replacement)
+
+
+@app.post("/api/users/{user_id}/password")
+async def change_user_password(user_id: int, request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    user = _find_user_by_id(data, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+    body = await request.json()
+    password = str(body.get("password") or "")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+    user["passwordHash"] = _password_hash(password)
+    user["updatedAt"] = int(time.time() * 1000)
+    _delete_sessions_for_user(data, int(user_id))
+    write_data(data)
+    return {"ok": True}
+
+
+@app.delete("/api/users/{user_id}")
+async def delete_user(user_id: int, request: Request):
+    data = read_data()
+    ctx = _require_admin(request, data)
+    current_user = ctx.get("user") or {}
+    if int(current_user.get("id", 0)) == user_id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account.")
+    before = len(data.get("users", []))
+    data["users"] = [u for u in data.get("users", []) if int(u.get("id", 0)) != user_id]
+    if len(data["users"]) == before:
+        raise HTTPException(status_code=404, detail="User not found.")
+    data["authSessions"] = [s for s in data.get("authSessions", []) if int(s.get("userId", 0)) != user_id]
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Data — full read/write ─────────────────────────────────────────────────
+@app.get("/api/data")
+async def get_data(request: Request):
+    """Return the full persisted app data."""
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    filtered = _filtered_data_for_user(data, ctx.get("user"))
+    return JSONResponse(content=_client_safe_data(filtered, request, auth_source_data=data))
+
+
+@app.get("/api/bootstrap")
+async def get_bootstrap(request: Request):
+    """Return the full initial app state for first paint."""
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    filtered = _filtered_data_for_user(data, ctx.get("user"))
+    bootstrap_state = _client_safe_data(filtered, request, auth_source_data=data)
+    metrics_source = filtered
+    return JSONResponse(
+        {
+            "state": bootstrap_state,
+            "dashboardMetrics": _sanitize_dashboard_metrics_for_user(
+                _compute_dashboard_metrics(metrics_source),
+                ctx.get("user"),
+            ),
+            "featureConfig": {
+                "usernamePasswordAuthEnabled": _auth_enabled(),
+                "roleBasedAccessEnabled": _rbac_enabled(),
+            },
+        }
+    )
+
+
+@app.put("/api/data")
+async def put_data(request: Request):
+    """Replace the entire persisted app data with the request body.
+    Used by the frontend for bulk save (e.g. after settings changes)."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+    data = read_data()
+    _require_admin(request, data)
+    if "products" not in body:
+        raise HTTPException(status_code=400, detail="Missing 'products' key")
+    merged = copy.deepcopy(data)
+    for key, value in body.items():
+        if key in {"users", "websiteUsers", "authSessions", "authContext"}:
+            continue
+        merged[key] = value
+    write_data(merged)
+    return {"ok": True}
+
+
+# ── Customers ──────────────────────────────────────────────────────────────
+@app.post("/api/customers")
+async def add_customer(request: Request):
+    body = await request.json()
+    required = ("name", "phone", "area")
+    if not all(k in body for k in required):
+        raise HTTPException(status_code=400, detail=f"Required fields: {required}")
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "create")
+    customer = _build_customer(
+        cid=data["cid"],
+        name=body["name"],
+        phone=body["phone"],
+        area=body["area"],
+        email=body.get("email", ""),
+        address=body.get("address", ""),
+        notes=body.get("notes", ""),
+        at=body.get("at"),
+        source=body.get("source", "manual"),
+        import_batch_id=body.get("importBatchId", ""),
+        created_by_user=ctx.get("user"),
+        product_tags=body.get("productTags", []),
+    )
+    data["customers"].append(customer)
+    _add_customer_product_tags(data, customer.get("productTags", []))
+    data["cid"] += 1
+    write_data(data)
+    return customer
+
+
+@app.put("/api/customers/{customer_id}")
+async def update_customer(customer_id: int, request: Request):
+    """Update an existing customer's details."""
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "edit")
+    idx = next((i for i, c in enumerate(data["customers"]) if c["id"] == customer_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
+    for key in ("name", "phone", "area", "email", "address", "notes"):
+        if key in body:
+            if key == "phone":
+                data["customers"][idx][key] = _normalize_customer_phone(body[key])
+            else:
+                data["customers"][idx][key] = body[key]
+    if "productTags" in body:
+        data["customers"][idx]["productTags"] = _normalize_customer_product_tags(body.get("productTags", []))
+        _add_customer_product_tags(data, data["customers"][idx]["productTags"])
+    # Also update denormalised customer fields on all their orders
+    if "name" in body or "phone" in body or "area" in body:
+        for o in data["orders"]:
+            if o["cid"] == customer_id:
+                if "name"  in body: o["cname"]  = body["name"]
+                if "phone" in body: o["cphone"] = _normalize_customer_phone(body["phone"])
+                if "area"  in body: o["carea"]  = body["area"]
+    write_data(data)
+    return data["customers"][idx]
+
+
+@app.post("/api/customers/import")
+async def import_customers(request: Request):
+    body = await request.json()
+    fmt = str(body.get("format") or "").strip().lower()
+    b64 = str(body.get("contentBase64") or "").strip()
+    filename = str(body.get("filename") or "").strip()
+    if not fmt or not b64:
+        raise HTTPException(status_code=400, detail="format and contentBase64 are required")
+
+    try:
+        file_bytes = base64.b64decode(b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid base64 file content")
+    if len(file_bytes) > MAX_IMPORT_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Import file too large. Max allowed is {MAX_IMPORT_BYTES // (1024 * 1024)} MB.",
+        )
+
+    if fmt == "vcf":
+        contacts = _parse_vcf_contacts(file_bytes.decode("utf-8", errors="ignore"))
+    elif fmt in ("xlsx", "xlsm"):
+        contacts = _parse_excel_contacts(file_bytes)
+    elif fmt == "csv":
+        contacts = _parse_csv_contacts(file_bytes)
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported import format. Use .vcf, .xlsx, .xlsm, or .csv")
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "create")
+    existing_phone_set = {_normalize_customer_phone(c.get("phone")) for c in data.get("customers", [])}
+    import_batch_id = f"imp-{int(time.time() * 1000)}"
+    created: list[dict] = []
+    skipped = 0
+    for row in contacts:
+        name = str(row.get("name") or "").strip()
+        phone = _normalize_customer_phone(row.get("phone"))
+        area = str(row.get("area") or "").strip() or "Unknown"
+        if not name or not phone:
+            skipped += 1
+            continue
+        if phone in existing_phone_set:
+            skipped += 1
+            continue
+        customer = _build_customer(
+            cid=data["cid"],
+            name=name,
+            phone=phone,
+            area=area,
+            email=row.get("email", ""),
+            address=row.get("address", ""),
+            notes=row.get("notes", ""),
+            at=int(time.time() * 1000),
+            source=row.get("source", "bulk_import"),
+            import_batch_id=import_batch_id,
+            created_by_user=ctx.get("user"),
+            product_tags=row.get("productTags", []),
+        )
+        data["customers"].append(customer)
+        created.append(customer)
+        _add_customer_product_tags(data, customer.get("productTags", []))
+        existing_phone_set.add(phone)
+        data["cid"] += 1
+
+    write_data(data)
+    return {
+        "ok": True,
+        "filename": filename,
+        "importBatchId": import_batch_id,
+        "totalParsed": len(contacts),
+        "imported": len(created),
+        "skipped": skipped,
+        "customers": created,
+    }
+
+
+@app.post("/api/customers/export")
+async def export_customers(request: Request):
+    try:
+        import openpyxl  # type: ignore
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Excel export requires openpyxl: {exc}") from exc
+    body = await request.json()
+    data = read_data()
+    _require_admin(request, data)
+    customer_ids_raw = body.get("customerIds")
+    if not isinstance(customer_ids_raw, list) or not customer_ids_raw:
+        raise HTTPException(status_code=400, detail="customerIds is required.")
+    selected_ids: list[int] = []
+    for raw in customer_ids_raw:
+        try:
+            cid = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0:
+            selected_ids.append(cid)
+    if not selected_ids:
+        raise HTTPException(status_code=400, detail="No valid customerIds provided.")
+
+    selected = [c for c in data.get("customers", []) if int(c.get("id") or 0) in set(selected_ids)]
+    if not selected:
+        raise HTTPException(status_code=404, detail="No matching customers found.")
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Customers"
+    headers = [
+        "Name",
+        "Phone",
+        "Area",
+        "Email",
+        "Address",
+        "Notes",
+        "Tags",
+        "Source",
+    ]
+    ws.append(headers)
+    for customer in selected:
+        ws.append(
+            [
+                str(customer.get("name") or "").strip(),
+                str(customer.get("phone") or "").strip(),
+                str(customer.get("area") or "").strip(),
+                str(customer.get("email") or "").strip(),
+                str(customer.get("address") or "").strip(),
+                str(customer.get("notes") or "").strip(),
+                ", ".join(_normalize_customer_product_tags(customer.get("productTags", []))),
+                str(customer.get("source") or "manual").strip(),
+            ]
+        )
+    for col in ws.columns:
+        max_len = max(len(str(cell.value or "")) for cell in col)
+        ws.column_dimensions[col[0].column_letter].width = min(max(max_len + 2, 12), 40)
+
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="customers-export-{ts}.xlsx"'}
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
+
+
+@app.delete("/api/customers/{customer_id}")
+async def delete_customer(customer_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "delete")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
+    before = len(data["customers"])
+    data["customers"] = [c for c in data["customers"] if c["id"] != customer_id]
+    if len(data["customers"]) == before:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Orders ─────────────────────────────────────────────────────────────────
+@app.post("/api/orders")
+async def add_order(request: Request):
+    body = await request.json()
+    required = ("cid", "cname", "cphone", "carea", "prod", "prodId", "variant", "qty", "channel", "at")
+    if not all(k in body for k in required):
+        raise HTTPException(status_code=400, detail=f"Required fields: {required}")
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "sales")
+    _ensure_action_access(ctx.get("user"), "orders", "create")
+    _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
+    try:
+        customer_id = int(body.get("cid") or 0)
+    except (TypeError, ValueError):
+        customer_id = 0
+    if customer_id > 0:
+        _ensure_customer_scope(ctx.get("user"), data, customer_id)
+    channel = body["channel"]
+    default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
+    subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
+    subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+    subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+    if not subscription_tag and (subscription_frequency or subscription_duration):
+        if subscription_frequency and subscription_duration:
+            subscription_tag = f"{subscription_frequency}. {subscription_duration} plan"
+        elif subscription_frequency:
+            subscription_tag = subscription_frequency
+        else:
+            subscription_tag = subscription_duration
+    order = {
+        "id":         data["oid"],
+        "cid":        body["cid"],
+        "cname":      body["cname"],
+        "cphone":     body["cphone"],
+        "carea":      body["carea"],
+        "prod":       body["prod"],
+        "prodId":     body["prodId"],
+        "variant":    body["variant"],
+        "qty":        body["qty"],
+        "channel":    channel,
+        "status":        body.get("status", default_status),
+        "discount":      float(body.get("discount", 0) or 0),
+        "commission":    float(body.get("commission", 0) or 0),
+        "paymentMethod": body.get("paymentMethod", ""),
+        "at":            body["at"],
+        "realizedRevenue": body.get("realizedRevenue"),
+        "notes": str(body.get("notes") or "").strip(),
+        "websiteStatusOriginal": str(body.get("websiteStatusOriginal") or "").strip(),
+        "distribution": body.get("distribution", {}),
+        "inventorySynced": False,
+        "inventorySyncedAt": None,
+        "shipping": body.get("shipping", {}),
+        "subscriptionFrequency": subscription_frequency,
+        "subscriptionDuration": subscription_duration,
+        "subscriptionTag": subscription_tag,
+    }
+    data["orders"].insert(0, order)
+    data["oid"] += 1
+    _reconcile_order_inventory(data, 0, prev_order=None, force=True)
+    write_data(data)
+    return _filtered_order_response(data, ctx.get("user"), order["id"])
+
+
+def _parse_local_date_bounds(date_value: str) -> tuple[int, int] | None:
+    try:
+        parts = [int(p) for p in str(date_value or "").split("-")]
+        if len(parts) != 3:
+            return None
+        year, month, day = parts
+        start_sec = time.mktime((year, month, day, 0, 0, 0, 0, 0, -1))
+        end_sec = start_sec + 86400
+        return int(start_sec * 1000), int(end_sec * 1000)
+    except Exception:
+        return None
+
+
+def _safe_order_datetime_text(at_value: Any) -> str:
+    try:
+        at_ms = _normalized_order_time_ms(at_value)
+        if at_ms <= 0:
+            return ""
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(at_ms / 1000))
+    except Exception:
+        return ""
+
+
+def _normalized_order_time_ms(raw_value: Any) -> int:
+    value = _safe_float(raw_value)
+    if value <= 0:
+        return 0
+    # Guard against mixed timestamp units across old/new records.
+    # >1e13 likely microseconds, <1e10 likely seconds, otherwise milliseconds.
+    if value > 10_000_000_000_000:
+        value = value / 1000.0
+    elif value < 10_000_000_000:
+        value = value * 1000.0
+    return int(value)
+
+
+@app.post("/api/orders/export-completed")
+async def export_completed_orders(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    scoped_data = _filtered_data_for_user(data, ctx.get("user"))
+    all_orders = scoped_data.get("orders", []) or []
+    completed_orders = [o for o in all_orders if _order_is_completed(o)]
+
+    range_key = str((body or {}).get("range") or "last_7_days").strip().lower()
+    aliases = {
+        "last 7 days": "last_7_days",
+        "last 1 month": "last_1_month",
+        "all completed orders": "all",
+    }
+    range_key = aliases.get(range_key, range_key)
+    if range_key not in {"last_7_days", "last_1_month", "custom", "all"}:
+        raise HTTPException(status_code=400, detail="Invalid range. Use last_7_days, last_1_month, custom, or all.")
+
+    now_ms = int(time.time() * 1000)
+    day_ms = 24 * 60 * 60 * 1000
+    today_start_ms = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)) * 1000)
+    tomorrow_start_ms = today_start_ms + day_ms
+    filtered_orders = completed_orders
+    if range_key == "last_7_days":
+        start_ms = today_start_ms - (6 * day_ms)
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
+    elif range_key == "last_1_month":
+        start_ms = today_start_ms - (29 * day_ms)
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
+    elif range_key == "custom":
+        start_date = str((body or {}).get("startDate") or "").strip()
+        end_date = str((body or {}).get("endDate") or "").strip()
+        if not start_date or not end_date:
+            raise HTTPException(status_code=400, detail="startDate and endDate are required for custom range.")
+        start_bounds = _parse_local_date_bounds(start_date)
+        end_bounds = _parse_local_date_bounds(end_date)
+        if start_bounds is None or end_bounds is None:
+            raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD.")
+        start_ms = start_bounds[0]
+        end_exclusive_ms = end_bounds[1]
+        if end_exclusive_ms <= start_ms:
+            raise HTTPException(status_code=400, detail="endDate must be same day or after startDate.")
+        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < end_exclusive_ms]
+
+    products_by_id = {p.get("id"): p for p in (scoped_data.get("products", []) or []) if isinstance(p, dict)}
+    gateway_pct = _payment_gateway_commission_pct(scoped_data)
+    rows = sorted(filtered_orders, key=lambda o: _normalized_order_time_ms(o.get("at")), reverse=True)
+
+    csv_output = StringIO()
+    writer = csv.writer(csv_output)
+    writer.writerow(
+        [
+            "Order ID",
+            "Order Date",
+            "Customer Name",
+            "Customer Phone",
+            "Area",
+            "Product / Service",
+            "Variant",
+            "Qty",
+            "Channel",
+            "Payment Method",
+            "Revenue",
+            "Profit",
+            "Status",
+        ]
+    )
+    for order in rows:
+        order_date = _safe_order_datetime_text(order.get("at"))
+        try:
+            revenue = _order_revenue(products_by_id, order)
+        except Exception:
+            revenue = 0.0
+        try:
+            profit = _order_profit(products_by_id, order, gateway_pct)
+        except Exception:
+            profit = None
+        writer.writerow(
+            [
+                int(_safe_float(order.get("id"))),
+                order_date,
+                str(order.get("cname") or "").strip(),
+                str(order.get("cphone") or "").strip(),
+                str(order.get("carea") or "").strip(),
+                str(order.get("prod") or "").strip(),
+                str(order.get("variant") or "").strip(),
+                _safe_float(order.get("qty")) or 1,
+                str(order.get("channel") or "").strip(),
+                str(order.get("paymentMethod") or "").strip(),
+                round(revenue, 2),
+                "" if profit is None else round(profit, 2),
+                "completed",
+            ]
+        )
+
+    payload = csv_output.getvalue().encode("utf-8")
+    stream = BytesIO(payload)
+    stream.seek(0)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="completed-orders-export-{ts}.csv"'}
+    return StreamingResponse(stream, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@app.put("/api/orders/{order_id}")
+async def update_order(order_id: int, request: Request):
+    """Update mutable fields on an order: status, discount, commission."""
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "edit")
+    idx = next((i for i, o in enumerate(data["orders"]) if o["id"] == order_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, data["orders"][idx].get("prodId"))
+    if "prodId" in body:
+        _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
+    if "cid" in body:
+        try:
+            next_customer_id = int(body.get("cid") or 0)
+        except (TypeError, ValueError):
+            next_customer_id = 0
+        if next_customer_id > 0:
+            _ensure_customer_scope(ctx.get("user"), data, next_customer_id)
+    prev = copy.deepcopy(data["orders"][idx])
+    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal"):
+        if key in body:
+            data["orders"][idx][key] = body[key]
+    if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
+        sub_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
+        sub_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
+        sub_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
+        if not sub_tag and (sub_frequency or sub_duration):
+            if sub_frequency and sub_duration:
+                sub_tag = f"{sub_frequency}. {sub_duration} plan"
+            elif sub_frequency:
+                sub_tag = sub_frequency
+            else:
+                sub_tag = sub_duration
+        data["orders"][idx]["subscriptionFrequency"] = sub_frequency
+        data["orders"][idx]["subscriptionDuration"] = sub_duration
+        data["orders"][idx]["subscriptionTag"] = sub_tag
+    _reconcile_order_inventory(data, idx, prev_order=prev)
+    write_data(data)
+    return _filtered_order_response(data, ctx.get("user"), order_id)
+
+
+@app.post("/api/distribution/batches")
+async def add_distribution_batch(request: Request):
+    body = await request.json()
+    required = ("distributorName", "prodId", "variant", "qty")
+    if not all(k in body for k in required):
+        raise HTTPException(status_code=400, detail=f"Required fields: {required}")
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "create")
+    _ensure_product_scope(ctx.get("user"), data, body.get("prodId"))
+    product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
+    if product is None:
+        raise HTTPException(status_code=400, detail="Product not found")
+
+    commission_mode = _normalize_commission_mode(body.get("commissionMode"))
+    try:
+        commission = float(body.get("commission", 0) or 0)
+    except (TypeError, ValueError):
+        commission = 0.0
+    if commission < 0:
+        raise HTTPException(status_code=400, detail="Commission cannot be negative")
+    try:
+        qty = int(body.get("qty", 0) or 0)
+    except (TypeError, ValueError):
+        qty = 0
+    if qty <= 0:
+        raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
+
+    batch = {
+        "id": data["dbid"],
+        "distributorName": str(body.get("distributorName", "")).strip(),
+        "prodId": body["prodId"],
+        "prod": product.get("name", body["prodId"]),
+        "variant": body["variant"],
+        "qty": qty,
+        "commission": commission,
+        "commissionMode": commission_mode,
+        "status": "active",
+        "notes": str(body.get("notes", "")).strip(),
+        "at": int(body.get("at") or int(time.time() * 1000)),
+        "completedAt": None,
+        "amountCollected": None,
+        "paymentMethod": "",
+        "orderId": None,
+    }
+    if not batch["distributorName"]:
+        raise HTTPException(status_code=400, detail="Distributor name is required")
+
+    _add_distribution_channel(data, batch["distributorName"])
+    data["distributorBatches"].insert(0, batch)
+    data["dbid"] += 1
+    write_data(data)
+    return batch
+
+
+@app.put("/api/distribution/batches/{batch_id}")
+async def update_distribution_batch(batch_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "edit")
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    batch = data["distributorBatches"][idx]
+    if batch.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Completed batch cannot be edited")
+
+    if "distributorName" in body:
+        batch["distributorName"] = str(body.get("distributorName", "")).strip()
+    if "prodId" in body:
+        product = next((p for p in data["products"] if p.get("id") == body["prodId"]), None)
+        if product is None:
+            raise HTTPException(status_code=400, detail="Product not found")
+        batch["prodId"] = body["prodId"]
+        batch["prod"] = product.get("name", body["prodId"])
+    if "variant" in body:
+        batch["variant"] = body["variant"]
+    if "qty" in body:
+        try:
+            qty = int(body.get("qty", 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty <= 0:
+            raise HTTPException(status_code=400, detail="Quantity must be greater than 0")
+        batch["qty"] = qty
+    if "commission" in body:
+        try:
+            comm = float(body.get("commission", 0) or 0)
+        except (TypeError, ValueError):
+            comm = 0.0
+        if comm < 0:
+            raise HTTPException(status_code=400, detail="Commission cannot be negative")
+        batch["commission"] = comm
+    if "commissionMode" in body:
+        batch["commissionMode"] = _normalize_commission_mode(body.get("commissionMode"))
+    if "notes" in body:
+        batch["notes"] = str(body.get("notes", "")).strip()
+    if not str(batch.get("distributorName", "")).strip():
+        raise HTTPException(status_code=400, detail="Distributor name is required")
+
+    _add_distribution_channel(data, batch.get("distributorName", ""))
+    write_data(data)
+    return batch
+
+
+def _delete_distribution_batch_from_data(data: dict, batch_id: int) -> dict:
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+
+    batch = data["distributorBatches"][idx]
+    removed_order_id = None
+    try:
+        linked_order_id = int(batch.get("orderId") or 0)
+    except (TypeError, ValueError):
+        linked_order_id = 0
+
+    if linked_order_id > 0:
+        order = next((o for o in data["orders"] if int(o.get("id", 0)) == linked_order_id), None)
+        if order is not None:
+            if order.get("inventorySynced") or order.get("status") == "completed":
+                _remove_inventory_movements_for_order(linked_order_id)
+            data["orders"] = [o for o in data["orders"] if int(o.get("id", 0)) != linked_order_id]
+            removed_order_id = linked_order_id
+
+    del data["distributorBatches"][idx]
+    return {"ok": True, "removedOrderId": removed_order_id}
+
+
+@app.delete("/api/distribution/batches/{batch_id}")
+async def delete_distribution_batch(batch_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "delete")
+    batch = next((b for b in data["distributorBatches"] if int(b.get("id", 0)) == batch_id), None)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
+    res = _delete_distribution_batch_from_data(data, batch_id)
+    write_data(data)
+    return res
+
+
+@app.post("/api/distribution/batches/{batch_id}/delete")
+async def delete_distribution_batch_via_post(batch_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "delete")
+    batch = next((b for b in data["distributorBatches"] if int(b.get("id", 0)) == batch_id), None)
+    if not batch:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
+    res = _delete_distribution_batch_from_data(data, batch_id)
+    write_data(data)
+    return res
+
+
+@app.post("/api/distribution/batches/{batch_id}/complete")
+async def complete_distribution_batch(batch_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "distribution")
+    _ensure_action_access(ctx.get("user"), "distribution", "complete")
+    idx = next((i for i, b in enumerate(data["distributorBatches"]) if int(b.get("id", 0)) == batch_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    batch = data["distributorBatches"][idx]
+    _ensure_product_scope(ctx.get("user"), data, batch.get("prodId"))
+    if batch.get("status") == "completed":
+        raise HTTPException(status_code=400, detail="Batch already completed")
+
+    try:
+        amount_collected = float(body.get("amountCollected", 0) or 0)
+    except (TypeError, ValueError):
+        amount_collected = 0.0
+    if amount_collected < 0:
+        raise HTTPException(status_code=400, detail="Amount collected cannot be negative")
+
+    qty = int(batch.get("qty") or 0)
+    commission_mode = _normalize_commission_mode(batch.get("commissionMode"))
+    commission_rate = float(batch.get("commission", 0) or 0)
+    total_commission = commission_rate if commission_mode == "batch" else commission_rate * qty
+    now_ms = int(body.get("at") or int(time.time() * 1000))
+    product = next((p for p in data["products"] if p.get("id") == batch.get("prodId")), None)
+    prod_name = product.get("name") if product else batch.get("prod", batch.get("prodId"))
+
+    order = {
+        "id": data["oid"],
+        "cid": 0,
+        "cname": str(batch.get("distributorName", "")).strip() or "Distributor",
+        "cphone": "",
+        "carea": "Distribution Channel",
+        "prod": prod_name,
+        "prodId": batch.get("prodId"),
+        "variant": batch.get("variant"),
+        "qty": qty,
+        "channel": "retail",
+        "status": "completed",
+        "discount": 0.0,
+        "commission": float(total_commission or 0),
+        "paymentMethod": str(body.get("paymentMethod", "")).strip(),
+        "at": now_ms,
+        "realizedRevenue": amount_collected,
+        "notes": "",
+        "websiteStatusOriginal": "",
+        "distribution": {
+            "batchId": int(batch.get("id")),
+            "distributorName": str(batch.get("distributorName", "")).strip(),
+            "commissionMode": commission_mode,
+            "commissionRate": float(commission_rate or 0),
+            "totalCommission": float(total_commission or 0),
+            "amountCollected": float(amount_collected or 0),
+        },
+        "inventorySynced": False,
+        "inventorySyncedAt": None,
+        "shipping": {},
+        "subscriptionFrequency": "",
+        "subscriptionDuration": "",
+        "subscriptionTag": "",
+    }
+    data["orders"].insert(0, order)
+    data["oid"] += 1
+
+    batch["status"] = "completed"
+    batch["completedAt"] = now_ms
+    batch["amountCollected"] = float(amount_collected or 0)
+    batch["paymentMethod"] = str(body.get("paymentMethod", "")).strip()
+    batch["orderId"] = order["id"]
+
+    _reconcile_order_inventory(data, 0, prev_order=None, force=True)
+    write_data(data)
+    return {"batch": batch, "order": _filtered_order_response(data, ctx.get("user"), order["id"])}
+
+
+@app.post("/api/operational-expenses")
+async def add_operational_expense(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "expenses")
+    _ensure_action_access(ctx.get("user"), "expenses", "create")
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Expense title is required")
+    try:
+        amount = round(float(body.get("amount") or 0), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Valid expense amount is required")
+    if amount <= 0:
+        raise HTTPException(status_code=400, detail="Expense amount must be greater than zero")
+    try:
+        expense_at = int(body.get("expenseAt") or body.get("at") or int(time.time() * 1000))
+    except (TypeError, ValueError):
+        expense_at = int(time.time() * 1000)
+    record = _normalize_operational_expense(
+        {
+            "id": data.get("exid", 1),
+            "title": title,
+            "category": body.get("category", ""),
+            "amount": amount,
+            "expenseAt": expense_at,
+            "notes": body.get("notes", ""),
+            "createdAt": int(time.time() * 1000),
+            "createdBy": _expense_creator_payload(ctx.get("user")),
+        },
+        int(data.get("exid") or 1),
+    )
+    data.setdefault("operationalExpenses", []).insert(0, record)
+    data["exid"] = int(data.get("exid") or 1) + 1
+    write_data(data)
+    return record
+
+
+@app.post("/api/alerts/followups/close")
+async def close_followup_alert(request: Request):
+    body = await request.json()
+    try:
+        cid = int(body.get("cid", 0) or 0)
+        order_id = int(body.get("orderId", 0) or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid cid/orderId")
+    if cid <= 0 or order_id <= 0:
+        raise HTTPException(status_code=400, detail="cid and orderId are required")
+
+    note = str(body.get("note", "") or "").strip()
+    closed_at = int(body.get("at") or int(time.time() * 1000))
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "alerts")
+    data["closedFollowUps"] = [
+        r
+        for r in data.get("closedFollowUps", [])
+        if not (int(r.get("cid", 0)) == cid and int(r.get("orderId", 0)) == order_id)
+    ]
+    data["closedFollowUps"].append(
+        {
+            "cid": cid,
+            "orderId": order_id,
+            "note": note,
+            "closedAt": closed_at,
+        }
+    )
+    write_data(data)
+    return {"ok": True, "cid": cid, "orderId": order_id, "note": note, "closedAt": closed_at}
+
+
+@app.get("/api/orders/{order_id}/shipping-label.pdf")
+async def shipping_label_pdf(order_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_action_access(ctx.get("user"), "shipping", "labels")
+    order = next((o for o in data["orders"] if o.get("id") == order_id), None)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+
+    ship = order.get("shipping") or {}
+    awb = str(ship.get("awb", "")).strip()
+    courier = str(ship.get("courier", "")).strip()
+    ship_date = str(ship.get("shipDate", "")).strip()
+    if not (awb and courier and ship_date):
+        raise HTTPException(status_code=400, detail="Shipping details incomplete for PDF label")
+
+    customer = next((c for c in data.get("customers", []) if c.get("id") == order.get("cid")), {})
+    profile = data.get("shippingProfile", {}) or {}
+    try:
+        pdf_bytes = _build_shipping_label_pdf(order, customer, profile, ship)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Could not generate PDF label: {exc}")
+
+    headers = {"Content-Disposition": f'attachment; filename="shipping-label-order-{order_id}.pdf"'}
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
+@app.post("/api/inventory/sync-completed-orders")
+async def sync_completed_orders(request: Request):
+    """
+    Reconcile inventory usage from completed CRM orders.
+    Safe to run repeatedly; removes prior CRM-linked movements per order
+    and re-applies from current order values (date/qty/variant/product).
+    """
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_action_access(ctx.get("user"), "inventory", "sync")
+    if not SYNC_LOCK.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Inventory sync already in progress")
+    try:
+        completed_total = sum(1 for o in data["orders"] if o.get("status") == "completed")
+        movements = _build_crm_movements_from_completed_orders(data)
+        try:
+            replace_res = _post_inventory_replace_movements(movements)
+        except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=502, detail=f"Inventory replace failed: {exc}")
+
+        now_ms = int(time.time() * 1000)
+        synced = 0
+        for o in data["orders"]:
+            if o.get("status") == "completed":
+                o["inventorySynced"] = True
+                o["inventorySyncedAt"] = now_ms
+                synced += 1
+            else:
+                o["inventorySynced"] = False
+                o["inventorySyncedAt"] = None
+
+        write_data(data)
+        return {
+            "ok": True,
+            "completedOrders": completed_total,
+            "reconciledNow": synced,
+            "syncedNow": synced,
+            "completedOrdersPendingAfter": 0,
+            "removedOldMovements": int(replace_res.get("removed", 0)),
+            "addedNewMovements": int(replace_res.get("added", 0)),
+            "bulkReplace": True,
+        }
+    finally:
+        SYNC_LOCK.release()
+
+
+@app.get("/api/inventory/stock")
+async def inventory_stock(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    stock = _get_inventory_stock()
+    if stock is None:
+        raise HTTPException(status_code=502, detail="Inventory service unavailable")
+    allowed_inventory_ids = _allowed_inventory_product_ids_for_user(ctx.get("user"), data)
+    if allowed_inventory_ids is not None:
+        stock = [item for item in stock if str(item.get("id") or "") in allowed_inventory_ids]
+    return stock
+
+
+@app.get("/api/inventory/products")
+async def inventory_products_feed():
+    """
+    Internal feed for the inventory/admin app.
+    Returns the CRM product catalog with recipe composition so inventory can
+    compute finished-goods availability for ecommerce/admin usage.
+    """
+    data = read_data()
+    products: list[dict] = []
+    for product in data.get("products", []) or []:
+        if not isinstance(product, dict):
+            continue
+        products.append(
+            {
+                "id": str(product.get("id") or ""),
+                "name": str(product.get("name") or "").strip(),
+                "sizes": [str(size or "").strip() for size in (product.get("sizes") or []) if str(size or "").strip()],
+                "composition": _normalize_composition(product.get("composition", [])),
+                "pricing": _normalize_product_pricing(product.get("pricing", {}), product.get("sizes", [])),
+                "waTpl": str(product.get("waTpl") or ""),
+            }
+        )
+    return {"products": products, "updatedAt": int(time.time() * 1000)}
+
+
+@app.delete("/api/orders/{order_id}")
+async def delete_order(order_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "delete")
+    order = next((o for o in data["orders"] if o["id"] == order_id), None)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+    # Remove previously synced inventory movements for this order.
+    if order.get("inventorySynced") or order.get("status") == "completed":
+        _remove_inventory_movements_for_order(order_id)
+    data["orders"] = [o for o in data["orders"] if o["id"] != order_id]
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Products ───────────────────────────────────────────────────────────────
+@app.post("/api/products")
+async def add_product(request: Request):
+    body = await request.json()
+    if not body.get("name"):
+        raise HTTPException(status_code=400, detail="Product name required")
+    if not body.get("sizes"):
+        raise HTTPException(status_code=400, detail="At least one variant required")
+    data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "create")
+    product = {
+        "id":      "p" + str(data["pid"]),
+        "name":    body["name"],
+        "sizes":   body["sizes"],
+        "waTpl":   body.get("waTpl", ""),
+        "pricing": _normalize_product_pricing(body.get("pricing", {}), body.get("sizes", [])),
+        "composition": _normalize_composition(body.get("composition", [])),
+    }
+    data["products"].append(product)
+    data["pid"] += 1
+    write_data(data)
+    return product
+
+
+@app.put("/api/products/{product_id}")
+async def update_product(product_id: str, request: Request):
+    """Update a product (pricing, waTpl, sizes, name)."""
+    body = await request.json()
+    data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "edit")
+    idx = next((i for i, p in enumerate(data["products"]) if p["id"] == product_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    # Merge — only update provided keys
+    for key in ("name", "sizes", "waTpl"):
+        if key in body:
+            data["products"][idx][key] = body[key]
+    if "pricing" in body or "sizes" in body:
+        data["products"][idx]["pricing"] = _normalize_product_pricing(
+            body.get("pricing", data["products"][idx].get("pricing", {})),
+            data["products"][idx].get("sizes", []),
+        )
+    if "composition" in body:
+        data["products"][idx]["composition"] = _normalize_composition(body.get("composition", []))
+    write_data(data)
+    return data["products"][idx]
+
+
+@app.delete("/api/products/{product_id}")
+async def delete_product(product_id: str, request: Request):
+    data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "products", "delete")
+    before = len(data["products"])
+    data["products"] = [p for p in data["products"] if p["id"] != product_id]
+    if len(data["products"]) == before:
+        raise HTTPException(status_code=404, detail="Product not found")
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Coupons ────────────────────────────────────────────────────────────────
+@app.post("/api/coupons")
+async def add_coupon(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    coupon = _normalize_coupon({**body, "id": int(data.get("couponId") or 1)})
+    if not coupon["code"]:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    if coupon["discountValue"] <= 0:
+        raise HTTPException(status_code=400, detail="Discount value must be greater than 0.")
+    if coupon.get("startAt") and coupon.get("endAt") and int(coupon["endAt"]) < int(coupon["startAt"]):
+        raise HTTPException(status_code=400, detail="Coupon end date must be after start date.")
+    if _find_coupon(data, coupon["code"]):
+        raise HTTPException(status_code=409, detail="Coupon code already exists.")
+    now_ms = int(time.time() * 1000)
+    coupon["createdAt"] = now_ms
+    coupon["updatedAt"] = now_ms
+    data.setdefault("coupons", []).append(coupon)
+    data["couponId"] = int(data.get("couponId") or 1) + 1
+    write_data(data)
+    return _coupon_public_payload(coupon, 0)
+
+
+@app.put("/api/coupons/{coupon_id}")
+async def update_coupon(coupon_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    idx = next((i for i, c in enumerate(data.get("coupons", [])) if int(c.get("id") or 0) == int(coupon_id)), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    current = copy.deepcopy(data["coupons"][idx])
+    coupon = _normalize_coupon({**current, **body, "id": coupon_id})
+    if not coupon["code"]:
+        raise HTTPException(status_code=400, detail="Coupon code is required.")
+    if coupon["discountValue"] <= 0:
+        raise HTTPException(status_code=400, detail="Discount value must be greater than 0.")
+    if coupon.get("startAt") and coupon.get("endAt") and int(coupon["endAt"]) < int(coupon["startAt"]):
+        raise HTTPException(status_code=400, detail="Coupon end date must be after start date.")
+    duplicate = next(
+        (
+            c
+            for c in data.get("coupons", [])
+            if int(c.get("id") or 0) != int(coupon_id) and _normalize_coupon_code(c.get("code")) == coupon["code"]
+        ),
+        None,
+    )
+    if duplicate:
+        raise HTTPException(status_code=409, detail="Coupon code already exists.")
+    coupon["createdAt"] = current.get("createdAt") or coupon.get("createdAt")
+    coupon["updatedAt"] = int(time.time() * 1000)
+    data["coupons"][idx] = coupon
+    write_data(data)
+    return _coupon_public_payload(coupon, _coupon_usage_count(data, coupon))
+
+
+@app.delete("/api/coupons/{coupon_id}")
+async def delete_coupon(coupon_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    before = len(data.get("coupons", []))
+    data["coupons"] = [c for c in data.get("coupons", []) if int(c.get("id") or 0) != int(coupon_id)]
+    if len(data["coupons"]) == before:
+        raise HTTPException(status_code=404, detail="Coupon not found.")
+    write_data(data)
+    return {"ok": True}
+
+
+# ── Settings (waDefaultTpl + shippingProfile) ──────────────────────────────
+@app.put("/api/settings")
+async def update_settings(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    if "waDefaultTpl" in body:
+        data["waDefaultTpl"] = body["waDefaultTpl"]
+    if "shippingProfile" in body and isinstance(body["shippingProfile"], dict):
+        profile = copy.deepcopy(data.get("shippingProfile", {}))
+        for key in ("companyName", "address", "phone", "email", "gstin"):
+            if key in body["shippingProfile"]:
+                profile[key] = body["shippingProfile"][key]
+        if "shippedWaTemplate" in body["shippingProfile"]:
+            profile["shippedWaTemplate"] = str(body["shippingProfile"].get("shippedWaTemplate") or "").strip()
+        if "paymentGatewayCommissionPct" in body["shippingProfile"]:
+            try:
+                profile["paymentGatewayCommissionPct"] = float(body["shippingProfile"]["paymentGatewayCommissionPct"] or 0)
+            except (TypeError, ValueError):
+                profile["paymentGatewayCommissionPct"] = data.get("shippingProfile", {}).get("paymentGatewayCommissionPct", 3.0)
+            if profile["paymentGatewayCommissionPct"] < 0:
+                profile["paymentGatewayCommissionPct"] = 0.0
+        if "couriers" in body["shippingProfile"] and isinstance(body["shippingProfile"]["couriers"], list):
+            profile["couriers"] = _normalize_couriers(body["shippingProfile"]["couriers"])
+        if "trackingTemplates" in body["shippingProfile"] and isinstance(body["shippingProfile"]["trackingTemplates"], dict):
+            clean = {}
+            for k, v in body["shippingProfile"]["trackingTemplates"].items():
+                ks = str(k).strip()
+                if not ks:
+                    continue
+                clean[ks] = str(v or "").strip()
+            profile["trackingTemplates"] = clean
+        if not isinstance(profile.get("trackingTemplates"), dict):
+            profile["trackingTemplates"] = {}
+        if isinstance(profile.get("couriers"), list) and profile["couriers"]:
+            profile["trackingTemplates"] = {
+                c["name"]: str(c.get("trackingTemplate", "")).strip()
+                for c in profile["couriers"]
+            }
+        elif profile["trackingTemplates"]:
+            profile["couriers"] = _couriers_from_templates(profile["trackingTemplates"])
+        data["shippingProfile"] = profile
+    if "marketingSettings" in body and isinstance(body["marketingSettings"], dict):
+        curr = copy.deepcopy(data.get("marketingSettings", {}))
+        incoming = body["marketingSettings"]
+        if "aiBaseUrl" in incoming:
+            curr["aiBaseUrl"] = _sanitize_ai_base_url(incoming.get("aiBaseUrl"))
+        if "aiModel" in incoming:
+            curr["aiModel"] = str(incoming.get("aiModel") or "").strip()
+        if "brandName" in incoming:
+            curr["brandName"] = str(incoming.get("brandName") or "").strip()
+        if "systemPrompt" in incoming:
+            curr["systemPrompt"] = str(incoming.get("systemPrompt") or "").strip()
+        if incoming.get("clearApiKey") is True:
+            curr["aiApiKey"] = ""
+        elif "aiApiKey" in incoming:
+            new_key = str(incoming.get("aiApiKey") or "").strip()
+            if new_key:
+                curr["aiApiKey"] = new_key
+        data["marketingSettings"] = curr
+    write_data(data)
+    prefs = None
+    if "uiPreferences" in body and isinstance(body["uiPreferences"], dict):
+        prefs = write_ui_preferences(body["uiPreferences"])
+    return {"ok": True, "uiPreferences": prefs or read_ui_preferences()}
+
+
+@app.post("/api/marketing/draft")
+async def generate_marketing_draft(request: Request):
+    body = await request.json()
+    try:
+        customer_id = int(body.get("customerId") or 0)
+    except (TypeError, ValueError):
+        customer_id = 0
+    if customer_id <= 0:
+        raise HTTPException(status_code=400, detail="customerId is required")
+
+    campaign_brief = str(body.get("campaignBrief") or "").strip()
+    extra_instruction = str(body.get("extraInstruction") or "").strip()
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "marketing")
+    _ensure_action_access(ctx.get("user"), "marketing", "generate")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    ms = data.get("marketingSettings", {})
+    base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
+    model = str(ms.get("aiModel") or "").strip()
+    api_key = str(ms.get("aiApiKey") or "").strip()
+    system_prompt = str(ms.get("systemPrompt") or "").strip() or DEFAULT_DATA["marketingSettings"]["systemPrompt"]
+    if not model:
+        raise HTTPException(status_code=400, detail="Set AI model in Settings → Marketing AI first.")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Set AI API key in Settings → Marketing AI first.")
+
+    customer_context = _build_customer_context(data, customer)
+    prompt_lines = [
+        "Draft one personalized WhatsApp marketing message for this customer.",
+        "Keep it under 90 words, plain text, and friendly.",
+        "Do not use markdown.",
+        "",
+        "Campaign Brief:",
+        campaign_brief or "General re-engagement campaign for coffee reorder.",
+        "",
+    ]
+    if extra_instruction:
+        prompt_lines.extend(["Extra Instruction:", extra_instruction, ""])
+    prompt_lines.extend(["Customer Context:", customer_context])
+    user_prompt = "\n".join(prompt_lines)
+
+    draft = _ai_chat_draft(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    phone = _to_whatsapp_phone(str(customer.get("phone") or ""))
+    if not phone:
+        raise HTTPException(status_code=400, detail="Customer phone is missing/invalid.")
+    wa_url = f"https://wa.me/{phone}?text={urlparse.quote(draft)}"
+    return {
+        "draft": draft,
+        "waUrl": wa_url,
+        "customerId": customer_id,
+        "customerName": customer.get("name", ""),
+    }
+
+
+@app.post("/api/marketing/template")
+async def generate_marketing_template(request: Request):
+    body = await request.json()
+    campaign_brief = str(body.get("campaignBrief") or "").strip()
+    extra_instruction = str(body.get("extraInstruction") or "").strip()
+    group_summary = str(body.get("groupSummary") or "").strip()
+    allowed_tokens = body.get("allowedTokens") or []
+    if not isinstance(allowed_tokens, list):
+        allowed_tokens = []
+    allowed_tokens = [str(t).strip() for t in allowed_tokens if str(t).strip()]
+    if not allowed_tokens:
+        allowed_tokens = [
+            "{{brand_name}}",
+            "{{customer_name}}",
+            "{{area}}",
+            "{{order_count}}",
+            "{{avg_order_value}}",
+            "{{last_order_date}}",
+            "{{last_product_name}}",
+            "{{last_variant}}",
+            "{{preferred_channel}}",
+        ]
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "marketing")
+    _ensure_action_access(ctx.get("user"), "marketing", "generate")
+    ms = data.get("marketingSettings", {})
+    base_url = _sanitize_ai_base_url(ms.get("aiBaseUrl"))
+    model = str(ms.get("aiModel") or "").strip()
+    api_key = str(ms.get("aiApiKey") or "").strip()
+    system_prompt = str(ms.get("systemPrompt") or "").strip() or DEFAULT_DATA["marketingSettings"]["systemPrompt"]
+    if not model:
+        raise HTTPException(status_code=400, detail="Set AI model in Settings → Marketing AI first.")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Set AI API key in Settings → Marketing AI first.")
+
+    token_line = " ".join(allowed_tokens)
+    token_meanings = {
+        "{{brand_name}}": "Your brand/business name from settings. Use when message signs off or references brand.",
+        "{{customer_name}}": "Customer full name. Use for greeting/personal tone.",
+        "{{area}}": "Customer locality/area.",
+        "{{order_count}}": "Total number of past orders (integer).",
+        "{{avg_order_value}}": "Average order value already formatted currency text (example: ₹420).",
+        "{{last_order_date}}": "Date of customer's last order. This is historical data, not campaign validity date.",
+        "{{last_product_name}}": "Name of last product ordered.",
+        "{{last_variant}}": "Variant/size of last order (example: 250g).",
+        "{{preferred_channel}}": "Most frequent purchase channel (retail/whatsapp/website).",
+    }
+    token_help_lines = []
+    for tok in allowed_tokens:
+        token_help_lines.append(f"- {tok}: {token_meanings.get(tok, 'Token placeholder from CRM data.')}")
+
+    prompt_lines = [
+        "Create exactly one reusable WhatsApp marketing template for a customer group.",
+        "Return template text only.",
+        "Do not personalize with real names. Use placeholders/tokens.",
+        "Keep under 90 words and plain text.",
+        "Use the minimum number of tokens needed. Default target: 1 to 3 tokens, not all.",
+        "Do not include token-heavy data-dump style lines.",
+        "Do not invent facts not present in tokens.",
+        "Do not convert historical fields into future promises unless campaign explicitly asks.",
+        "Specifically: never use {{last_order_date}} as offer expiry/valid-until date.",
+        "Do not claim guaranteed discounts/freebies unless campaign brief explicitly says so.",
+        "If brand name is needed in message/signoff, use {{brand_name}} token instead of generic placeholders.",
+        "Prefer simple structure: greeting + offer + short call-to-action.",
+        "Only use stats tokens ({{order_count}}, {{avg_order_value}}) when brief explicitly needs analytics-style personalization.",
+        "For most campaigns, prefer {{customer_name}} and optionally one contextual token like {{last_product_name}} or {{area}}.",
+        "",
+        "Campaign Brief:",
+        campaign_brief or "Re-engagement campaign for filtered customer group.",
+        "",
+        "Group Summary:",
+        group_summary or "-",
+        "",
+        "Allowed Tokens (use only if needed for campaign goal; do not force all):",
+        token_line,
+        "",
+        "Token Meanings:",
+        *token_help_lines,
+    ]
+    if extra_instruction:
+        prompt_lines.extend(["", "Extra Instruction:", extra_instruction])
+    user_prompt = "\n".join(prompt_lines)
+
+    template = _ai_chat_draft(
+        base_url=base_url,
+        api_key=api_key,
+        model=model,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+    )
+    issues = _template_token_issues(template)
+    if issues:
+        fix_prompt = "\n".join(
+            [
+                "Your previous template had token misuse.",
+                "Fix and return only corrected template text.",
+                "Do not change campaign intent.",
+                "Hard rules:",
+                "- {{order_count}} is number of orders; do not attach kg/g/pack units.",
+                "- {{last_order_date}} is historical date; do not use as expiry/valid-until.",
+                "- Keep token count minimal (1-3 unless absolutely needed).",
+                "",
+                "Previous template:",
+                template,
+            ]
+        )
+        template = _ai_chat_draft(
+            base_url=base_url,
+            api_key=api_key,
+            model=model,
+            system_prompt=system_prompt,
+            user_prompt=fix_prompt,
+        )
+        issues = _template_token_issues(template)
+    used = [tok for tok in allowed_tokens if tok in template]
+    return {
+        "template": template,
+        "allowedTokens": allowed_tokens,
+        "usedTokens": used,
+        "issues": issues,
+    }
+
+
+# ── Entry point ────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    _init_storage()
+    print(f"[CRM] Using SQLite storage at {DB_FILE}")
+    if LEGACY_DATA_FILE.exists():
+        print(f"[CRM] Legacy JSON available for fallback/backup at {LEGACY_DATA_FILE}")
+
+    host = os.environ.get("HOST", "0.0.0.0").strip() or "0.0.0.0"
+    print(f"[CRM] Starting server at http://{host}:8000")
+    uvicorn.run("app:app", host=host, port=8000, reload=False)

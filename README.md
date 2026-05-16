@@ -1,0 +1,566 @@
+# Kudagu CRM
+
+A lightweight, self-hostable CRM for businesses of all types, with built-in order management, customer follow-ups, distributor tracking, shipping labels, WhatsApp workflows, and mandatory inventory sync.
+
+This repository contains:
+- A main CRM app (`app.py`) on port `8000`
+- A required inventory service (`inventory/app.py`) on port `8001`
+
+## Why This Project Exists
+
+Kudagu CRM is designed for small teams across industries that need:
+- Fast daily operations (orders, customers, status updates)
+- Repeat-order follow-up workflows
+- WhatsApp-first communication
+- Basic distribution and inventory visibility
+- Zero heavy dependencies (single FastAPI service + SQLite)
+
+## Core Features
+
+- Dashboard with revenue/profit snapshots and recent activity
+- Customer management (create, edit, import from CSV/Excel/VCF)
+- Order lifecycle tracking (`pending` -> `confirmed` -> `shipped` -> `completed`)
+- Shipping workflow with courier templates, tracking links, and PDF labels
+- Follow-up alerts for repeat orders
+- Distribution batch tracking and settlement flow
+- Product and pricing configuration per sales channel
+- Marketing workspace with customer segmentation and campaign execution
+- AI-assisted WhatsApp template generation (OpenAI-compatible API)
+- Inventory-linked operations with low-stock alerts and completed-order sync
+
+## Tech Stack
+
+- Backend: FastAPI, Uvicorn, Gunicorn
+- Storage: SQLite (WAL mode)
+- PDF generation: ReportLab
+- Spreadsheet parsing: openpyxl
+- Proxy helper: FastAPI + httpx
+- Frontend: Vanilla HTML/CSS/JavaScript (served as static assets)
+
+## Repository Structure
+
+```text
+.
+|- app.py                     # Main CRM backend + static hosting
+|- static/
+|  |- index.html              # CRM UI
+|  |- app.js                  # CRM frontend logic
+|- inventory/
+|  |- app.py                  # Required inventory service
+|  |- static/
+|  |  |- index.html
+|  |  |- app.js
+|- ui_helper/
+|  |- app.py                  # Secure browser UI proxy
+|  |- gunicorn.helper.conf.py
+|- requirements.txt
+|- .gitignore
+```
+
+## Quick Start
+
+### 1) Prerequisites
+
+- Python `3.10+`
+- `pip`
+
+### 2) Clone and install
+
+```bash
+git clone <your-fork-or-repo-url>
+cd kudagu-crm
+python -m venv .venv
+```
+
+Windows (PowerShell):
+
+```powershell
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+macOS/Linux:
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3) Run the CRM
+
+```bash
+python app.py
+```
+
+Open: `http://localhost:8000`
+
+### 4) Run inventory service (required)
+
+In a second terminal:
+
+```bash
+cd inventory
+python app.py
+```
+
+Inventory runs at `http://localhost:8001`.
+
+Important: The CRM depends on the inventory service for stock visibility, low-stock alerts, and order-to-inventory movement sync. Run both services together in production.
+
+### 5) Production runtime with Gunicorn (4 workers)
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run CRM:
+
+```bash
+gunicorn -c gunicorn.crm.conf.py app:app
+```
+
+Run Inventory:
+
+```bash
+gunicorn -c inventory/gunicorn.inventory.conf.py inventory.app:app
+```
+
+Notes:
+
+- Both services run with `4` workers using `uvicorn.workers.UvicornWorker`.
+- Gunicorn configs force `DISABLE_IN_MEMORY_CACHE=1` for worker-safe SQLite behavior.
+
+### 6) Run UI helper proxies (browser entrypoints)
+
+Browser users should access CRM/Inventory through helper instances, not directly to backend ports.
+
+CRM helper:
+
+```bash
+gunicorn -c ui_helper/gunicorn.crm_helper.conf.py ui_helper.app:app
+```
+
+Inventory helper:
+
+```bash
+gunicorn -c ui_helper/gunicorn.inventory_helper.conf.py ui_helper.app:app
+```
+
+Create helper env files:
+
+- `ui_helper/.env.crm`
+
+```env
+HELPER_UPSTREAM_URL=http://127.0.0.1:8000
+HELPER_API_KEY=replace_with_crm_api_key
+HELPER_TIMEOUT_SECONDS=30
+```
+
+### 7) systemd service examples (all 4 services)
+
+Create these files under `/etc/systemd/system/` and adjust `User`, `Group`, and paths if needed.
+Ready-to-copy templates are also included in this repo under `deploy/systemd/`.
+
+`/etc/systemd/system/kudagu-crm-main.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM Main Gunicorn Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c gunicorn.crm.conf.py app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-inventory.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM Inventory Gunicorn Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c inventory/gunicorn.inventory.conf.py inventory.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-helper.service`
+
+```ini
+[Unit]
+Description=Kudagu CRM UI Helper Gunicorn Service
+After=network.target kudagu-crm-main.service
+Requires=kudagu-crm-main.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c ui_helper/gunicorn.crm_helper.conf.py ui_helper.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`/etc/systemd/system/kudagu-crm-inventory-helper.service`
+
+```ini
+[Unit]
+Description=Kudagu Inventory UI Helper Gunicorn Service
+After=network.target kudagu-crm-inventory.service
+Requires=kudagu-crm-inventory.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c ui_helper/gunicorn.inventory_helper.conf.py ui_helper.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Apply and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now kudagu-crm-main kudagu-crm-inventory kudagu-crm-helper kudagu-crm-inventory-helper
+sudo systemctl status kudagu-crm-main kudagu-crm-inventory kudagu-crm-helper kudagu-crm-inventory-helper
+```
+
+Check bound ports:
+
+```bash
+sudo ss -ltnp | egrep ':8000|:8001|:8100|:8101'
+```
+
+- `ui_helper/.env.inventory`
+
+```env
+HELPER_UPSTREAM_URL=http://127.0.0.1:8001
+HELPER_API_KEY=replace_with_inventory_api_key
+HELPER_TIMEOUT_SECONDS=30
+```
+
+## Configuration
+
+The CRM supports these environment variables:
+
+- `HOST` (default: `0.0.0.0`)
+- `INVENTORY_URL` (default: `http://localhost:8001`)
+- `MAX_IMPORT_BYTES` (default: `5242880`, i.e. 5 MB)
+- `ALLOW_PRIVATE_AI_BASE_URL` (default: disabled)
+- `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
+- `CRM_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by CRM `/api/*`
+- `CRM_OUTBOUND_API_KEY` (optional) key used by CRM when calling Inventory; defaults to first `CRM_SERVICE_API_KEYS` value
+- `WEBSITE_KEY` (optional but recommended) dedicated ecommerce backend key with website-scope allowlist
+- `UI_HELPER_KEY` (optional but recommended) dedicated internal UI helper key
+- `AUTHZ_SCOPE_MODE` (`enforce`/`monitor`/`off`, default: `enforce`)
+- `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
+
+Example:
+
+```bash
+HOST=0.0.0.0 INVENTORY_URL=http://localhost:8001 CRM_SERVICE_API_KEYS=replace_with_crm_key CRM_OUTBOUND_API_KEY=replace_with_inventory_key python app.py
+```
+
+The Inventory service supports:
+
+- `CRM_URL` (default: `http://localhost:8000`)
+- `INVENTORY_SERVICE_API_KEYS` (**required**) comma-separated API keys accepted by Inventory `/api/*`
+- `INVENTORY_OUTBOUND_API_KEY` (optional) key used by Inventory when calling CRM; defaults to first `INVENTORY_SERVICE_API_KEYS` value
+- `WEBSITE_KEY` (optional but recommended) dedicated ecommerce backend key with website-scope allowlist
+- `UI_HELPER_KEY` (optional but recommended) dedicated internal UI helper key
+- `AUTHZ_SCOPE_MODE` (`enforce`/`monitor`/`off`, default: `enforce`)
+- `CORS_ALLOWED_ORIGINS` (optional) comma-separated browser origin allowlist for cross-origin API access
+- `DISABLE_IN_MEMORY_CACHE` (recommended `1` for multi-worker runtime)
+- `SERVICE_API_KEYS` / `SERVICE_OUTBOUND_API_KEY` remain supported as backward-compatible fallback names
+
+UI helper environment variables (per helper instance):
+
+- `HELPER_UPSTREAM_URL` (**required**) upstream service URL (CRM internal URL for CRM helper, Inventory internal URL for Inventory helper)
+- `HELPER_API_KEY` (**required**) API key injected by helper for upstream `/api/*` calls
+- `HELPER_LISTEN_HOST` (default: `0.0.0.0`)
+- `HELPER_LISTEN_PORT` (default: `9000`)
+- `HELPER_TIMEOUT_SECONDS` (default: `30`)
+- `HELPER_BLOCK_WEBSITE_API` (default: `1`) blocks `/api/website/*` through the UI helper; website/ecommerce backends should call CRM directly with `WEBSITE_KEY`
+
+## Marketing AI + WhatsApp Workflow
+
+The Marketing module supports semi-automated WhatsApp campaigns without requiring a paid WhatsApp Business API integration.
+
+- AI helps generate campaign-ready WhatsApp message templates using your configured model/API key.
+- Campaign execution opens prefilled WhatsApp chats for each selected customer in sequence.
+- This uses the standard WhatsApp client flow (`wa.me` deep links), so teams can run campaigns without per-message WhatsApp API costs.
+
+Note: internet data charges and any third-party AI provider/API usage costs still apply.
+
+## Data & Persistence
+
+- Primary data is stored in SQLite (`data.sqlite3` for CRM, `inventory/data.sqlite3` for inventory).
+- Legacy `data.json` files are used for one-time seed/fallback if SQLite is empty.
+- SQLite files are gitignored by default.
+
+## API Overview (CRM)
+
+Main routes:
+
+- `GET /` -> CRM web app (recommended to access via UI helper proxy)
+- `GET /healthz` -> minimal health check for uptime monitoring
+- `GET /api/data` -> full application state
+- `PUT /api/data` -> replace full state
+- `GET /api/bootstrap` -> initial dashboard bootstrap
+- `POST /api/customers`, `PUT /api/customers/{id}`, `DELETE /api/customers/{id}`
+- `POST /api/customers/import`
+- `POST /api/orders`, `PUT /api/orders/{id}`, `DELETE /api/orders/{id}`
+- `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}`
+- `PUT /api/settings`
+- `POST /api/coupons`, `PUT /api/coupons/{id}`, `DELETE /api/coupons/{id}`
+- `GET /api/orders/{id}/shipping-label.pdf`
+- `POST /api/alerts/followups/close`
+- `POST /api/distribution/batches` and related batch update/complete/delete routes
+- `GET /api/inventory/stock`
+- `POST /api/inventory/sync-completed-orders`
+- `POST /api/marketing/draft`
+- `POST /api/marketing/template`
+- `POST /api/website/auth/signup` (create website customer account + sync CRM customer)
+- `POST /api/website/auth/login` (verify website credentials via CRM)
+- `POST /api/website/auth/google/check` (find/link existing website account by verified Google email)
+- `POST /api/website/auth/google/signup` (create Google-authenticated website customer account + sync CRM customer)
+- `POST /api/website/coupons/validate` (validate CRM-owned coupon rules for a website cart)
+- `GET /api/website/users/{id}`, `PUT /api/website/users/{id}` (profile sync)
+- `POST /api/website/orders/sync` (upsert website order into CRM orders)
+- `GET /api/website/orders?websiteUserId={id}` (website-safe customer order history)
+
+## API Overview (Inventory Service)
+
+- `GET /` -> Inventory web app (recommended to access via UI helper proxy)
+- `GET /healthz` -> minimal health check for uptime monitoring
+- `GET /api/stock` -> stock snapshot (used by CRM alerts)
+- `GET /api/data`, `PUT /api/data`
+- `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}`
+- `POST /api/products/{id}/movements`
+- `DELETE /api/products/{id}/movements/{movement_id}`
+- `POST /api/crm/replace-movements` (atomic CRM movement sync)
+
+## Security Notes
+
+- API key authentication is enforced for all `/api/*` routes in both CRM and Inventory.
+- Accepted headers: `X-API-Key: <key>` or `Authorization: Bearer <key>`.
+- `CRM_SERVICE_API_KEYS` and `INVENTORY_SERVICE_API_KEYS` are mandatory and each key should be 32+ characters.
+- WEBSITE key scope is default-deny with explicit route+method allowlists.
+- Missing/invalid key => `401` (`auth_invalid_key`), valid key but denied scope/method => `403` (`auth_scope_denied`/`auth_method_denied`).
+- Browser access should go through UI helper instances; do not expose CRM/Inventory backend ports publicly.
+- UI helper strips any client-supplied `X-API-Key` / `Authorization` and injects server-side key only for upstream `/api/*`.
+- UI helper blocks `/api/website/*` by default so public CRM UI domains cannot be used as an unauthenticated ecommerce API proxy.
+- Cross-origin callers and server-to-server callers must send API key.
+- Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
+- Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
+
+Website-key caller context rule:
+
+- For website-key calls to CRM user/order endpoints, send `X-Website-User-Id` header.
+- CRM enforces this context for:
+  - `GET/PUT /api/website/users/{websiteUserId}`
+  - `GET /api/website/orders` (must include `websiteUserId` query param)
+  - `POST /api/website/coupons/validate`
+  - `POST /api/website/orders/sync`
+
+Website coupon flow:
+
+- Create coupon rules in CRM Settings -> Coupons.
+- Website backend validates a user-entered coupon with `POST /api/website/coupons/validate`; never expose `WEBSITE_KEY` in browser code.
+- CRM calculates subtotal from CRM website pricing using each cart line's `prodId`, `variant`, and `qty`.
+- Website backend can send the whole cart in one request using `items[]`; legacy single-line `prodId`/`variant`/`qty` requests still work.
+- Website backend sends `couponCode` and, when available, the CRM-returned `couponQuoteId` during `POST /api/website/orders/sync`; CRM verifies the quote/cart and records the trusted discount.
+- CRM stores one CRM order row per cart line, all sharing the same `websiteCartId`; the response returns `orders[]` for all rows plus `order` as the first row for backward compatibility.
+- Coupon rules can have both a global usage limit and a per-customer usage limit; limits count one website cart once, not once per cart line.
+- `websiteOrderItemId` should be stable and unique per cart line. If omitted, CRM uses the array index.
+
+Multi-item coupon validation example:
+
+```http
+POST /api/website/coupons/validate
+X-API-Key: <WEBSITE_KEY>
+X-Website-User-Id: 12
+Content-Type: application/json
+```
+
+```json
+{
+  "code": "COUPON1",
+  "websiteUserId": 12,
+  "items": [
+    { "websiteOrderItemId": "line_1", "prodId": "p1", "variant": "250g", "qty": 2 },
+    { "websiteOrderItemId": "line_2", "prodId": "p2", "variant": "500g", "qty": 1 }
+  ]
+}
+```
+
+Valid response:
+
+```json
+{
+  "ok": true,
+  "coupon": { "code": "COUPON1", "discountType": "flat", "discountValue": 10 },
+  "couponQuoteId": "cq_1_xxxxxxxxxxxxxxxx",
+  "expiresAt": 1778247000000,
+  "cartSubtotal": 560,
+  "discount": 10,
+  "payableAmount": 550
+}
+```
+
+Multi-item order sync example:
+
+```http
+POST /api/website/orders/sync
+X-API-Key: <WEBSITE_KEY>
+X-Website-User-Id: 12
+Content-Type: application/json
+```
+
+```json
+{
+  "websiteOrderId": "web_order_1001",
+  "websiteUserId": 12,
+  "items": [
+    { "websiteOrderItemId": "line_1", "prodId": "p1", "variant": "250g", "qty": 2 },
+    { "websiteOrderItemId": "line_2", "prodId": "p2", "variant": "500g", "qty": 1 }
+  ],
+  "couponCode": "COUPON1",
+  "couponQuoteId": "cq_1_xxxxxxxxxxxxxxxx",
+  "paymentMethod": "razorpay",
+  "status": "pending"
+}
+```
+
+Sync response:
+
+```json
+{
+  "ok": true,
+  "order": { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_1" },
+  "orders": [
+    { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_1", "discount": 2.68 },
+    { "websiteCartId": "web_order_1001", "websiteOrderItemId": "line_2", "discount": 7.32 }
+  ],
+  "cartSubtotal": 560,
+  "discount": 10,
+  "payableAmount": 550
+}
+```
+
+For multi-item carts, the website should treat `orders[]` as authoritative. CRM allocates the cart discount proportionally across the stored CRM order rows so existing CRM reporting and inventory flows continue to work.
+
+`couponQuoteId` is a short-lived CRM snapshot of a successful coupon validation. The website should pass it into order sync after payment so a checkout that was already approved by CRM does not fail because the live coupon rule changes while the customer is inside the payment gateway. CRM still verifies that the quote belongs to the same `websiteUserId`, coupon code, and cart lines.
+
+Example Caddy snippets (public domains -> helper instances):
+
+```caddy
+crm.hopit-labs.com {
+    reverse_proxy 127.0.0.1:8100
+}
+
+inventory.hopit-labs.com {
+    reverse_proxy 127.0.0.1:8101
+}
+```
+
+Example nginx snippets:
+
+```nginx
+server {
+    server_name crm.hopit-labs.com;
+    location / { proxy_pass http://127.0.0.1:8100; }
+}
+
+server {
+    server_name inventory.hopit-labs.com;
+    location / { proxy_pass http://127.0.0.1:8101; }
+}
+```
+- Marketing AI API keys are stored in app state; deploy with trusted access controls.
+- If using `ALLOW_PRIVATE_AI_BASE_URL=1`, ensure only trusted users can modify AI settings.
+
+## Production Deployment Notes
+
+- Use a reverse proxy (Nginx/Caddy) in front of UI helper instances.
+- Terminate TLS at the proxy.
+- Restrict access with Basic Auth, SSO, VPN, or IP allowlists.
+- Exempt only the health endpoints from proxy auth if your uptime monitor cannot send credentials:
+  CRM helper -> `https://crm.your-domain/healthz`
+  Inventory helper -> `https://inventory.your-domain/healthz`
+- Back up SQLite files regularly.
+- Run CRM, Inventory, and helper instances under a process manager (systemd, supervisord, container runtime).
+
+## Development Workflow
+
+- Keep changes small and focused per pull request.
+- Add clear commit messages (`feat:`, `fix:`, `docs:`, etc.).
+- Validate manual flows after API/UI changes (customer/order CRUD, shipping label, follow-ups, marketing flow, inventory sync).
+
+## Contributing
+
+Contributions are welcome.
+
+1. Fork the repository
+2. Create a branch: `git checkout -b feat/your-change`
+3. Make and test changes
+4. Commit: `git commit -m "feat: describe change"`
+5. Push and open a pull request
+
+Please include:
+- What changed
+- Why it changed
+- Any screenshots/GIFs for UI updates
+- Migration notes if data shape/API behavior changed
+
+## Roadmap Ideas
+
+- Authentication and user roles
+- Audit log for critical actions
+- Automated tests (API + frontend integration)
+- Docker Compose setup
+- CI pipeline (lint/test/release checks)
+- Data export/import tooling with versioned schema docs
+
+## License
+
+No license file is currently included.
+
+If you plan to open source this project, add a `LICENSE` file (for example, MIT/Apache-2.0) before publishing so usage rights are explicit.

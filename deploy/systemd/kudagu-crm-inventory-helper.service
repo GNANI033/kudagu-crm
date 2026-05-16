@@ -1,0 +1,18 @@
+[Unit]
+Description=Kudagu Inventory UI Helper Gunicorn Service
+After=network.target kudagu-crm-inventory.service
+Requires=kudagu-crm-inventory.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/kudagu-crm
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/python3 -m gunicorn -c ui_helper/gunicorn.inventory_helper.conf.py ui_helper.app:app
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
