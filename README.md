@@ -359,6 +359,8 @@ Main routes:
 - `POST /api/marketing/template`
 - `POST /api/website/auth/signup` (create website customer account + sync CRM customer)
 - `POST /api/website/auth/login` (verify website credentials via CRM)
+- `POST /api/website/auth/google/check` (find/link existing website account by verified Google email)
+- `POST /api/website/auth/google/signup` (create Google-authenticated website customer account + sync CRM customer)
 - `POST /api/website/coupons/validate` (validate CRM-owned coupon rules for a website cart)
 - `GET /api/website/users/{id}`, `PUT /api/website/users/{id}` (profile sync)
 - `POST /api/website/orders/sync` (upsert website order into CRM orders)

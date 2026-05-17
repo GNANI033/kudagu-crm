@@ -10,11 +10,22 @@ data.json
 *.sqlite-wal
 *.sqlite-shm
 *.sqlite-journal
+
+# Local environment files
+.env
+.env.*
 *.env
+ui_helper/.env.crm
+ui_helper/.env.inventory
 !.env.example
 !ui_helper/.env.crm.example
 !ui_helper/.env.inventory.example
+
+# Python bytecode
 __pycache__/
 inventory/__pycache__/
+ui_helper/__pycache__/
+*.py[cod]
+*$py.class
+
 ui_prefs.json
-app_config.py

@@ -10,8 +10,8 @@ Example:
 """
 
 # Toggle username/password authentication.
-USERNAME_PASSWORD_AUTH_ENABLED = False
-# USERNAME_PASSWORD_AUTH_ENABLED = True
+# USERNAME_PASSWORD_AUTH_ENABLED = False
+USERNAME_PASSWORD_AUTH_ENABLED = True
 
 # Toggle the multi-role user model (admin / partner / employee).
 ROLE_BASED_ACCESS_ENABLED = True

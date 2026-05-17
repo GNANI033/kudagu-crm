@@ -30,11 +30,13 @@ from pathlib import Path
 from typing import Any
 from urllib import request as urlrequest
 from urllib import error as urlerror
+from urllib import parse as urlparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 
 
 def _load_env_file(path: Path) -> None:
@@ -94,6 +96,14 @@ CORS_ALLOWED_ORIGINS = [
     )
     if origin
 ]
+TRUSTED_HOSTS = [
+    host.strip().lower()
+    for host in os.environ.get(
+        "INVENTORY_TRUSTED_HOSTS",
+        os.environ.get("TRUSTED_HOSTS", "inventory.hopit-labs.com,localhost,127.0.0.1"),
+    ).split(",")
+    if host.strip()
+]
 DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
@@ -119,6 +129,22 @@ def _validate_service_api_key_config() -> None:
     if weak:
         raise RuntimeError("Every API key value must be at least 32 characters for security.")
     _warn_on_scope_key_overlap()
+
+
+def _validate_security_config() -> None:
+    if not TRUSTED_HOSTS:
+        raise RuntimeError("TRUSTED_HOSTS must contain at least one host.")
+    for host in TRUSTED_HOSTS:
+        if host == "*" or "/" in host or "\\" in host or "\r" in host or "\n" in host:
+            raise RuntimeError(f"TRUSTED_HOSTS contains an unsafe host: {host}")
+    for origin in CORS_ALLOWED_ORIGINS:
+        if "*" in origin:
+            raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain wildcard origins.")
+        parsed = urlparse.urlparse(origin)
+        if not parsed.scheme or not parsed.netloc:
+            raise RuntimeError(f"CORS_ALLOWED_ORIGINS contains an invalid origin: {origin}")
+    if AUTHZ_SCOPE_MODE not in {"enforce", "monitor", "off"}:
+        raise RuntimeError("AUTHZ_SCOPE_MODE must be enforce, monitor, or off.")
 
 
 def _warn_on_scope_key_overlap() -> None:
@@ -794,6 +820,7 @@ def recompute_stock(p: dict) -> float:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _validate_service_api_key_config()
+    _validate_security_config()
     _init_storage()
     yield
 
@@ -801,6 +828,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Kudagu Inventory", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 # Restrict cross-origin browser callers to an explicit allowlist.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
@@ -1263,4 +1291,3 @@ if __name__ == "__main__":
         print(f"[Inventory] Legacy JSON available for fallback/backup at {LEGACY_DATA_FILE}")
     print("[Inventory] Starting at http://0.0.0.0:8001")
     uvicorn.run("app:app", host="0.0.0.0", port=8001, reload=False)
-
