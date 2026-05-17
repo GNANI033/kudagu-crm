@@ -44,6 +44,7 @@ from urllib import parse as urlparse
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -110,6 +111,15 @@ CORS_ALLOWED_ORIGINS = [
     )
     if origin
 ]
+TRUSTED_HOSTS = [
+    host.strip().lower()
+    for host in os.environ.get(
+        "TRUSTED_HOSTS",
+        "crm.hopit-labs.com,localhost,127.0.0.1",
+    ).split(",")
+    if host.strip()
+]
+TRUST_PROXY_HEADERS = os.environ.get("TRUST_PROXY_HEADERS", "true").strip().lower() in ("1", "true", "yes", "on")
 SIZE_TO_GRAMS = {"100g": 100.0, "250g": 250.0, "500g": 500.0, "1kg": 1000.0}
 SYNC_LOCK = threading.Lock()
 INVENTORY_BACKOFF_SECONDS = max(1, int(os.environ.get("INVENTORY_BACKOFF_SECONDS", "20")))
@@ -176,6 +186,31 @@ def _validate_service_api_key_config() -> None:
     if weak:
         raise RuntimeError("Every API key value must be at least 32 characters for security.")
     _warn_on_scope_key_overlap()
+
+
+def _normalize_origin(value: str) -> str | None:
+    try:
+        parsed = urlparse.urlparse(str(value or ""))
+    except Exception:
+        return None
+    if not parsed.scheme or not parsed.netloc:
+        return None
+    return f"{parsed.scheme.lower()}://{parsed.netloc.lower()}"
+
+
+def _validate_security_config() -> None:
+    if not TRUSTED_HOSTS:
+        raise RuntimeError("TRUSTED_HOSTS must contain at least one host.")
+    for host in TRUSTED_HOSTS:
+        if host == "*" or "/" in host or "\\" in host or "\r" in host or "\n" in host:
+            raise RuntimeError(f"TRUSTED_HOSTS contains an unsafe host: {host}")
+    for origin in CORS_ALLOWED_ORIGINS:
+        if "*" in origin:
+            raise RuntimeError("CORS_ALLOWED_ORIGINS must not contain wildcard origins.")
+        if not _normalize_origin(origin):
+            raise RuntimeError(f"CORS_ALLOWED_ORIGINS contains an invalid origin: {origin}")
+    if AUTHZ_SCOPE_MODE not in {"enforce", "monitor", "off"}:
+        raise RuntimeError("AUTHZ_SCOPE_MODE must be enforce, monitor, or off.")
 
 
 def _warn_on_scope_key_overlap() -> None:
@@ -250,6 +285,24 @@ def _build_key_candidates() -> list[dict[str, Any]]:
 def _is_loopback_client(request: Request) -> bool:
     host = str((request.client.host if request.client else "") or "").strip()
     return host in {"127.0.0.1", "::1", "localhost"}
+
+
+def _request_from_trusted_proxy(request: Request) -> bool:
+    return TRUST_PROXY_HEADERS and _is_loopback_client(request)
+
+
+def _effective_forwarded_proto(request: Request) -> str:
+    if not _request_from_trusted_proxy(request):
+        return ""
+    return str(request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+
+
+def _effective_host(request: Request) -> str:
+    if _request_from_trusted_proxy(request):
+        forwarded_host = str(request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+        if forwarded_host:
+            return forwarded_host
+    return str(request.headers.get("host") or "").strip()
 
 
 def _resolve_api_key_meta(value: str, request: Request) -> dict[str, Any] | None:
@@ -334,6 +387,47 @@ def _authz_audit_log(request: Request, meta: dict[str, Any] | None, allowed: boo
         "caller_ip": (request.client.host if request.client else ""),
     }
     print(json.dumps(payload, ensure_ascii=False))
+
+
+def _csrf_allowed_origins(request: Request) -> set[str]:
+    origins = {_normalize_origin(origin) for origin in CORS_ALLOWED_ORIGINS}
+    origins = {origin for origin in origins if origin}
+    host = _effective_host(request)
+    proto = _effective_forwarded_proto(request) or str(request.url.scheme or "https").lower()
+    if host:
+        origins.add(f"{proto}://{host.lower()}")
+    return origins
+
+
+def _request_has_browser_context(request: Request) -> bool:
+    return bool(
+        request.cookies.get(AUTH_COOKIE_NAME)
+        or request.headers.get("origin")
+        or request.headers.get("referer")
+    )
+
+
+def _csrf_origin_error(request: Request) -> JSONResponse | None:
+    if request.method.upper() not in {"POST", "PUT", "PATCH", "DELETE"}:
+        return None
+    if not request.url.path.startswith("/api/"):
+        return None
+    if not _request_has_browser_context(request):
+        return None
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    allowed = _csrf_allowed_origins(request)
+    if origin:
+        normalized = _normalize_origin(origin)
+        if not normalized or normalized not in allowed:
+            return JSONResponse(status_code=403, content={"code": "csrf_origin_mismatch", "detail": "Invalid request origin."})
+        return None
+    if referer:
+        normalized = _normalize_origin(referer)
+        if not normalized or normalized not in allowed:
+            return JSONResponse(status_code=403, content={"code": "csrf_referer_mismatch", "detail": "Invalid request origin."})
+        return None
+    return JSONResponse(status_code=403, content={"code": "csrf_origin_required", "detail": "Request origin is required."})
 
 
 def _require_website_user_context(request: Request, expected_user_id: int) -> None:
@@ -738,11 +832,11 @@ def _delete_sessions_for_user(data: dict, user_id: int) -> None:
 
 
 def _request_is_https(request: Request) -> bool:
-    forwarded_proto = str(request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+    forwarded_proto = _effective_forwarded_proto(request)
     if forwarded_proto == "https":
         return True
     forwarded_ssl = str(request.headers.get("x-forwarded-ssl") or "").strip().lower()
-    if forwarded_ssl in {"on", "1", "true", "yes"}:
+    if _request_from_trusted_proxy(request) and forwarded_ssl in {"on", "1", "true", "yes"}:
         return True
     return str(request.url.scheme or "").lower() == "https"
 
@@ -764,7 +858,9 @@ def _clear_auth_cookie(response: Response) -> None:
 
 
 def _auth_rate_limit_key(request: Request, username: Any) -> str:
-    forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    forwarded_for = ""
+    if _request_from_trusted_proxy(request):
+        forwarded_for = str(request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
     client_host = forwarded_for or str((request.client.host if request.client else "") or "unknown")
     return f"{client_host}::{_normalize_username(username)}"
 
@@ -3172,6 +3268,7 @@ def _reconcile_order_inventory(data: dict, order_idx: int, prev_order: dict | No
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _validate_service_api_key_config()
+    _validate_security_config()
     _init_storage()
     yield
 
@@ -3179,6 +3276,7 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Kudagu Kaapi CRM", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ALLOWED_ORIGINS,
@@ -3244,6 +3342,9 @@ async def require_api_key_for_api_routes(request: Request, call_next):
         return await call_next(request)
     if request.method.upper() == "OPTIONS":
         return await call_next(request)
+    csrf_error = _csrf_origin_error(request)
+    if csrf_error is not None:
+        return csrf_error
     key_value = _extract_api_key(request)
     key_meta = _resolve_api_key_meta(key_value, request)
     if not key_meta:
@@ -4187,6 +4288,44 @@ async def update_customer(customer_id: int, request: Request):
     return data["customers"][idx]
 
 
+@app.delete("/api/customers/{customer_id}/website-account")
+async def delete_customer_website_account(customer_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_action_access(ctx.get("user"), "customers", "delete")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
+
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == int(customer_id)), None)
+    if not customer:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    target_email = _normalize_email(customer.get("email"))
+    target_phone = _normalize_customer_phone(customer.get("phone"))
+
+    website_users = data.get("websiteUsers", []) or []
+    kept_website_users: list[dict] = []
+    removed_website_users = 0
+    for row in website_users:
+        if not isinstance(row, dict):
+            continue
+        row_customer_id = int(row.get("customerId") or 0)
+        row_email = _normalize_email(row.get("email"))
+        row_phone = _normalize_customer_phone(row.get("phone"))
+        linked = (
+            row_customer_id == int(customer_id)
+            or (target_email and row_email == target_email)
+            or (target_phone and row_phone == target_phone)
+        )
+        if linked:
+            removed_website_users += 1
+            continue
+        kept_website_users.append(row)
+    data["websiteUsers"] = kept_website_users
+    write_data(data)
+    return {"ok": True, "removedWebsiteUsers": removed_website_users}
+
+
 @app.post("/api/customers/import")
 async def import_customers(request: Request):
     body = await request.json()
@@ -4342,12 +4481,40 @@ async def delete_customer(customer_id: int, request: Request):
     _ensure_page_access(ctx.get("user"), "customers")
     _ensure_action_access(ctx.get("user"), "customers", "delete")
     _ensure_customer_scope(ctx.get("user"), data, customer_id)
-    before = len(data["customers"])
-    data["customers"] = [c for c in data["customers"] if c["id"] != customer_id]
-    if len(data["customers"]) == before:
+    target_customer = next(
+        (c for c in data.get("customers", []) if int(c.get("id") or 0) == int(customer_id)),
+        None,
+    )
+    if not target_customer:
         raise HTTPException(status_code=404, detail="Customer not found")
+
+    target_email = _normalize_email(target_customer.get("email"))
+    target_phone = _normalize_customer_phone(target_customer.get("phone"))
+
+    data["customers"] = [c for c in data["customers"] if int(c.get("id") or 0) != int(customer_id)]
+
+    website_users = data.get("websiteUsers", []) or []
+    kept_website_users: list[dict] = []
+    removed_website_users = 0
+    for row in website_users:
+        if not isinstance(row, dict):
+            continue
+        row_customer_id = int(row.get("customerId") or 0)
+        row_email = _normalize_email(row.get("email"))
+        row_phone = _normalize_customer_phone(row.get("phone"))
+        linked = (
+            row_customer_id == int(customer_id)
+            or (target_email and row_email == target_email)
+            or (target_phone and row_phone == target_phone)
+        )
+        if linked:
+            removed_website_users += 1
+            continue
+        kept_website_users.append(row)
+    data["websiteUsers"] = kept_website_users
+
     write_data(data)
-    return {"ok": True}
+    return {"ok": True, "removedWebsiteUsers": removed_website_users}
 
 
 # ── Orders ─────────────────────────────────────────────────────────────────

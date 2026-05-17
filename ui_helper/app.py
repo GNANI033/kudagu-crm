@@ -10,13 +10,17 @@ from __future__ import annotations
 
 import os
 import time
+import ipaddress
+import socket
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 from starlette.middleware.gzip import GZipMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 
 def _load_env_file(path: Path) -> None:
@@ -65,6 +69,17 @@ HELPER_BLOCK_WEBSITE_API = str(os.environ.get("HELPER_BLOCK_WEBSITE_API", "1")).
     "yes",
     "on",
 }
+HELPER_TRUSTED_HOSTS = [
+    host.strip().lower()
+    for host in os.environ.get("HELPER_TRUSTED_HOSTS", os.environ.get("TRUSTED_HOSTS", "localhost,127.0.0.1")).split(",")
+    if host.strip()
+]
+HELPER_ALLOW_PUBLIC_UPSTREAM = str(os.environ.get("HELPER_ALLOW_PUBLIC_UPSTREAM", "0")).strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 HOP_BY_HOP_HEADERS = {
     "connection",
@@ -85,8 +100,36 @@ def _validate_config() -> None:
         raise RuntimeError("HELPER_API_KEY is required.")
     if len(HELPER_API_KEY) < 32:
         raise RuntimeError("HELPER_API_KEY must be at least 32 characters.")
-    if not (HELPER_UPSTREAM_URL.startswith("http://") or HELPER_UPSTREAM_URL.startswith("https://")):
-        raise RuntimeError("HELPER_UPSTREAM_URL must be http(s).")
+    parsed = urlparse(HELPER_UPSTREAM_URL)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise RuntimeError("HELPER_UPSTREAM_URL must be an absolute http(s) URL.")
+    if not HELPER_ALLOW_PUBLIC_UPSTREAM and not _is_private_or_loopback_host(parsed.hostname):
+        raise RuntimeError("HELPER_UPSTREAM_URL must target a private/local host unless HELPER_ALLOW_PUBLIC_UPSTREAM=1.")
+    if not HELPER_TRUSTED_HOSTS:
+        raise RuntimeError("HELPER_TRUSTED_HOSTS must contain at least one host.")
+    for host in HELPER_TRUSTED_HOSTS:
+        if host == "*" or "/" in host or "\\" in host or "\r" in host or "\n" in host:
+            raise RuntimeError(f"HELPER_TRUSTED_HOSTS contains an unsafe host: {host}")
+
+
+def _is_private_or_loopback_host(hostname: str) -> bool:
+    host = str(hostname or "").strip().lower()
+    if host in {"localhost"}:
+        return True
+    try:
+        ip_value = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except socket.gaierror:
+            return False
+        return all(
+            ipaddress.ip_address(item[4][0]).is_private
+            or ipaddress.ip_address(item[4][0]).is_loopback
+            or ipaddress.ip_address(item[4][0]).is_link_local
+            for item in infos
+        )
+    return bool(ip_value.is_private or ip_value.is_loopback or ip_value.is_link_local)
 
 
 def _clean_request_headers(request: Request) -> dict[str, str]:
@@ -123,6 +166,7 @@ def _is_html_payload(content_type: str, content: bytes) -> bool:
 
 app = FastAPI(title="Kudagu UI Helper", docs_url=None, redoc_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=1024)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=HELPER_TRUSTED_HOSTS)
 _validate_config()
 _CLIENT = httpx.AsyncClient(timeout=HELPER_TIMEOUT_SECONDS, follow_redirects=False)
 

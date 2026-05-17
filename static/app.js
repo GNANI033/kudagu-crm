@@ -2593,6 +2593,7 @@ function openEditCustomer(cid){
         <button class="btn btn-p" style="flex:1" onclick="submitEditCustomer(${cid})">Save Changes</button>
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
+      ${hasActionAccess('customers','delete')?`<button class="btn btn-s btn-full" onclick="confirmDeleteCustomerWebsiteAccount(${cid})">Delete Linked Website Account</button>`:''}
       ${hasActionAccess('customers','delete')?`<hr style="margin:4px 0"><button class="btn btn-danger btn-full" onclick="confirmDeleteCustomer(${cid})">Delete Customer</button>`:''}
     </div>`,'lg');
   ensureCustomerTagPicker('customer-edit',c.productTags||[]);
@@ -2632,6 +2633,35 @@ async function doDeleteCustomer(cid){
     await api.del(`/api/customers/${cid}`);
     S.customers=S.customers.filter(c=>c.id!==cid);
     closeModal(); toast('Customer deleted'); rCustomers();
+  }catch(e){toast('Error: '+e.message,'err');}
+}
+
+function confirmDeleteCustomerWebsiteAccount(cid){
+  if(!hasActionAccess('customers','delete')){ toast('Customer deletion is restricted','err'); return; }
+  const c=S.customers.find(x=>x.id===cid); if(!c) return;
+  openModal(`
+    <div class="modal-title" style="color:var(--red)">Delete Linked Website Account</div>
+    <div style="margin-top:12px;font-size:13.5px;color:var(--text-2);line-height:1.7">
+      This removes website login/signup data linked to <strong>${esc(c.name)}</strong>.<br>
+      CRM customer data and order history will remain.
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px">
+      <button class="btn btn-danger" style="flex:1" onclick="doDeleteCustomerWebsiteAccount(${cid})">Confirm Delete</button>
+      <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+    </div>`);
+}
+
+async function doDeleteCustomerWebsiteAccount(cid){
+  try{
+    const res=await api.del(`/api/customers/${cid}/website-account`);
+    closeModal();
+    const removed=Number(res?.removedWebsiteUsers||0);
+    if(removed>0){
+      toast(`Removed ${removed} linked website account${removed!==1?'s':''}`,'ok');
+    }else{
+      toast('No linked website account found','ok');
+    }
+    rCustomers();
   }catch(e){toast('Error: '+e.message,'err');}
 }
 
