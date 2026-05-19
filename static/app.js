@@ -4807,7 +4807,7 @@ async function savePartnerCustomerVisibility(){
   const selected=state.selected instanceof Set?state.selected:new Set();
   const customerIds=Array.from(selected);
   try{
-    await api.put('/api/customers/visibility',{
+    await api.post('/api/customers/visibility',{
       targetUserId:partnerUserId,
       customerIds,
       mode:'replace',

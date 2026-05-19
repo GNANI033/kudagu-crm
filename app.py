@@ -4335,8 +4335,7 @@ async def list_customer_visibility_partners(request: Request):
     return {"partners": partners}
 
 
-@app.put("/api/customers/visibility")
-async def update_customer_visibility(request: Request):
+async def _update_customer_visibility_impl(request: Request):
     body = await request.json()
     data = read_data()
     _require_admin(request, data)
@@ -4348,7 +4347,14 @@ async def update_customer_visibility(request: Request):
     if target_user_id <= 0:
         raise HTTPException(status_code=400, detail="targetUserId is required.")
 
-    target_user = next((u for u in data.get("users", []) if int(u.get("id") or 0) == target_user_id), None)
+    target_user = next(
+        (
+            u
+            for u in data.get("users", [])
+            if isinstance(u, dict) and int(u.get("id") or 0) == target_user_id
+        ),
+        None,
+    )
     if not target_user:
         raise HTTPException(status_code=404, detail="Target user not found.")
     if str(target_user.get("role") or "").strip().lower() != "partner":
@@ -4370,13 +4376,24 @@ async def update_customer_visibility(request: Request):
         if cid > 0:
             normalized_customer_ids.add(cid)
 
-    existing_customer_ids = {int(c.get("id") or 0) for c in data.get("customers", []) if int(c.get("id") or 0) > 0}
+    existing_customer_ids: set[int] = set()
+    for raw_customer in data.get("customers", []) or []:
+        if not isinstance(raw_customer, dict):
+            continue
+        try:
+            cid = int(raw_customer.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0:
+            existing_customer_ids.add(cid)
     unknown_ids = sorted([cid for cid in normalized_customer_ids if cid not in existing_customer_ids])
     if unknown_ids:
         raise HTTPException(status_code=400, detail=f"Unknown customer IDs: {unknown_ids[:20]}")
 
     updated_count = 0
     for customer in data.get("customers", []) or []:
+        if not isinstance(customer, dict):
+            continue
         cid = int(customer.get("id") or 0)
         visible_ids = _normalize_customer_visible_user_ids(customer.get("visibleToUserIds"))
         visible_set = set(visible_ids)
@@ -4404,6 +4421,16 @@ async def update_customer_visibility(request: Request):
 
     write_data(data)
     return {"ok": True, "updatedCustomers": updated_count, "targetUserId": target_user_id, "mode": mode}
+
+
+@app.put("/api/customers/visibility")
+async def update_customer_visibility_put(request: Request):
+    return await _update_customer_visibility_impl(request)
+
+
+@app.post("/api/customers/visibility")
+async def update_customer_visibility_post(request: Request):
+    return await _update_customer_visibility_impl(request)
 
 
 @app.delete("/api/customers/{customer_id}/website-account")
