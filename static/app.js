@@ -4527,6 +4527,7 @@ async function rUsersSettings(){
                   <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
                     <button class="btn btn-s btn-xs" onclick="openEditUser(${u.id})">Edit</button>
                     <button class="btn btn-s btn-xs" onclick="openResetUserPassword(${u.id})">Password</button>
+                    ${String(u.role||'')==='partner'?`<button class="btn btn-s btn-xs" onclick="openPartnerCustomerVisibility(${u.id})">Customer Visibility</button>`:''}
                     <button class="btn btn-danger btn-xs" onclick="deleteUserAccount(${u.id})">Delete</button>
                   </div>
                 </div>
@@ -4707,6 +4708,118 @@ async function deleteUserAccount(userId){
     await api.del(`/api/users/${userId}`);
     toast('User deleted','ok');
     rUsersSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function _customerVisibleToPartner(customer, partnerUserId){
+  const visibleIds=Array.isArray(customer?.visibleToUserIds)?customer.visibleToUserIds:[];
+  return visibleIds.some((id)=>Number(id)===Number(partnerUserId));
+}
+function _partnerVisibilitySelection(partnerUserId){
+  return new Set((S.customers||[]).filter((c)=>_customerVisibleToPartner(c, partnerUserId)).map((c)=>Number(c.id)));
+}
+function _renderPartnerCustomerVisibilityList(){
+  const host=g('partner-visibility-list');
+  if(!host) return;
+  const state=window.__partnerCustomerVisibilityState||{};
+  const partnerId=Number(state.partnerUserId||0);
+  const query=String(g('partner-visibility-search')?.value||'').trim().toLowerCase();
+  const selected=state.selected instanceof Set?state.selected:new Set();
+  const rows=(S.customers||[])
+    .filter((c)=>{
+      if(!query) return true;
+      return String(c.name||'').toLowerCase().includes(query)
+        || String(c.phone||'').includes(query)
+        || String(c.area||'').toLowerCase().includes(query);
+    })
+    .slice(0, 1000);
+  if(!rows.length){
+    host.innerHTML='<div style="font-size:12.5px;color:var(--text-3)">No customers found for this search.</div>';
+    return;
+  }
+  host.innerHTML=rows.map((c)=>{
+    const id=Number(c.id||0);
+    const checked=selected.has(id);
+    const owner=Number(c.createdByUserId||0)===partnerId?' • Created by this partner':'';
+    return `<label class="user-check-item" style="display:flex;justify-content:space-between;gap:10px"><span><input type="checkbox" data-partner-customer-id="${id}" ${checked?'checked':''}> ${esc(c.name||'Unknown')} <span style="font-size:11px;color:var(--text-3)">(${esc(c.phone||'-')} • ${esc(c.area||'-')}${owner})</span></span></label>`;
+  }).join('');
+  host.querySelectorAll('input[type="checkbox"][data-partner-customer-id]').forEach((el)=>{
+    el.addEventListener('change', ()=>{
+      const cid=Number(el.getAttribute('data-partner-customer-id')||0);
+      if(!cid) return;
+      if(el.checked) selected.add(cid); else selected.delete(cid);
+      state.selected=selected;
+      const status=g('partner-visibility-count');
+      if(status) status.textContent=`Selected ${selected.size} customers`;
+    });
+  });
+}
+function togglePartnerVisibilitySelectAll(selectAll){
+  const state=window.__partnerCustomerVisibilityState||{};
+  const selected=state.selected instanceof Set?state.selected:new Set();
+  const visibleIds=Array.from(document.querySelectorAll('#partner-visibility-list input[type="checkbox"][data-partner-customer-id]')).map((el)=>Number(el.getAttribute('data-partner-customer-id')||0)).filter(Boolean);
+  visibleIds.forEach((id)=>{ if(selectAll) selected.add(id); else selected.delete(id); });
+  state.selected=selected;
+  window.__partnerCustomerVisibilityState=state;
+  _renderPartnerCustomerVisibilityList();
+  const status=g('partner-visibility-count');
+  if(status) status.textContent=`Selected ${selected.size} customers`;
+}
+async function openPartnerCustomerVisibility(userId){
+  let partner=null;
+  try{
+    const res=await api.get('/api/users');
+    partner=(res.users||[]).find((u)=>Number(u.id)===Number(userId));
+  }catch(e){ toast('Error: '+e.message,'err'); return; }
+  if(!partner){ toast('Partner not found','err'); return; }
+  if(String(partner.role||'')!=='partner'){ toast('Selected user is not a partner','err'); return; }
+  window.__partnerCustomerVisibilityState={
+    partnerUserId:Number(userId),
+    selected:_partnerVisibilitySelection(Number(userId)),
+  };
+  const selectedCount=window.__partnerCustomerVisibilityState.selected.size;
+  openModal(`
+    <div class="modal-title">Customer Visibility • ${esc(partner.displayName||partner.username||'Partner')}</div>
+    <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
+      <div style="font-size:12px;color:var(--text-3)">Choose extra customers this partner can view. Existing order/product-scope visibility still applies automatically.</div>
+      <div class="fr">
+        <div class="fg"><label>Search customers</label><input id="partner-visibility-search" type="text" placeholder="Name / phone / area" oninput="_renderPartnerCustomerVisibilityList()"></div>
+      </div>
+      <div style="display:flex;justify-content:space-between;gap:8px;align-items:center">
+        <div id="partner-visibility-count" style="font-size:12px;color:var(--text-3)">Selected ${selectedCount} customers</div>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-s btn-xs" onclick="togglePartnerVisibilitySelectAll(true)">Select Visible</button>
+          <button class="btn btn-s btn-xs" onclick="togglePartnerVisibilitySelectAll(false)">Unselect Visible</button>
+        </div>
+      </div>
+      <div id="partner-visibility-list" style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:12px;padding:10px"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-p" style="flex:1" onclick="savePartnerCustomerVisibility()">Save Visibility</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+  _renderPartnerCustomerVisibilityList();
+}
+async function savePartnerCustomerVisibility(){
+  const state=window.__partnerCustomerVisibilityState||{};
+  const partnerUserId=Number(state.partnerUserId||0);
+  if(!partnerUserId){ toast('Partner is missing','err'); return; }
+  const selected=state.selected instanceof Set?state.selected:new Set();
+  const customerIds=Array.from(selected);
+  try{
+    await api.put('/api/customers/visibility',{
+      targetUserId:partnerUserId,
+      customerIds,
+      mode:'replace',
+    });
+    (S.customers||[]).forEach((c)=>{
+      const current=Array.isArray(c.visibleToUserIds)?c.visibleToUserIds:[];
+      const next=current.filter((id)=>Number(id)!==partnerUserId);
+      if(selected.has(Number(c.id||0))) next.push(partnerUserId);
+      c.visibleToUserIds=[...new Set(next.map((id)=>Number(id)).filter((id)=>id>0))];
+    });
+    closeModal();
+    toast('Partner customer visibility updated','ok');
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
 function rSettings(){

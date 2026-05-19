@@ -1011,6 +1011,23 @@ def _customer_owner_user_id(customer: dict | None) -> int:
         return 0
 
 
+def _normalize_customer_visible_user_ids(values: Any) -> list[int]:
+    if not isinstance(values, list):
+        return []
+    out: list[int] = []
+    seen: set[int] = set()
+    for raw in values:
+        try:
+            uid = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if uid <= 0 or uid in seen:
+            continue
+        seen.add(uid)
+        out.append(uid)
+    return out
+
+
 def _visible_customer_ids_for_user(user: dict | None, data: dict) -> set[int] | None:
     allowed = _allowed_product_ids_for_user(user, data)
     if allowed is None:
@@ -1026,6 +1043,11 @@ def _visible_customer_ids_for_user(user: dict | None, data: dict) -> set[int] | 
             int(c.get("id") or 0)
             for c in data.get("customers", [])
             if int(c.get("id") or 0) > 0 and _customer_owner_user_id(c) == current_user_id
+        )
+        visible_customer_ids.update(
+            int(c.get("id") or 0)
+            for c in data.get("customers", [])
+            if int(c.get("id") or 0) > 0 and current_user_id in _normalize_customer_visible_user_ids(c.get("visibleToUserIds"))
         )
     return visible_customer_ids
 
@@ -1556,6 +1578,7 @@ def migrate(data: dict) -> dict:
             c["createdByUserId"] = 0
         c["createdByUsername"] = str(c.get("createdByUsername") or "").strip()
         c["createdByName"] = str(c.get("createdByName") or c.get("createdByUsername") or "").strip()
+        c["visibleToUserIds"] = _normalize_customer_visible_user_ids(c.get("visibleToUserIds"))
     _add_customer_product_tags(data, [tag for c in data["customers"] for tag in c.get("productTags", [])])
 
     normalized_users: list[dict] = []
@@ -1701,6 +1724,7 @@ def _build_customer(
         "createdByUserId": int(creator.get("id") or 0),
         "createdByUsername": str(creator.get("username") or "").strip(),
         "createdByName": str(creator.get("displayName") or creator.get("username") or "").strip(),
+        "visibleToUserIds": [],
     }
 
 
@@ -4286,6 +4310,100 @@ async def update_customer(customer_id: int, request: Request):
                 if "area"  in body: o["carea"]  = body["area"]
     write_data(data)
     return data["customers"][idx]
+
+
+@app.get("/api/customers/visibility/partners")
+async def list_customer_visibility_partners(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    partners = []
+    for user in data.get("users", []) or []:
+        if not isinstance(user, dict):
+            continue
+        role = str(user.get("role") or "").strip().lower()
+        if role != "partner":
+            continue
+        uid = int(user.get("id") or 0)
+        partners.append(
+            {
+                "id": uid,
+                "username": str(user.get("username") or "").strip(),
+                "displayName": str(user.get("displayName") or user.get("username") or "").strip(),
+                "role": role,
+            }
+        )
+    return {"partners": partners}
+
+
+@app.put("/api/customers/visibility")
+async def update_customer_visibility(request: Request):
+    body = await request.json()
+    data = read_data()
+    _require_admin(request, data)
+
+    try:
+        target_user_id = int(body.get("targetUserId") or 0)
+    except (TypeError, ValueError):
+        target_user_id = 0
+    if target_user_id <= 0:
+        raise HTTPException(status_code=400, detail="targetUserId is required.")
+
+    target_user = next((u for u in data.get("users", []) if int(u.get("id") or 0) == target_user_id), None)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="Target user not found.")
+    if str(target_user.get("role") or "").strip().lower() != "partner":
+        raise HTTPException(status_code=400, detail="Target user must be a partner account.")
+
+    mode = str(body.get("mode") or "replace").strip().lower()
+    if mode not in {"replace", "add", "remove"}:
+        raise HTTPException(status_code=400, detail="mode must be one of: replace, add, remove.")
+
+    raw_ids = body.get("customerIds")
+    if not isinstance(raw_ids, list):
+        raise HTTPException(status_code=400, detail="customerIds must be an array.")
+    normalized_customer_ids: set[int] = set()
+    for raw in raw_ids:
+        try:
+            cid = int(raw or 0)
+        except (TypeError, ValueError):
+            continue
+        if cid > 0:
+            normalized_customer_ids.add(cid)
+
+    existing_customer_ids = {int(c.get("id") or 0) for c in data.get("customers", []) if int(c.get("id") or 0) > 0}
+    unknown_ids = sorted([cid for cid in normalized_customer_ids if cid not in existing_customer_ids])
+    if unknown_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown customer IDs: {unknown_ids[:20]}")
+
+    updated_count = 0
+    for customer in data.get("customers", []) or []:
+        cid = int(customer.get("id") or 0)
+        visible_ids = _normalize_customer_visible_user_ids(customer.get("visibleToUserIds"))
+        visible_set = set(visible_ids)
+
+        changed = False
+        if mode == "replace":
+            if target_user_id in visible_set:
+                visible_set.remove(target_user_id)
+                changed = True
+            if cid in normalized_customer_ids and target_user_id not in visible_set:
+                visible_set.add(target_user_id)
+                changed = True
+        elif mode == "add":
+            if cid in normalized_customer_ids and target_user_id not in visible_set:
+                visible_set.add(target_user_id)
+                changed = True
+        elif mode == "remove":
+            if cid in normalized_customer_ids and target_user_id in visible_set:
+                visible_set.remove(target_user_id)
+                changed = True
+
+        if changed:
+            customer["visibleToUserIds"] = sorted(visible_set)
+            updated_count += 1
+
+    write_data(data)
+    return {"ok": True, "updatedCustomers": updated_count, "targetUserId": target_user_id, "mode": mode}
 
 
 @app.delete("/api/customers/{customer_id}/website-account")
