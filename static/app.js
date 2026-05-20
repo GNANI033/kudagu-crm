@@ -315,7 +315,18 @@ async function postJSONWithTimeout(path, body, timeoutMs=45000){
 // ─── PRICING ─────────────────────────────────────────────────────────────────
 function getPricing(pid,sz){ const p=S.products.find(x=>x.id===pid); if(!p||!p.pricing||!p.pricing[sz]) return null; return p.pricing[sz]; }
 function getSalePrice(pid,sz,ch){ const pr=getPricing(pid,sz); if(!pr||!pr.salePrices) return 0; return parseFloat(pr.salePrices[ch]||pr.salePrices.retail||0); }
-function getTotalCost(pid,sz){ const pr=getPricing(pid,sz); if(!pr) return 0; return (pr.expenses||[]).reduce((s,e)=>s+(parseFloat(e.cost)||0),0); }
+function pricingExpensesByChannel(pr){
+  const by=pr&&typeof pr==='object'&&pr.expensesByChannel&&typeof pr.expensesByChannel==='object'?pr.expensesByChannel:{};
+  const legacy=Array.isArray(pr?.expenses)?pr.expenses:[];
+  const out={retail:[],website:[],whatsapp:[]};
+  CHANNELS.forEach(c=>{ out[c.id]=Array.isArray(by[c.id])?by[c.id]:legacy; });
+  return out;
+}
+function getTotalCost(pid,sz,ch='retail'){
+  const pr=getPricing(pid,sz); if(!pr) return 0;
+  const expenses=pricingExpensesByChannel(pr)[ch]||[];
+  return expenses.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
+}
 function orderRevenue(o){
   const rr=parseFloat(o.realizedRevenue);
   if(Number.isFinite(rr)&&rr>=0) return rr;
@@ -339,7 +350,7 @@ function orderCommissionBreakup(o){
 }
 function orderProfit(o){
   const rev=orderRevenue(o);
-  const cost=getTotalCost(o.prodId,o.variant)*(o.qty||1);
+  const cost=getTotalCost(o.prodId,o.variant,o.channel||'retail')*(o.qty||1);
   if(!(rev>0) && !(cost>0)) return null;
   const comm=orderCommissionBreakup(o).total;
   return rev-cost-(parseFloat(o.discount||0))-comm;
@@ -2732,7 +2743,7 @@ function refreshSum(){
   if(!selC||!pid||!selV){box.style.display='none';return;}
   box.style.display='block';
   const prod=S.products.find(p=>p.id===pid);
-  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV),ad=variantCycleDays(prod,selV)*qty;
+  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV,selCh),ad=variantCycleDays(prod,selV)*qty;
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
   let priceRows='';
@@ -3134,7 +3145,7 @@ function eoPreview(oid){
   const sz=g('eo-var')?.value||o.variant;
   const qty=parseInt(g('eo-qty')?.value||o.qty)||1;
   const sp=getSalePrice(o.prodId,sz,o.channel||'retail');
-  const cost=getTotalCost(o.prodId,sz);
+  const cost=getTotalCost(o.prodId,sz,o.channel||'retail');
   const disc=parseFloat(g('eo-disc')?.value||0)||0;
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
   if(!sp){prev.innerHTML=`<span style="color:var(--text-3);font-size:12.5px">No pricing set for this channel</span>`;return;}
@@ -4904,26 +4915,47 @@ async function saveExistingComposition(pid){
 }
 function buildSizePanel(p,sz,isActive){
   const tk=variantIdToken(sz);
-  const pr=(p.pricing&&p.pricing[sz])||{salePrices:{retail:0,website:0,whatsapp:0},expenses:[]};
+  const pr=(p.pricing&&p.pricing[sz])||{salePrices:{retail:0,website:0,whatsapp:0},expenses:[],expensesByChannel:{retail:[],website:[],whatsapp:[]}};
   const sp=pr.salePrices||{retail:0,website:0,whatsapp:0};
+  const expByChannel=pricingExpensesByChannel(pr);
+  const expRows=buildExpenseMatrixRows(expByChannel);
   const reorderCycleDays=parseInt(pr.reorderCycleDays,10)>0?parseInt(pr.reorderCycleDays,10):defaultVariantCycleDays(sz);
-  const exRows=(pr.expenses||[]).map((e,i)=>buildExpRow(p.id,sz,i,e.name,e.cost)).join('');
-  const tc=(pr.expenses||[]).reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
+  const exRows=expRows.map((row,i)=>buildExpRow(p.id,sz,i,row)).join('');
+  const tc={}; CHANNELS.forEach(c=>{ tc[c.id]=expRows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0); });
   const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${tk}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
-  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="fr" style="margin-bottom:18px"><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label">Cost / Expenses per pack</div><div id="expenses-${p.id}-${tk}">${exRows}</div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
+  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Sale Prices — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="fr" style="margin-bottom:18px"><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label">Cost / Expenses per pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Expense</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}<div></div></div><div id="expenses-matrix-${p.id}-${tk}">${exRows}</div></div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
 }
-function buildMarginHTML(pid,sz,tc,sp){
-  const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0;if(!price)return'';const margin=price-tc,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label}</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
-  return`<div class="margin-row"><span class="margin-key">Total Cost / pack</span><span class="margin-val ${tc>0?'neg':''}">${tc>0?'₹'+tc.toFixed(0):'—'}</span></div>${rows||'<div style="font-size:12px;color:var(--text-3);padding:4px 0">Set sale prices above to see margins</div>'}`;
+function buildMarginHTML(pid,sz,tcMap,sp){
+  const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0,cost=parseFloat(tcMap?.[c.id])||0;if(!price)return'';const margin=price-cost,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label} (Cost ₹${cost.toFixed(0)})</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
+  return`${rows||'<div style="font-size:12px;color:var(--text-3);padding:4px 0">Set sale prices above to see margins</div>'}`;
 }
-function buildExpRow(pid,sz,idx,name='',cost=''){ const tk=variantIdToken(sz); return`<div class="expense-row" id="er-${pid}-${tk}-${idx}"><input type="text" value="${esc(String(name))}" placeholder="Expense name" id="en-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"><div class="input-prefix"><span>₹</span><input type="number" value="${cost}" placeholder="0" min="0" id="ec-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div><button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
+function buildExpenseMatrixRows(expByChannel){
+  const order=[];
+  const map={};
+  CHANNELS.forEach(c=>{
+    (expByChannel[c.id]||[]).forEach(e=>{
+      const name=String(e?.name||'').trim();
+      const key=name.toLowerCase();
+      const mapKey=key||`__unnamed_${order.length}`;
+      if(!map[mapKey]){
+        map[mapKey]={name,costs:{retail:0,website:0,whatsapp:0}};
+        order.push(mapKey);
+      }
+      map[mapKey].name=map[mapKey].name||name;
+      map[mapKey].costs[c.id]+=(parseFloat(e?.cost||0)||0);
+    });
+  });
+  const rows=order.map(k=>map[k]).filter(Boolean);
+  return rows.length?rows:[{name:'',costs:{retail:0,website:0,whatsapp:0}}];
+}
+function buildExpRow(pid,sz,idx,row){ const tk=variantIdToken(sz); const r=row||{name:'',costs:{retail:0,website:0,whatsapp:0}}; return`<div class="expense-matrix-row" id="er-${pid}-${tk}-${idx}"><input type="text" value="${esc(String(r.name||''))}" placeholder="Expense name" id="en-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')">${CHANNELS.map(c=>`<div class="input-prefix"><span>₹</span><input type="number" value="${parseFloat(r.costs?.[c.id]||0)||''}" placeholder="0" min="0" id="ec-${c.id}-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div>`).join('')}<button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
 function toggleProdCard(pid){ const b=g('pcard-body-'+pid),c=g('pcard-chevron-'+pid);b.classList.toggle('collapsed');c.textContent=b.classList.contains('collapsed')?'▶':'▼'; }
 function switchSizeTab(pid,sz){ const prod=S.products.find(p=>p.id===pid);(prod.sizes||DEFAULT_SIZES).forEach(s=>{const t=g(`tab-${pid}-${variantIdToken(s)}`),p=g(`sp-${pid}-${variantIdToken(s)}`);if(t)t.classList.remove('active');if(p)p.classList.remove('active');});const t=g(`tab-${pid}-${variantIdToken(sz)}`),p=g(`sp-${pid}-${variantIdToken(sz)}`);if(t)t.classList.add('active');if(p)p.classList.add('active'); }
-function getExpRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let i=0;while(g(`er-${pid}-${tk}-${i}`)){const n=g(`en-${pid}-${tk}-${i}`).value.trim(),c=g(`ec-${pid}-${tk}-${i}`).value;if(n||c)rows.push({name:n,cost:parseFloat(c)||0});i++;}return rows; }
-function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const exp=getExpRows(pid,sz);const tc=exp.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tc,sp); }
-function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-${pid}-${tk}`);const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,'','');c.appendChild(d.firstChild);calcMargin(pid,sz); }
+function getExpMatrixRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let i=0;while(g(`er-${pid}-${tk}-${i}`)){const name=(g(`en-${pid}-${tk}-${i}`)?.value||'').trim();const costs={};CHANNELS.forEach(c=>{costs[c.id]=parseFloat((g(`ec-${c.id}-${pid}-${tk}-${i}`)?.value||0))||0;});if(name||Object.values(costs).some(v=>v>0))rows.push({name,costs});i++;}return rows; }
+function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const rows=getExpMatrixRows(pid,sz);const tcMap={};CHANNELS.forEach(c=>{tcMap[c.id]=rows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0);});const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tcMap,sp); }
+function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-matrix-${pid}-${tk}`);if(!c)return;const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,{name:'',costs:{retail:0,website:0,whatsapp:0}});c.appendChild(d.firstChild);calcMargin(pid,sz); }
 function removeExpRow(pid,sz,idx){ const tk=variantIdToken(sz);const el=g(`er-${pid}-${tk}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
-async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}prod.pricing[sz]={salePrices,expenses:getExpRows(pid,sz),reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
+async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}const matrixRows=getExpMatrixRows(pid,sz);const expensesByChannel={retail:[],website:[],whatsapp:[]};matrixRows.forEach(row=>{const name=row.name||'';CHANNELS.forEach(c=>{const cost=parseFloat(row.costs?.[c.id]||0)||0;if(name||cost>0) expensesByChannel[c.id].push({name,cost});});});prod.pricing[sz]={salePrices,expensesByChannel,expenses:expensesByChannel.retail||[],reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
 function getCompositionRows(){
   const rows=[];
   document.querySelectorAll('#np-comp-rows .comp-row').forEach((row)=>{

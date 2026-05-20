@@ -693,11 +693,13 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
                 "whatsapp": _safe_float((sale_prices or {}).get("whatsapp")),
             },
             "expenses": [],
+            "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
             "reorderCycleDays": _default_variant_cycle_days(key),
         }
         expenses = row.get("expenses") or []
+        normalized_expenses = []
         if isinstance(expenses, list):
-            normalized_row["expenses"] = [
+            normalized_expenses = [
                 {
                     "name": str(e.get("name") or "").strip(),
                     "cost": _safe_float(e.get("cost")),
@@ -705,6 +707,22 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
                 for e in expenses
                 if isinstance(e, dict) and (str(e.get("name") or "").strip() or _safe_float(e.get("cost")) > 0)
             ]
+        normalized_row["expenses"] = normalized_expenses
+        expenses_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
+        for channel in ("retail", "website", "whatsapp"):
+            channel_expenses = expenses_by_channel.get(channel)
+            if isinstance(channel_expenses, list):
+                normalized_channel_expenses = [
+                    {
+                        "name": str(e.get("name") or "").strip(),
+                        "cost": _safe_float(e.get("cost")),
+                    }
+                    for e in channel_expenses
+                    if isinstance(e, dict) and (str(e.get("name") or "").strip() or _safe_float(e.get("cost")) > 0)
+                ]
+            else:
+                normalized_channel_expenses = copy.deepcopy(normalized_expenses)
+            normalized_row["expensesByChannel"][channel] = normalized_channel_expenses
         reorder_cycle_days = row.get("reorderCycleDays")
         try:
             reorder_cycle_days = int(float(reorder_cycle_days))
@@ -718,6 +736,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             {
                 "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
                 "expenses": [],
+                "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
                 "reorderCycleDays": _default_variant_cycle_days(size),
             },
         )
