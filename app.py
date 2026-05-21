@@ -5415,6 +5415,7 @@ async def update_product(product_id: str, request: Request):
     idx = next((i for i, p in enumerate(data["products"]) if p["id"] == product_id), None)
     if idx is None:
         raise HTTPException(status_code=404, detail="Product not found")
+    old_name = str(data["products"][idx].get("name") or "")
     # Merge — only update provided keys
     for key in ("name", "sizes", "waTpl"):
         if key in body:
@@ -5426,6 +5427,15 @@ async def update_product(product_id: str, request: Request):
         )
     if "composition" in body:
         data["products"][idx]["composition"] = _normalize_composition(body.get("composition", []))
+    new_name = str(data["products"][idx].get("name") or "")
+    if "name" in body and new_name != old_name:
+        # Keep denormalized product labels in sync with canonical product name.
+        for order in data.get("orders", []):
+            if str(order.get("prodId") or "") == product_id:
+                order["prod"] = new_name
+        for batch in data.get("distributorBatches", []):
+            if str(batch.get("prodId") or "") == product_id:
+                batch["prod"] = new_name
     write_data(data)
     return data["products"][idx]
 

@@ -4847,7 +4847,7 @@ function buildProdCard(p){
   const sp=p.sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
   const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
   const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
-  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
 }
 function inventoryProductOptions(selected=''){
   const base='<option value="">Select inventory product…</option>';
@@ -5023,6 +5023,27 @@ async function addProduct(){
   }catch(e){toast('Error: '+e.message,'err');}
 }
 async function delProduct(pid){ if(!confirm('Delete this product or service?'))return;try{await api.del(`/api/products/${pid}`);S.products=S.products.filter(p=>p.id!==pid);rSettings();populateProdSelect();toast('Item deleted');}catch(e){toast('Error: '+e.message,'err');} }
+async function renameProductPrompt(pid){
+  const prod=S.products.find(p=>p.id===pid); if(!prod) return;
+  const next=prompt('Enter new product/service name', prod.name||'');
+  if(next===null) return;
+  const name=String(next||'').trim();
+  if(!name){ toast('Name cannot be empty','err'); return; }
+  if(name===String(prod.name||'')){ return; }
+  try{
+    const updated=await api.put(`/api/products/${pid}`,{name});
+    const idx=S.products.findIndex(p=>p.id===pid);
+    if(idx>=0) S.products[idx]=updated;
+    (S.orders||[]).forEach((o)=>{ if(o && o.prodId===pid) o.prod=updated.name; });
+    (S.distributorBatches||[]).forEach((b)=>{ if(b && b.prodId===pid) b.prod=updated.name; });
+    rSettings();
+    populateProdSelect();
+    if(g('view-orders')?.classList.contains('active')) rOrders();
+    if(g('view-alerts')?.classList.contains('active')) rAlerts();
+    if(g('view-distribution')?.classList.contains('active')) rDistribution();
+    toast('Product renamed','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
 
 // ─── WA TEMPLATES ────────────────────────────────────────────────────────────
 function getWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(prod&&prod.waTpl&&prod.waTpl.trim())return prod.waTpl;return(S.waDefaultTpl&&S.waDefaultTpl.trim())?S.waDefaultTpl:DEFAULT_WA_TPL; }
