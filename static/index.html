@@ -542,7 +542,8 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
 .c-menu-btn:hover { background: var(--surface-2); border-color: var(--border-s); color: var(--text); }
 
 /* ─── SETTINGS ──────────────────────────────────────────────────────────── */
-.settings-layout { display: grid; grid-template-columns: 210px 1fr; gap: 20px; }
+.settings-layout { display: grid; grid-template-columns: 210px minmax(0,1fr); gap: 20px; }
+.settings-layout > * { min-width: 0; }
 .settings-menu { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 8px; height: fit-content; box-shadow: var(--sh-sm); }
 .smenu-item { display: flex; align-items: center; gap: 9px; padding: 10px 12px; border-radius: var(--r-sm); cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text-2); transition: all .15s; border: none; background: none; width: 100%; text-align: left; min-height: 42px; }
 .smenu-item:hover { background: var(--surface-2); color: var(--text); }
@@ -608,7 +609,8 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .mkt-filter-grid { display:grid; grid-template-columns:repeat(3,minmax(180px,1fr)); gap:10px 12px; }
 .mkt-rule-note { font-size:11.5px;color:var(--text-3);margin-top:-4px; }
 .prod-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); margin-bottom: 16px; overflow: hidden; box-shadow: var(--sh-sm); }
-.prod-card-header { padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; cursor: pointer; user-select: none; min-height: 52px; }
+.prod-card-header { padding: 14px 18px; display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; cursor: pointer; user-select: none; min-height: 52px; }
+.prod-card-header > div:first-child { min-width: 0; flex: 1; }
 .prod-card-header:hover { background: var(--surface-2); }
 .prod-card-title { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; }
 .prod-card-body { border-top: 1px solid var(--border); padding: 18px; }
@@ -619,7 +621,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .size-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .size-panel { display: none; } .size-panel.active { display: block; }
 .expense-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
-.expense-matrix { border: 1px solid var(--border); border-radius: var(--r-sm); overflow: hidden; }
+.expense-matrix { border: 1px solid var(--border); border-radius: var(--r-sm); overflow-x: auto; overflow-y: hidden; }
 .expense-matrix-head,
 .expense-matrix-row { display: grid; grid-template-columns: minmax(180px,1fr) repeat(3,120px) 40px; gap: 8px; align-items: center; padding: 8px; }
 .expense-matrix-head { background: var(--surface-2); border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--text-3); font-weight: 700; }
