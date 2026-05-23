@@ -562,6 +562,7 @@ def _normalize_finished_product(row: dict) -> dict:
         pricing_row = pricing_by_size.get(size) if isinstance(pricing_by_size.get(size), dict) else {}
         sale_prices = pricing_row.get("salePrices") if isinstance(pricing_row.get("salePrices"), dict) else {}
         normalized_pricing[size] = {
+            "mrp": float(pricing_row.get("mrp") or 0),
             "salePrices": {
                 "retail": float(sale_prices.get("retail") or 0),
                 "website": float(sale_prices.get("website") or 0),
@@ -781,6 +782,7 @@ def _website_safe_variant_rows(rows: list[dict]) -> list[dict]:
                 "variant": str(row.get("variant") or "").strip(),
                 "availableUnits": max(0, int(row.get("availableUnits") or 0)),
                 "pricing": {
+                    "mrp": float(pricing.get("mrp") or 0),
                     "salePrices": {
                         "website": float(sale_prices.get("website") or 0),
                         "retail": float(sale_prices.get("retail") or 0),

@@ -687,6 +687,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             old = row.get("salePrice")
             sale_prices = {"retail": old, "website": old, "whatsapp": old}
         normalized_row = {
+            "mrp": _safe_float(row.get("mrp")),
             "salePrices": {
                 "retail": _safe_float((sale_prices or {}).get("retail")),
                 "website": _safe_float((sale_prices or {}).get("website")),
@@ -734,6 +735,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
         normalized.setdefault(
             size,
             {
+                "mrp": 0.0,
                 "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
                 "expenses": [],
                 "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},

@@ -225,6 +225,7 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 /* ─── FORM ELEMENTS ─────────────────────────────────────────────────────── */
 .fg { display: flex; flex-direction: column; gap: 6px; }
 .fr { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.fr2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .fr3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 label { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
 .req { color: var(--red); margin-left: 2px; }
@@ -798,7 +799,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .two { grid-template-columns: 1fr; gap: 12px; }
 
   /* Forms: all single column */
-  .fr, .fr3, .channel-row { grid-template-columns: 1fr; }
+  .fr, .fr2, .fr3, .channel-row { grid-template-columns: 1fr; }
 
   /* Variant buttons: 2-col on mobile */
   .vr { grid-template-columns: repeat(2,1fr); }
