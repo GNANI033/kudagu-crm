@@ -22,6 +22,7 @@ import json
 import os
 import copy
 import time
+import asyncio
 import threading
 import textwrap
 import re
@@ -87,6 +88,10 @@ STATIC_DIR = BASE_DIR / "static"
 ASSETS_DIR = BASE_DIR / "assets"
 UI_PREFS_FILE = BASE_DIR / "ui_prefs.json"
 INVENTORY_URL = os.environ.get("INVENTORY_URL", "http://localhost:8001")
+WEBSITE_BACKEND_BASE_URL = str(os.environ.get("WEBSITE_BACKEND_BASE_URL", "http://127.0.0.1:5000")).strip().rstrip("/")
+WEBSITE_BACKEND_API_KEY = str(os.environ.get("WEBSITE_BACKEND_API_KEY", os.environ.get("CRM_OUTBOUND_API_KEY", ""))).strip()
+LOYALTY_SYNC_BATCH_SIZE = max(1, int(os.environ.get("LOYALTY_SYNC_BATCH_SIZE", "20")))
+LOYALTY_SYNC_TIMEOUT_SECONDS = max(5.0, float(os.environ.get("LOYALTY_SYNC_TIMEOUT_SECONDS", "30")))
 CRM_SERVICE_API_KEYS_RAW = os.environ.get("CRM_SERVICE_API_KEYS", os.environ.get("SERVICE_API_KEYS", ""))
 WEBSITE_KEYS_RAW = os.environ.get("WEBSITE_KEYS", os.environ.get("WEBSITE_KEY", ""))
 UI_HELPER_KEYS_RAW = os.environ.get("UI_HELPER_KEYS", os.environ.get("UI_HELPER_KEY", ""))
@@ -100,6 +105,24 @@ SERVICE_OUTBOUND_API_KEY = (
     str(os.environ.get("CRM_OUTBOUND_API_KEY", os.environ.get("SERVICE_OUTBOUND_API_KEY", ""))).strip()
     or (SERVICE_API_KEYS[0] if SERVICE_API_KEYS else "")
 )
+
+
+def _redact_sensitive_text(text: str) -> str:
+    raw = str(text or "")
+    if not raw:
+        return raw
+    redacted = raw
+    candidates = [
+        WEBSITE_BACKEND_API_KEY,
+        SERVICE_OUTBOUND_API_KEY,
+        *SERVICE_API_KEYS,
+        *[str(part).strip() for part in WEBSITE_KEYS_RAW.split(",") if str(part).strip()],
+        *[str(part).strip() for part in UI_HELPER_KEYS_RAW.split(",") if str(part).strip()],
+    ]
+    for token in candidates:
+        if token:
+            redacted = redacted.replace(token, "***REDACTED***")
+    return redacted
 CORS_ALLOWED_ORIGINS = [
     origin
     for origin in (
@@ -449,6 +472,37 @@ def _service_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
     return headers
 
 
+def _website_backend_headers(extra: dict[str, str] | None = None) -> dict[str, str]:
+    headers = dict(extra or {})
+    if WEBSITE_BACKEND_API_KEY:
+        headers["X-API-Key"] = WEBSITE_BACKEND_API_KEY
+    return headers
+
+
+def _website_loyalty_request(path: str, *, method: str = "GET", body: dict | None = None, timeout: float | None = None) -> Any:
+    if not WEBSITE_BACKEND_BASE_URL:
+        raise HTTPException(status_code=500, detail="WEBSITE_BACKEND_BASE_URL is not configured.")
+    if not WEBSITE_BACKEND_API_KEY:
+        raise HTTPException(status_code=500, detail="WEBSITE_BACKEND_API_KEY is not configured.")
+    endpoint = f"{WEBSITE_BACKEND_BASE_URL}{path}"
+    payload = json.dumps(body).encode("utf-8") if body is not None else None
+    req = urlrequest.Request(
+        endpoint,
+        data=payload,
+        headers=_website_backend_headers({"Content-Type": "application/json"} if payload is not None else None),
+        method=method,
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=float(timeout or LOYALTY_SYNC_TIMEOUT_SECONDS)) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urlerror.HTTPError as exc:
+        detail = _redact_sensitive_text(exc.read().decode("utf-8", errors="ignore"))
+        raise HTTPException(status_code=502, detail=f"Website loyalty API error ({exc.code}). {detail[:180]}") from exc
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=502, detail=f"Website loyalty API unavailable: {_redact_sensitive_text(str(exc))}") from exc
+
+
 def _inventory_circuit_open() -> bool:
     with INVENTORY_CIRCUIT_LOCK:
         return time.time() < INVENTORY_CIRCUIT_UNTIL
@@ -481,6 +535,9 @@ DEFAULT_DATA: dict = {
     "authSessions": [],
     "coupons": [],
     "couponQuotes": [],
+    "loyaltyBadgesCatalog": [],
+    "loyaltySnapshots": {},
+    "loyaltySync": {"status": "idle", "lastAttemptAt": 0, "lastSuccessAt": 0, "lastError": "", "totalSynced": 0},
     "cid": 1,
     "oid": 1,
     "dbid": 1,
@@ -1094,6 +1151,12 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
         safe["distributorBatches"] = [b for b in safe.get("distributorBatches", []) if str(b.get("prodId")) in allowed_product_ids]
         allowed_customer_ids = _visible_customer_ids_for_user(user, data) or set()
         safe["customers"] = [c for c in safe.get("customers", []) if int(c.get("id") or 0) in allowed_customer_ids]
+        if isinstance(safe.get("loyaltySnapshots"), dict):
+            safe["loyaltySnapshots"] = {
+                str(cid): row
+                for cid, row in safe["loyaltySnapshots"].items()
+                if int(cid or 0) in allowed_customer_ids
+            }
         safe["closedFollowUps"] = [
             r for r in safe.get("closedFollowUps", [])
             if int(r.get("cid") or 0) in allowed_customer_ids and int(r.get("orderId") or 0) in {int(o.get("id") or 0) for o in safe.get("orders", [])}
@@ -1405,6 +1468,18 @@ def migrate(data: dict) -> dict:
         data["shippingProfile"] = copy.deepcopy(DEFAULT_DATA["shippingProfile"])
     if "marketingSettings" not in data or not isinstance(data.get("marketingSettings"), dict):
         data["marketingSettings"] = copy.deepcopy(DEFAULT_DATA["marketingSettings"])
+    if "loyaltyBadgesCatalog" not in data or not isinstance(data.get("loyaltyBadgesCatalog"), list):
+        data["loyaltyBadgesCatalog"] = []
+    if "loyaltySnapshots" not in data or not isinstance(data.get("loyaltySnapshots"), dict):
+        data["loyaltySnapshots"] = {}
+    if "loyaltySync" not in data or not isinstance(data.get("loyaltySync"), dict):
+        data["loyaltySync"] = copy.deepcopy(DEFAULT_DATA["loyaltySync"])
+    else:
+        ls = data["loyaltySync"]
+        defaults = DEFAULT_DATA["loyaltySync"]
+        for key, value in defaults.items():
+            if key not in ls:
+                ls[key] = value
     ms = data["marketingSettings"]
     if "aiBaseUrl" not in ms or not isinstance(ms.get("aiBaseUrl"), str):
         ms["aiBaseUrl"] = DEFAULT_DATA["marketingSettings"]["aiBaseUrl"]
@@ -1649,6 +1724,106 @@ def migrate(data: dict) -> dict:
     _prune_expired_sessions(data)
 
     return data
+
+
+def _build_loyalty_snapshot_index(data: dict) -> dict[str, dict[str, Any]]:
+    snapshots = data.get("loyaltySnapshots") if isinstance(data.get("loyaltySnapshots"), dict) else {}
+    result: dict[str, dict[str, Any]] = {}
+    for key, row in snapshots.items():
+        if not isinstance(row, dict):
+            continue
+        cid = int(row.get("customerId") or 0)
+        if cid <= 0:
+            try:
+                cid = int(key)
+            except (TypeError, ValueError):
+                cid = 0
+        if cid <= 0:
+            continue
+        row["customerId"] = cid
+        result[str(cid)] = row
+    return result
+
+
+def sync_loyalty_snapshots(data: dict) -> dict[str, Any]:
+    started_at = time.time()
+    now_ms = int(time.time() * 1000)
+    sync_state = data.get("loyaltySync") if isinstance(data.get("loyaltySync"), dict) else {}
+    sync_state.update({"status": "running", "lastAttemptAt": now_ms, "lastError": ""})
+    data["loyaltySync"] = sync_state
+
+    website_users = [row for row in (data.get("websiteUsers") or []) if isinstance(row, dict)]
+    pairs: list[tuple[str, int]] = []
+    seen_wuids: set[str] = set()
+    for row in website_users:
+        wuid = str(row.get("id") or "").strip()
+        cid = int(row.get("customerId") or 0)
+        if not wuid or cid <= 0 or wuid in seen_wuids:
+            continue
+        seen_wuids.add(wuid)
+        pairs.append((wuid, cid))
+
+    snapshots_by_customer = _build_loyalty_snapshot_index(data)
+    if not pairs:
+        data["loyaltySnapshots"] = snapshots_by_customer
+        sync_state.update({"status": "ok", "lastSuccessAt": now_ms, "totalSynced": 0})
+        print("[CRM][LOYALTY_SYNC] ok linked=0 synced=0 duration_ms=0")
+        return {"ok": True, "synced": 0, "totalLinked": 0}
+
+    try:
+        catalog_payload = _website_loyalty_request("/internal/loyalty/catalog", method="GET")
+        badges = catalog_payload.get("badges") if isinstance(catalog_payload, dict) and isinstance(catalog_payload.get("badges"), list) else []
+        data["loyaltyBadgesCatalog"] = [row for row in badges if isinstance(row, dict)]
+
+        synced = 0
+        failed = 0
+        batches = 0
+        for idx in range(0, len(pairs), LOYALTY_SYNC_BATCH_SIZE):
+            batches += 1
+            batch = pairs[idx:idx + LOYALTY_SYNC_BATCH_SIZE]
+            payload = {"websiteUserIds": [wuid for wuid, _ in batch]}
+            response = _website_loyalty_request("/internal/loyalty/snapshots/by-users", method="POST", body=payload)
+            snapshots = response.get("snapshots") if isinstance(response, dict) and isinstance(response.get("snapshots"), list) else []
+            by_wuid: dict[str, dict[str, Any]] = {}
+            for snap in snapshots:
+                if not isinstance(snap, dict):
+                    continue
+                by_wuid[str(snap.get("websiteUserId") or "").strip()] = snap
+            for wuid, cid in batch:
+                snap = by_wuid.get(wuid)
+                if not isinstance(snap, dict) or snap.get("error"):
+                    failed += 1
+                    continue
+                snapshots_by_customer[str(cid)] = {
+                    "customerId": cid,
+                    "websiteUserId": wuid,
+                    "generatedAt": float(snap.get("generatedAt") or 0),
+                    "syncedAt": now_ms,
+                    "referral": snap.get("referral") if isinstance(snap.get("referral"), dict) else {},
+                    "badges": snap.get("badges") if isinstance(snap.get("badges"), list) else [],
+                }
+                synced += 1
+
+        data["loyaltySnapshots"] = snapshots_by_customer
+        sync_state.update({"status": "ok", "lastSuccessAt": now_ms, "lastError": "", "totalSynced": synced})
+        duration_ms = int((time.time() - started_at) * 1000)
+        print(
+            "[CRM][LOYALTY_SYNC] ok "
+            f"linked={len(pairs)} synced={synced} failed={failed} batches={batches} duration_ms={duration_ms}"
+        )
+        return {"ok": True, "synced": synced, "totalLinked": len(pairs)}
+    except HTTPException as exc:
+        sanitized = _redact_sensitive_text(str(exc.detail))
+        sync_state.update({"status": "error", "lastError": sanitized})
+        duration_ms = int((time.time() - started_at) * 1000)
+        print(f"[CRM][LOYALTY_SYNC] error duration_ms={duration_ms} detail={sanitized[:220]}")
+        raise
+    except Exception as exc:
+        sanitized = _redact_sensitive_text(str(exc))
+        sync_state.update({"status": "error", "lastError": sanitized})
+        duration_ms = int((time.time() - started_at) * 1000)
+        print(f"[CRM][LOYALTY_SYNC] exception duration_ms={duration_ms} detail={sanitized[:220]}")
+        raise HTTPException(status_code=500, detail=f"Loyalty sync failed: {sanitized}") from exc
 
 
 def _normalize_commission_mode(raw: Any) -> str:
@@ -4454,6 +4629,53 @@ async def update_customer_visibility_post(request: Request):
     return await _update_customer_visibility_impl(request)
 
 
+@app.get("/api/customers/{customer_id}/loyalty")
+async def customer_loyalty_snapshot(customer_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "customers")
+    _ensure_customer_scope(ctx.get("user"), data, customer_id)
+    snapshots = _build_loyalty_snapshot_index(data)
+    snap = snapshots.get(str(int(customer_id)))
+    if not snap:
+        return {"ok": True, "linked": False, "status": "unlinked", "customerId": int(customer_id)}
+    return {"ok": True, "linked": True, "status": "ok", "customerId": int(customer_id), "snapshot": snap}
+
+
+@app.post("/api/admin/loyalty/sync")
+async def admin_loyalty_sync(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    result = await asyncio.to_thread(sync_loyalty_snapshots, data)
+    write_data(data)
+    return {"ok": True, **result, "sync": data.get("loyaltySync", {})}
+
+
+@app.get("/api/admin/loyalty/sync-status")
+async def admin_loyalty_sync_status(request: Request):
+    data = read_data()
+    _require_admin(request, data)
+    badges = data.get("loyaltyBadgesCatalog") if isinstance(data.get("loyaltyBadgesCatalog"), list) else []
+    snapshots = _build_loyalty_snapshot_index(data)
+    counts: dict[str, int] = {}
+    for row in snapshots.values():
+        badges_row = row.get("badges") if isinstance(row.get("badges"), list) else []
+        for badge in badges_row:
+            if not isinstance(badge, dict) or not badge.get("earned"):
+                continue
+            badge_id = str(badge.get("id") or "")
+            if not badge_id:
+                continue
+            counts[badge_id] = int(counts.get(badge_id) or 0) + 1
+    return {
+        "ok": True,
+        "sync": data.get("loyaltySync", {}),
+        "catalog": badges,
+        "counts": counts,
+        "linkedCustomers": len(snapshots),
+    }
+
+
 @app.delete("/api/customers/{customer_id}/website-account")
 async def delete_customer_website_account(customer_id: int, request: Request):
     data = read_data()
@@ -4488,6 +4710,8 @@ async def delete_customer_website_account(customer_id: int, request: Request):
             continue
         kept_website_users.append(row)
     data["websiteUsers"] = kept_website_users
+    if isinstance(data.get("loyaltySnapshots"), dict):
+        data["loyaltySnapshots"].pop(str(int(customer_id)), None)
     write_data(data)
     return {"ok": True, "removedWebsiteUsers": removed_website_users}
 

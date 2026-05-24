@@ -69,6 +69,7 @@ let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
 const CUSTOMERS_PAGE_SIZE = 24;
 let MARKETING_TAG_FILTERS = [];
+let LOYALTY_BADGE_COUNTS = {};
 let CUSTOMER_EXPORT_SELECTION = [];
 let _lastActionEl = null;
 let _lastActionAt = 0;
@@ -603,6 +604,9 @@ function emptyState(){
     operationalExpenses: [],
     closedFollowUps: [],
     coupons: [],
+    loyaltyBadgesCatalog: [],
+    loyaltySnapshots: {},
+    loyaltySync: { status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 },
     cid: 1,
     oid: 1,
     dbid: 1,
@@ -621,6 +625,9 @@ function normalizeAppState(){
   ['customers','customerProductTags','orders','products','distributorBatches','distributionChannels','operationalExpenses','closedFollowUps','coupons'].forEach(key=>{
     if(!Array.isArray(S[key])) S[key]=[];
   });
+  if(!S.loyaltySnapshots || typeof S.loyaltySnapshots!=='object' || Array.isArray(S.loyaltySnapshots)) S.loyaltySnapshots={};
+  if(!Array.isArray(S.loyaltyBadgesCatalog)) S.loyaltyBadgesCatalog=[];
+  if(!S.loyaltySync || typeof S.loyaltySync!=='object') S.loyaltySync={ status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 };
   if(!S.shippingProfile || typeof S.shippingProfile!=='object') S.shippingProfile={ paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} };
   if(!S.marketingSettings || typeof S.marketingSettings!=='object') S.marketingSettings={ aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' };
 }
@@ -900,6 +907,7 @@ async function fetchFullData(){
   AUTH_STATE=S?.authContext||AUTH_STATE;
   FULL_DATA_READY = true;
   DASH_BOOTSTRAP_METRICS = null;
+  normalizeAppState();
   applyTheme(S?.uiPreferences?.theme||'light');
   return S;
 }
@@ -1532,6 +1540,7 @@ let MKT_STATE={status:'idle',customerIds:[],currentIndex:0,total:0,delaySec:10,t
 let MKT_GROUPS=[];
 let MKT_ACTIVE_GROUP_ID='';
 let CUSTOMER_NAME_SEARCH='';
+let CUSTOMER_WEBSITE_ONLY=false;
 let CUSTOMER_FILTERS_EXPANDED=false;
 let _mktTimer=null;
 let _mktGroupMenuId='';
@@ -1780,6 +1789,108 @@ function toggleMarketingRunState(){
   }
   toast('Start campaign first using Go','err');
 }
+function getCustomerLoyaltySnapshot(customerId){
+  const cid=String(parseInt(customerId||0,10)||0);
+  const snapshots=S?.loyaltySnapshots&&typeof S.loyaltySnapshots==='object'?S.loyaltySnapshots:{};
+  const row=snapshots[cid];
+  return row&&typeof row==='object'?row:null;
+}
+function customerHasBadge(customerId, badgeId){
+  const snap=getCustomerLoyaltySnapshot(customerId);
+  if(!snap) return false;
+  const badges=Array.isArray(snap.badges)?snap.badges:[];
+  return badges.some((b)=>String(b?.id||'')===String(badgeId||'') && !!b?.earned);
+}
+function loyaltyBadgeImageSrc(badge){
+  const raw=String(badge?.image||'').trim();
+  if(raw){
+    if(raw.startsWith('/static/')) return raw;
+    if(raw.startsWith('/')) return `/static${raw}`;
+    return `/static/${raw.replace(/^static\//,'')}`;
+  }
+  const byId={
+    first_order:'First-order.webp',
+    first_referral:'First-referral.webp',
+    three_referrals:'3-referral.webp',
+    five_orders:'IT-Guy.webp',
+    ten_orders:'10-orders.webp',
+    twenty_five_orders:'25-orders.webp',
+    fifty_orders:'50-orders.webp',
+    hundred_orders:'100-orders.webp',
+    filter_coffee_fan:'Filter-coffee.webp',
+    night_shift_first_order:'404-sleep.webp',
+  };
+  const file=byId[String(badge?.id||'')]||'IT-Guy.webp';
+  return `/static/${file}`;
+}
+function refreshLoyaltyBadgeCounts(){
+  const counts={};
+  const snapshots=S?.loyaltySnapshots&&typeof S.loyaltySnapshots==='object'?S.loyaltySnapshots:{};
+  Object.values(snapshots).forEach((row)=>{
+    const badges=Array.isArray(row?.badges)?row.badges:[];
+    badges.forEach((badge)=>{
+      const badgeId=String(badge?.id||'');
+      if(!badgeId || !badge?.earned) return;
+      counts[badgeId]=(counts[badgeId]||0)+1;
+    });
+  });
+  LOYALTY_BADGE_COUNTS=counts;
+}
+function refreshLoyaltyBadgeFilterOptions(){
+  refreshLoyaltyBadgeCounts();
+  const el=g('mkt-f-badge-id');
+  if(!el) return;
+  const current=el.value||'any';
+  const badges=Array.isArray(S?.loyaltyBadgesCatalog)?S.loyaltyBadgesCatalog:[];
+  const options=['<option value="any">Any badge</option>']
+    .concat(badges.map((badge)=>{
+      const id=String(badge?.id||'').trim();
+      if(!id) return '';
+      const name=String(badge?.name||id);
+      const count=Number(LOYALTY_BADGE_COUNTS[id]||0);
+      return `<option value="${esc(id)}">${esc(name)} (${count})</option>`;
+    }))
+    .filter(Boolean);
+  el.innerHTML=options.join('');
+  if([...el.options].some((opt)=>opt.value===current)) el.value=current;
+}
+function renderLoyaltySyncStatus(){
+  const host=g('loyalty-sync-status');
+  const btn=g('loyalty-sync-now-btn');
+  if(btn) btn.style.display=hasActionAccess('users','manage')?'':'none';
+  if(!host) return;
+  const sync=S?.loyaltySync||{};
+  const st=String(sync.status||'idle');
+  const linked=Object.keys(S?.loyaltySnapshots||{}).length;
+  const when=Number(sync.lastSuccessAt||0)>0 ? new Date(Number(sync.lastSuccessAt)).toLocaleString() : 'never';
+  if(st==='error'){
+    host.textContent=`Loyalty sync error. Last success: ${when}. ${String(sync.lastError||'').slice(0,120)}`;
+    return;
+  }
+  host.textContent=`Loyalty sync: ${st}. Linked customers: ${linked}. Last success: ${when}.`;
+}
+async function refreshLoyaltyStatusFromApi(){
+  try{
+    const data=await api.get('/api/admin/loyalty/sync-status');
+    if(Array.isArray(data?.catalog)) S.loyaltyBadgesCatalog=data.catalog;
+    if(data?.sync && typeof data.sync==='object') S.loyaltySync=data.sync;
+    if(data?.counts && typeof data.counts==='object') LOYALTY_BADGE_COUNTS=data.counts;
+    renderLoyaltySyncStatus();
+    refreshLoyaltyBadgeFilterOptions();
+  }catch(_){}
+}
+async function triggerLoyaltySync(){
+  if(!hasActionAccess('users','manage')){ toast('Only admins can run loyalty sync','err'); return; }
+  try{
+    const res=await api.post('/api/admin/loyalty/sync',{});
+    if(res?.sync && typeof res.sync==='object') S.loyaltySync=res.sync;
+    await refreshLoyaltyStatusFromApi();
+    toast(`Loyalty sync complete (${Number(res?.synced||0)} customers)`, 'ok');
+    rCustomers();
+  }catch(e){
+    toast('Error: '+e.message,'err');
+  }
+}
 function getMarketingFilters(){
   return {
     hasOrders:(g('mkt-f-has-orders')?.value||'any'),
@@ -1791,6 +1902,8 @@ function getMarketingFilters(){
     regular:(g('mkt-f-regular')?.value||'any'),
     regMinOrders:Math.max(1,parseInt(g('mkt-f-reg-min-orders')?.value||3)||3),
     regMaxGap:Math.max(1,parseFloat(g('mkt-f-reg-max-gap')?.value||45)||45),
+    badgeId:(g('mkt-f-badge-id')?.value||'any'),
+    badgeState:(g('mkt-f-badge-state')?.value||'any'),
   };
 }
 function isRegularCustomerByRule(c,f){
@@ -1824,6 +1937,11 @@ function getMarketingGroupCustomers(){
       const reg=isRegularCustomerByRule(c,f);
       if(f.regular==='yes' && !reg) return false;
       if(f.regular==='no' && reg) return false;
+    }
+    if(f.badgeId!=='any' && f.badgeState!=='any'){
+      const earned=customerHasBadge(c.id,f.badgeId);
+      if(f.badgeState==='earned' && !earned) return false;
+      if(f.badgeState==='missing' && earned) return false;
     }
     return true;
   });
@@ -1880,7 +1998,8 @@ function buildMarketingGroupSummary(customers){
   const f=getMarketingFilters();
   const avgAov=customers.length?customers.reduce((s,c)=>s+avgOrderValueForCustomer(c.id),0)/customers.length:0;
   const tagsLabel=Array.isArray(f.productTags) && f.productTags.length ? f.productTags.join(', ') : 'any';
-  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, tags=${tagsLabel}, channel=${f.channel}, regular=${f.regular}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
+  const badgePart=f.badgeId==='any' || f.badgeState==='any' ? 'any' : `${f.badgeState}:${f.badgeId}`;
+  return `Group size: ${customers.length} customers | Filters: ordered=${f.hasOrders}, area=${f.area}, tags=${tagsLabel}, channel=${f.channel}, regular=${f.regular}, badge=${badgePart}, AOV=${f.aovMode}${f.aovMode==='any'?'':` ${f.aovValue}`} | Group avg AOV: ₹${avgAov.toFixed(0)}`;
 }
 function refreshMarketingGroup(){
   const customers=getMarketingGroupCustomers();
@@ -1914,6 +2033,9 @@ function handleCustomerNameSearch(value){
 function rMarketingView(){
   refreshMarketingAreas();
   refreshMarketingProductTags();
+  refreshLoyaltyBadgeFilterOptions();
+  renderLoyaltySyncStatus();
+  refreshLoyaltyStatusFromApi();
   loadMarketingGroups();
   refreshMarketingGroupsUI();
   loadMarketingState();
@@ -2149,11 +2271,33 @@ function syncCustomerExportButton(){
   const btn=g('customers-export-btn');
   if(btn) btn.style.display=hasActionAccess('users','manage')?'':'none';
 }
+function isWebsiteCustomer(customer){
+  return String(customer?.source||'').trim().toLowerCase()==='website';
+}
+function applyCustomerQuickFilters(customers){
+  const sourceFiltered=CUSTOMER_WEBSITE_ONLY
+    ? customers.filter(isWebsiteCustomer)
+    : customers;
+  return !CUSTOMER_NAME_SEARCH
+    ? sourceFiltered
+    : sourceFiltered.filter(c=>String(c.name||'').toLowerCase().includes(CUSTOMER_NAME_SEARCH));
+}
+function refreshWebsiteCustomersFilterButton(){
+  const btn=g('customers-website-filter-btn');
+  if(!btn) return;
+  btn.classList.toggle('btn-p', CUSTOMER_WEBSITE_ONLY);
+  btn.classList.toggle('btn-s', !CUSTOMER_WEBSITE_ONLY);
+  btn.textContent=CUSTOMER_WEBSITE_ONLY?'Website Users: On':'Website Users';
+}
+function toggleWebsiteCustomersFilter(){
+  CUSTOMER_WEBSITE_ONLY=!CUSTOMER_WEBSITE_ONLY;
+  CUSTOMER_PAGE=1;
+  refreshWebsiteCustomersFilterButton();
+  rCustomers();
+}
 function visibleCustomersForExport(){
   const customers=getMarketingGroupCustomers();
-  return !CUSTOMER_NAME_SEARCH
-    ? customers
-    : customers.filter(c=>String(c.name||'').toLowerCase().includes(CUSTOMER_NAME_SEARCH));
+  return applyCustomerQuickFilters(customers);
 }
 function openCustomerExportModal(){
   if(!hasActionAccess('users','manage')){ toast('Only admins can export customers','err'); return; }
@@ -2430,6 +2574,35 @@ function openCustomerAnalytics(cid){
   });
   const topProduct=Object.entries(byProd).sort((a,b)=>b[1]-a[1])[0];
   const topProductLabel=topProduct ? `${topProduct[0]} (${topProduct[1]} order${topProduct[1]!==1?'s':''})` : 'N/A';
+  const loyaltySnap=getCustomerLoyaltySnapshot(cid);
+  const catalog=Array.isArray(S?.loyaltyBadgesCatalog)?S.loyaltyBadgesCatalog:[];
+  const badgeStates=Array.isArray(loyaltySnap?.badges)?loyaltySnap.badges:[];
+  const badgeStateById=Object.fromEntries(badgeStates.map((b)=>[String(b?.id||''), b]));
+  const mergedBadges=catalog.map((b)=>{
+    const id=String(b?.id||'');
+    const st=badgeStateById[id]||{};
+    return {
+      id,
+      name:String(b?.name||id||'Badge'),
+      image:b?.image,
+      earned:!!st?.earned,
+      earnedAt:st?.earnedAt||null,
+    };
+  });
+  const badgeGallery = mergedBadges.length
+    ? `<div style="margin-top:12px">
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:8px">Achievements</div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px">
+          ${mergedBadges.map((badge)=>{
+            const earned=!!badge.earned;
+            return `<div title="${esc(badge.name)}" style="border:1px ${earned?'solid':'dashed'} var(--border);border-radius:10px;padding:6px;background:${earned?'var(--surface-2)':'transparent'};text-align:center">
+              <img src="${esc(loyaltyBadgeImageSrc(badge))}" alt="${esc(badge.name)}" style="width:100%;height:72px;object-fit:contain;filter:${earned?'none':'grayscale(100%) opacity(.45)'}">
+              <div style="margin-top:4px;font-size:10.5px;line-height:1.2;color:var(--text-2)">${esc(badge.name)}</div>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`
+    : `<div style="margin-top:12px;font-size:12px;color:var(--text-3);border:1px dashed var(--border);border-radius:10px;padding:10px">No loyalty badge catalog synced yet. Run “Sync Loyalty Now”.</div>`;
 
   openModal(`
     <div class="modal-title">Customer Analytics</div>
@@ -2480,6 +2653,7 @@ function openCustomerAnalytics(cid){
         <strong>${lastOrder?fd(lastOrder.at):'N/A'}</strong>
       </div>
     </div>
+    ${badgeGallery}
 
     <div style="display:flex;justify-content:flex-end;margin-top:10px">
       <button class="btn btn-s" onclick="closeModal()">Close</button>
@@ -2491,15 +2665,16 @@ function openCustomerAnalytics(cid){
 
 function rCustomers(){
   const grid=g('cg');
+  refreshWebsiteCustomersFilterButton();
   syncCustomerExportButton();
   if(!MKT_GROUPS.length) loadMarketingGroups();
   refreshMarketingAreas();
   refreshMarketingProductTags();
+  refreshLoyaltyBadgeFilterOptions();
+  renderLoyaltySyncStatus();
   const totalCustomers=(S.customers||[]).length;
   const customers=getMarketingGroupCustomers();
-  const filteredCustomers=!CUSTOMER_NAME_SEARCH
-    ? customers
-    : customers.filter(c=>String(c.name||'').toLowerCase().includes(CUSTOMER_NAME_SEARCH));
+  const filteredCustomers=applyCustomerQuickFilters(customers);
   if(g('mkt-group-summary')) g('mkt-group-summary').textContent=buildMarketingGroupSummary(customers);
   if(g('mkt-group-sample')){
     const sample=customers.slice(0,5).map(c=>`${c.name} (${c.area||'-'})`).join(', ');
@@ -2509,7 +2684,8 @@ function rCustomers(){
   if(g('cs-sub')){
     const suffix=activeGroup ? ` · group: ${activeGroup.name}` : '';
     const searchSuffix=CUSTOMER_NAME_SEARCH?` · search: "${CUSTOMER_NAME_SEARCH}"`:'';
-    g('cs-sub').textContent=`${filteredCustomers.length} of ${totalCustomers} customer${totalCustomers!==1?'s':''}${suffix}${searchSuffix}`;
+    const websiteSuffix=CUSTOMER_WEBSITE_ONLY?' · source: website':'';
+    g('cs-sub').textContent=`${filteredCustomers.length} of ${totalCustomers} customer${totalCustomers!==1?'s':''}${suffix}${searchSuffix}${websiteSuffix}`;
   }
   if(!totalCustomers){
     grid.innerHTML=`<div class="empty" style="grid-column:1/-1"><div class="ei"></div><div class="et">No customers yet</div><div class="es">Add your first customer to get started</div></div>`;
@@ -2532,6 +2708,7 @@ function rCustomers(){
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const orderTag=oc>0?'Order recorded':'No order yet';
     const tags=normalizeCustomerProductTags(c.productTags||[]);
+    const earnedBadges=(Array.isArray(getCustomerLoyaltySnapshot(c.id)?.badges)?getCustomerLoyaltySnapshot(c.id).badges:[]).filter((b)=>!!b?.earned).length;
     return`<div class="cc" onclick="openCustomerAnalytics(${c.id})" style="cursor:pointer">
       <div class="cc-top">
         <div class="cav">${ini}</div>
@@ -2553,6 +2730,7 @@ function rCustomers(){
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
         <span class="pill pn">${orderTag}</span>
+        <span class="pill pn">${earnedBadges} badge${earnedBadges!==1?'s':''}</span>
         ${oc>=5?`<span class="pill pg">Smart alerts on</span>`:`<span class="pill pn">${oc}/5 for smart</span>`}
       </div>
     </div>`;
@@ -2583,6 +2761,13 @@ function openCustomerMenu(cid, btn){
 function openEditCustomer(cid){
   if(!hasActionAccess('customers','edit')){ toast('Customer editing is restricted','err'); return; }
   const c=S.customers.find(x=>x.id===cid); if(!c) return;
+  const loyalty=getCustomerLoyaltySnapshot(cid);
+  const loyaltyBadges=Array.isArray(loyalty?.badges)?loyalty.badges:[];
+  const earned=loyaltyBadges.filter((b)=>!!b?.earned);
+  const earnedNames=earned.map((b)=>String(b?.name||b?.id||'').trim()).filter(Boolean);
+  const loyaltyHtml=loyalty
+    ? `<div class="fg"><label>Loyalty Badges</label><div style="font-size:12px;color:var(--text-2);border:1px solid var(--border);padding:10px;border-radius:10px;background:var(--surface-2)">${earned.length?`${earned.length} earned: ${esc(earnedNames.join(', '))}`:'No badges earned yet.'}</div></div>`
+    : `<div class="fg"><label>Loyalty Badges</label><div style="font-size:12px;color:var(--text-3);border:1px dashed var(--border);padding:10px;border-radius:10px">No linked website loyalty snapshot for this customer.</div></div>`;
   openModal(`
     <div class="modal-title">Edit Customer</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
@@ -2598,6 +2783,7 @@ function openEditCustomer(cid){
         <label>Add Tags <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
         <div id="customer-edit-tag-picker"></div>
       </div>
+      ${loyaltyHtml}
       <div class="fg"><label>Address</label><textarea id="ec-address" rows="2">${esc(c.address||'')}</textarea></div>
       <div class="fg"><label>Notes <span style="color:var(--text-3);font-weight:400">(optional)</span></label><textarea id="ec-notes" rows="2">${esc(c.notes||'')}</textarea></div>
       <div style="display:flex;gap:8px;margin-top:4px">
@@ -2955,17 +3141,59 @@ async function mobileQuickStatus(oid, sel){
 
 // Status dropdown (inline)
 let _openDrop=null;
+function resetOpenDrop(drop){
+  if(!drop) return;
+  drop.classList.remove('open');
+  drop.style.position='';
+  drop.style.left='';
+  drop.style.top='';
+  drop.style.zIndex='';
+}
+function positionStatusDropdown(drop, btn){
+  if(!drop || !btn) return;
+  const rect=btn.getBoundingClientRect();
+  const prevDisp=drop.style.display;
+  const prevVis=drop.style.visibility;
+  drop.style.display='block';
+  drop.style.visibility='hidden';
+  const dw=drop.offsetWidth||152;
+  const dh=drop.offsetHeight||140;
+  drop.style.display=prevDisp;
+  drop.style.visibility=prevVis;
+
+  const gap=6;
+  const vw=window.innerWidth||document.documentElement.clientWidth||0;
+  const vh=window.innerHeight||document.documentElement.clientHeight||0;
+  let left=rect.left;
+  if(left+dw>vw-gap) left=Math.max(gap,vw-dw-gap);
+  if(left<gap) left=gap;
+
+  const spaceBelow=vh-rect.bottom;
+  const top=(spaceBelow>=dh+gap)?(rect.bottom+gap):Math.max(gap,rect.top-dh-gap);
+  drop.style.position='fixed';
+  drop.style.left=`${Math.round(left)}px`;
+  drop.style.top=`${Math.round(top)}px`;
+  drop.style.zIndex='5000';
+}
 function toggleStatusDropdown(oid,btn){
   const drop=g('sdrop-'+oid);
   if(!drop) return;
-  if(_openDrop&&_openDrop!==drop){_openDrop.classList.remove('open');}
+  if(_openDrop&&_openDrop!==drop){resetOpenDrop(_openDrop);}
   drop.classList.toggle('open');
   _openDrop=drop.classList.contains('open')?drop:null;
   if(drop.classList.contains('open')){
+    positionStatusDropdown(drop,btn);
     setTimeout(()=>document.addEventListener('click',_closeDrop,{once:true}),10);
+  }else{
+    resetOpenDrop(drop);
   }
 }
-function _closeDrop(e){ if(!e.target.closest('.status-dropdown-wrap')&&_openDrop){_openDrop.classList.remove('open');_openDrop=null;} }
+function _closeDrop(e){
+  if(!e.target.closest('.status-dropdown-wrap')&&_openDrop){
+    resetOpenDrop(_openDrop);
+    _openDrop=null;
+  }
+}
 
 async function quickStatus(oid, newStatus, btnEl){
   const o=S.orders.find(x=>x.id===oid);
@@ -2986,7 +3214,10 @@ async function quickStatus(oid, newStatus, btnEl){
     const updated=await api.put(`/api/orders/${oid}`,{status:newStatus});
     syncOrder(updated);
     // close any open dropdown
-    if(_openDrop){_openDrop.classList.remove('open');_openDrop=null;}
+    if(_openDrop){
+      resetOpenDrop(_openDrop);
+      _openDrop=null;
+    }
     rOrders(); rDash(); updBadge();
     toast('Status updated','ok');
   }catch(e){toast('Error: '+e.message,'err');}
@@ -2998,7 +3229,7 @@ function showShippedStatusGuard(oid){
     toast('Shipped status is for Website/WhatsApp orders','err');
     return;
   }
-  if(_openDrop){_openDrop.classList.remove('open');_openDrop=null;}
+  if(_openDrop){resetOpenDrop(_openDrop);_openDrop=null;}
   openShippedStatusPopup(oid,'orders');
 }
 
@@ -3010,7 +3241,7 @@ function shouldWebsitePendingConfirm(order,newStatus){
   return ch==='website' && st==='pending' && (ns==='confirmed' || ns==='shipped' || ns==='completed');
 }
 function showWebsitePendingConfirmPopup(oid,newStatus,from='orders'){
-  if(_openDrop){_openDrop.classList.remove('open');_openDrop=null;}
+  if(_openDrop){resetOpenDrop(_openDrop);_openDrop=null;}
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
   const rev=orderRevenue(o);
   const pgPct=paymentGatewayCommissionPct();
@@ -3062,7 +3293,7 @@ async function submitWebsitePendingConfirm(oid,newStatus,from='orders'){
 
 function showPaymentPopup(oid, newStatus){
   // Close any open status dropdown first
-  if(_openDrop){_openDrop.classList.remove('open');_openDrop=null;}
+  if(_openDrop){resetOpenDrop(_openDrop);_openDrop=null;}
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
   openModal(`
     <div style="text-align:center;margin-bottom:4px">
@@ -5386,6 +5617,7 @@ async function loadApplicationData(){
     console.error('Startup render failed', err);
     showStartupRenderError(err);
   }
+  refreshLoyaltyStatusFromApi();
   pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
   if(!window.__inventoryPollStarted){
     window.__inventoryPollStarted=true;
