@@ -375,6 +375,8 @@ def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str
         "/api/website/auth/login": {"POST"},
         "/api/website/auth/google/check": {"POST"},
         "/api/website/auth/google/signup": {"POST"},
+        "/api/website/auth/microsoft/check": {"POST"},
+        "/api/website/auth/microsoft/signup": {"POST"},
         "/api/website/coupons/validate": {"POST"},
         "/api/website/orders": {"GET"},
     }
@@ -3770,6 +3772,112 @@ async def website_google_signup(request: Request):
             "customerId": 0,
             "authProvider": "google",
             "googleSub": google_sub,
+            "emailVerified": True,
+            "isActive": True,
+            "createdAt": now_ms,
+            "lastLoginAt": now_ms,
+        },
+        preserve_password_hash="",
+    )
+    customer_id = _upsert_customer_for_website_user(data, website_user)
+    website_user["customerId"] = customer_id
+    data.setdefault("websiteUsers", []).append(website_user)
+    data["wuid"] = int(data.get("wuid") or 1) + 1
+    write_data(data)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    return {
+        "ok": True,
+        "user": _website_user_public_payload(website_user),
+        "customer": {
+            "id": customer_id,
+            "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or website_user.get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or website_user.get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or website_user.get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or website_user.get("address") or "").strip(),
+        },
+    }
+
+
+@app.post("/api/website/auth/microsoft/check")
+async def website_microsoft_check(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    email = _normalize_email(body.get("email"))
+    microsoft_sub = str(body.get("microsoftSub") or body.get("microsoft_sub") or "").strip()
+    email_verified = bool(body.get("emailVerified", body.get("email_verified", False)))
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    if not email_verified:
+        raise HTTPException(status_code=400, detail="Microsoft email must be verified.")
+
+    data = read_data()
+    user = _find_website_user(data, email=email)
+    if not user:
+        return {"ok": True, "exists": False, "email": email}
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(status_code=403, detail="Website user is inactive.")
+
+    user["authProvider"] = str(user.get("authProvider") or "password").strip() or "password"
+    if microsoft_sub:
+        existing_microsoft_sub = str(user.get("microsoftSub") or "").strip()
+        if existing_microsoft_sub and existing_microsoft_sub != microsoft_sub:
+            raise HTTPException(status_code=409, detail="Microsoft account is already linked to another identity.")
+        user["microsoftSub"] = microsoft_sub
+        user["emailVerified"] = True
+    user["lastLoginAt"] = int(time.time() * 1000)
+    user["updatedAt"] = int(time.time() * 1000)
+    user["customerId"] = _upsert_customer_for_website_user(data, user)
+    write_data(data)
+    return {"ok": True, "exists": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/auth/microsoft/signup")
+async def website_microsoft_signup(request: Request):
+    _require_api_key_context(request)
+    body = await request.json()
+    email = _normalize_email(body.get("email"))
+    phone = _normalize_customer_phone(body.get("phone"))
+    name = str(body.get("name") or "").strip()
+    microsoft_sub = str(body.get("microsoftSub") or body.get("microsoft_sub") or "").strip()
+    email_verified = bool(body.get("emailVerified", body.get("email_verified", False)))
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required.")
+    if not email_verified:
+        raise HTTPException(status_code=400, detail="Microsoft email must be verified.")
+    if not microsoft_sub:
+        raise HTTPException(status_code=400, detail="Microsoft subject is required.")
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone is required.")
+
+    data = read_data()
+    existing_by_email = _find_website_user(data, email=email)
+    if existing_by_email:
+        raise HTTPException(status_code=409, detail="Website user already exists.")
+    existing_by_phone = _find_website_user(data, phone=phone)
+    if existing_by_phone:
+        raise HTTPException(status_code=409, detail="Phone already exists.")
+    for row in data.get("websiteUsers", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if microsoft_sub and str(row.get("microsoftSub") or "").strip() == microsoft_sub:
+            raise HTTPException(status_code=409, detail="Microsoft account already exists.")
+
+    now_ms = int(time.time() * 1000)
+    website_user = _normalize_website_user_record(
+        {
+            "id": int(data.get("wuid") or 1),
+            "email": email,
+            "phone": phone,
+            "name": name,
+            "area": body.get("area") or "",
+            "address": body.get("address") or "",
+            "notes": body.get("notes") or "",
+            "customerId": 0,
+            "authProvider": "microsoft",
+            "microsoftSub": microsoft_sub,
             "emailVerified": True,
             "isActive": True,
             "createdAt": now_ms,
