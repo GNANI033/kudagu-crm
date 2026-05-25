@@ -624,14 +624,14 @@ def _variant_to_grams(variant: str) -> float:
             return float(raw[:-1].strip())
         except ValueError:
             return 0.0
-    if raw.endswith("l"):
-        try:
-            return float(raw[:-1].strip()) * 1000.0
-        except ValueError:
-            return 0.0
     if raw.endswith("ml"):
         try:
             return float(raw[:-2].strip())
+        except ValueError:
+            return 0.0
+    if raw.endswith("l"):
+        try:
+            return float(raw[:-1].strip()) * 1000.0
         except ValueError:
             return 0.0
     return 0.0

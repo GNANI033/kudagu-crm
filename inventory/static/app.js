@@ -68,6 +68,12 @@ async function refreshThemePreference(){
 function fd(ts){ return ts ? new Date(ts).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) : '—'; }
 function fdt(ts){ return ts ? new Date(ts).toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}) : '—'; }
 function fGrams(g){ return g >= 1000 ? (g/1000).toFixed(2)+' kg' : g.toFixed(0)+' g'; }
+function unitSymbol(unit){ return String(unit||'g').toLowerCase()==='ml' ? 'ml' : 'g'; }
+function fQty(value, unit='g'){
+  const n=Number(value||0);
+  if(unitSymbol(unit)==='ml') return n >= 1000 ? (n/1000).toFixed(2)+' L' : n.toFixed(0)+' ml';
+  return n >= 1000 ? (n/1000).toFixed(2)+' kg' : n.toFixed(0)+' g';
+}
 function g(id){ return document.getElementById(id); }
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -195,10 +201,10 @@ function rDash(){
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
             <div style="font-weight:600;font-size:13px">${esc(p.name)}</div>
-            <div style="font-size:11.5px;color:var(--text-3)">Threshold: ${fGrams(p.lowStockThreshold)}</div>
+            <div style="font-size:11.5px;color:var(--text-3)">Threshold: ${fQty(p.lowStockThreshold,p.unit)}</div>
           </div>
           <div style="text-align:right">
-            <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:${cls==='crit'?'var(--red)':'var(--amber)'}">${fGrams(p.stock)}</div>
+            <div style="font-family:'Syne',sans-serif;font-size:15px;font-weight:700;color:${cls==='crit'?'var(--red)':'var(--amber)'}">${fQty(p.stock,p.unit)}</div>
             <span class="pill ${cls==='crit'?'pr':'pa'}" style="font-size:10.5px">${cls==='crit'?'Critical':'Low'}</span>
           </div>
         </div>
@@ -236,17 +242,17 @@ function rStock(){
       <div class="pc-header">
         <div>
           <div class="pc-name">${esc(p.name)}</div>
-          <div class="pc-threshold">Threshold: ${fGrams(p.lowStockThreshold)}</div>
+          <div class="pc-threshold">Threshold: ${fQty(p.lowStockThreshold,p.unit)}</div>
         </div>
         <div class="pc-stock">
-          <div class="pc-stock-val" style="color:${st==='critical'?'var(--red)':st==='low-stock'?'var(--amber)':'var(--text)'}">${fGrams(p.stock)}</div>
+          <div class="pc-stock-val" style="color:${st==='critical'?'var(--red)':st==='low-stock'?'var(--amber)':'var(--text)'}">${fQty(p.stock,p.unit)}</div>
           <div class="pc-stock-lbl">in stock</div>
         </div>
       </div>
       <div class="stock-bar-wrap"><div class="stock-bar ${barCls}" style="width:${pct}%"></div></div>
       <div class="pc-meta">
-        <div class="pc-meta-item">Out this month: <strong>${fGrams(monthlyOut(p))}</strong></div>
-        <div class="pc-meta-item">Avg move: <strong>${an.avgOutSize?fGrams(an.avgOutSize):'—'}</strong></div>
+        <div class="pc-meta-item">Out this month: <strong>${fQty(monthlyOut(p),p.unit)}</strong></div>
+        <div class="pc-meta-item">Avg move: <strong>${an.avgOutSize?fQty(an.avgOutSize,p.unit):'—'}</strong></div>
       </div>
       <div class="pc-actions">
         <button class="btn btn-green btn-sm" onclick="event.stopPropagation();openAddMovementModal('${p.id}','in')">+ Restock</button>
@@ -269,20 +275,20 @@ function openProductDetail(pid){
   openModal(`
     <div class="modal-title">${esc(p.name)}</div>
     <div style="margin-top:4px;margin-bottom:18px;display:flex;gap:8px;flex-wrap:wrap">
-      <span class="pill pn">${fGrams(p.stock)} in stock</span>
-      <span class="pill ${p.stock<=p.lowStockThreshold?'pa':'pg'}">Threshold: ${fGrams(p.lowStockThreshold)}</span>
+      <span class="pill pn">${fQty(p.stock,p.unit)} in stock</span>
+      <span class="pill ${p.stock<=p.lowStockThreshold?'pa':'pg'}">Threshold: ${fQty(p.lowStockThreshold,p.unit)}</span>
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:18px">
       <div style="background:var(--surface-2);border-radius:var(--r-sm);padding:12px;text-align:center">
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${fGrams(an.totalOut||0)}</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${fQty(an.totalOut||0,p.unit)}</div>
         <div style="font-size:11px;color:var(--text-3);margin-top:3px">Total Dispatched</div>
       </div>
       <div style="background:var(--surface-2);border-radius:var(--r-sm);padding:12px;text-align:center">
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${fGrams(an.totalIn||0)}</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${fQty(an.totalIn||0,p.unit)}</div>
         <div style="font-size:11px;color:var(--text-3);margin-top:3px">Total Restocked</div>
       </div>
       <div style="background:var(--surface-2);border-radius:var(--r-sm);padding:12px;text-align:center">
-        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${an.avgOutSize?fGrams(an.avgOutSize):'—'}</div>
+        <div style="font-family:'Syne',sans-serif;font-size:18px;font-weight:700">${an.avgOutSize?fQty(an.avgOutSize,p.unit):'—'}</div>
         <div style="font-size:11px;color:var(--text-3);margin-top:3px">Avg Dispatch</div>
       </div>
     </div>
@@ -312,6 +318,8 @@ function movRow(m, showDelete=false){
   const actions=showDelete?`
     ${m.type==='in'?`<button class="btn btn-g btn-xs" style="flex-shrink:0" onclick="openEditMovementModal('${m.productId}',${m.id})" title="Edit Restock">Edit</button>`:''}
     <button class="btn btn-g btn-xs" style="flex-shrink:0;color:var(--text-3)" onclick="deleteMovement('${m.productId}',${m.id})" title="Delete">✕</button>`:'';
+  const product=S.products.find(p=>p.id===m.productId);
+  const qty=fQty(m.grams,product?.unit||'g');
   return`<div class="mov-item">
     <div class="mov-dot ${m.type}"></div>
     <div class="mov-body">
@@ -319,7 +327,7 @@ function movRow(m, showDelete=false){
       ${m.note?`<div class="mov-note">${esc(m.note)}</div>`:''}
     </div>
     <div class="mov-right">
-      <div class="mov-grams ${m.type}">${sign}${fGrams(m.grams)}</div>
+      <div class="mov-grams ${m.type}">${sign}${qty}</div>
       <div class="mov-date">${fdt(m.at)}</div>
     </div>
     ${actions}
@@ -357,7 +365,7 @@ function openEditMovementModal(pid, mid){
       </div>
       <div class="fr">
         <div class="fg">
-          <label>Quantity (grams) <span class="req">*</span></label>
+          <label>Quantity (${unitSymbol(p.unit)}) <span class="req">*</span></label>
           <input type="number" id="em-grams" value="${m.grams}" min="1" inputmode="decimal">
         </div>
         <div class="fg">
@@ -426,11 +434,11 @@ function openAddMovementModal(preselectPid='', preType='in'){
       </div>
       <div class="fg">
         <label>Product <span class="req">*</span></label>
-        <select id="mov-prod">${prodOptions}</select>
+        <select id="mov-prod" onchange="updateMovementUnitLabel()">${prodOptions}</select>
       </div>
       <div class="fr">
         <div class="fg">
-          <label>Quantity (grams) <span class="req">*</span></label>
+          <label id="mov-qty-label">Quantity (g) <span class="req">*</span></label>
           <input type="number" id="mov-grams" placeholder="e.g. 500" min="1" inputmode="decimal">
         </div>
         <div class="fg">
@@ -447,12 +455,21 @@ function openAddMovementModal(preselectPid='', preType='in'){
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
     </div>`);
+  updateMovementUnitLabel();
 }
 
 function setMovType(type, btn){
   _movType=type;
   document.querySelectorAll('.type-tab').forEach(t=>t.classList.remove('on'));
   btn.classList.add('on');
+}
+
+function updateMovementUnitLabel(){
+  const pid=g('mov-prod')?.value;
+  const product=S.products.find(p=>p.id===pid);
+  const unit=unitSymbol(product?.unit||'g');
+  const label=g('mov-qty-label');
+  if(label) label.innerHTML=`Quantity (${unit}) <span class="req">*</span>`;
 }
 
 async function submitMovement(){
@@ -487,8 +504,8 @@ function rProducts(){
     </tr></thead>
     <tbody>${S.products.map(p=>`<tr>
       <td style="padding:13px 18px;border-bottom:1px solid var(--border);font-weight:600">${esc(p.name)}</td>
-      <td style="padding:13px 18px;border-bottom:1px solid var(--border);text-align:right;font-family:'Syne',sans-serif;font-weight:700;color:${p.stock<=p.lowStockThreshold?'var(--amber)':'var(--text)'}">${fGrams(p.stock)}</td>
-      <td style="padding:13px 18px;border-bottom:1px solid var(--border);text-align:right;color:var(--text-2)">${fGrams(p.lowStockThreshold)}</td>
+      <td style="padding:13px 18px;border-bottom:1px solid var(--border);text-align:right;font-family:'Syne',sans-serif;font-weight:700;color:${p.stock<=p.lowStockThreshold?'var(--amber)':'var(--text)'}">${fQty(p.stock,p.unit)}</td>
+      <td style="padding:13px 18px;border-bottom:1px solid var(--border);text-align:right;color:var(--text-2)">${fQty(p.lowStockThreshold,p.unit)}</td>
       <td style="padding:13px 18px;border-bottom:1px solid var(--border);text-align:right">
         <button class="btn btn-g btn-xs" onclick="openProductMenu('${p.id}',this)">⋯</button>
       </td>
@@ -501,14 +518,21 @@ function openAddProductModal(){
     <div class="modal-title">Add Product</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
       <div class="fg"><label>Product Name <span class="req">*</span></label><input id="np-name" placeholder="e.g. Coorg Filter Coffee Powder"></div>
+      <div class="fg">
+        <label>Unit</label>
+        <select id="np-unit" onchange="updateAddProductUnitLabels()">
+          <option value="g" selected>Grams (g)</option>
+          <option value="ml">Millilitres (ml)</option>
+        </select>
+      </div>
       <div class="fr">
         <div class="fg">
-          <label>Low Stock Threshold (g)</label>
+          <label id="np-thresh-label">Low Stock Threshold (g)</label>
           <input type="number" id="np-thresh" value="500" min="0" inputmode="decimal" placeholder="500">
           <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Alert triggers below this amount</div>
         </div>
         <div class="fg">
-          <label>Initial Stock (g) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <label id="np-stock-label">Initial Stock (g) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
           <input type="number" id="np-stock" value="0" min="0" inputmode="decimal" placeholder="0">
         </div>
       </div>
@@ -517,14 +541,25 @@ function openAddProductModal(){
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
     </div>`);
+  updateAddProductUnitLabels();
+}
+
+function updateAddProductUnitLabels(){
+  const unit=unitSymbol(g('np-unit')?.value);
+  const suffix=unit==='ml' ? 'ml' : 'g';
+  const threshLabel=g('np-thresh-label');
+  const stockLabel=g('np-stock-label');
+  if(threshLabel) threshLabel.textContent=`Low Stock Threshold (${suffix})`;
+  if(stockLabel) stockLabel.innerHTML=`Initial Stock (${suffix}) <span style="color:var(--text-3);font-weight:400">(optional)</span>`;
 }
 
 async function submitAddProduct(){
   const name=g('np-name')?.value.trim(); if(!name){toast('Product name required','err');return;}
+  const unit=unitSymbol(g('np-unit')?.value);
   const thresh=parseFloat(g('np-thresh')?.value||500);
   const initStock=parseFloat(g('np-stock')?.value||0);
   try{
-    const product=await api.post('/api/products',{name,lowStockThreshold:thresh,unit:'g'});
+    const product=await api.post('/api/products',{name,lowStockThreshold:thresh,unit});
     S.products.push({...product,movements:[]});
     // If initial stock provided, record it as a movement
     if(initStock>0){
@@ -547,12 +582,20 @@ function openProductMenu(pid, btn){
 
 function openEditProductModal(pid){
   const p=S.products.find(x=>x.id===pid); if(!p) return;
+  const selectedUnit=unitSymbol(p.unit);
   openModal(`
     <div class="modal-title">Edit Product</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:18px">
       <div class="fg"><label>Product Name <span class="req">*</span></label><input id="ep-name" value="${esc(p.name)}"></div>
       <div class="fg">
-        <label>Low Stock Threshold (g)</label>
+        <label>Unit</label>
+        <select id="ep-unit" onchange="updateEditProductUnitLabels()">
+          <option value="g" ${selectedUnit==='g'?'selected':''}>Grams (g)</option>
+          <option value="ml" ${selectedUnit==='ml'?'selected':''}>Millilitres (ml)</option>
+        </select>
+      </div>
+      <div class="fg">
+        <label id="ep-thresh-label">Low Stock Threshold (${selectedUnit})</label>
         <input type="number" id="ep-thresh" value="${p.lowStockThreshold}" min="0" inputmode="decimal">
         <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Alert triggers below this amount</div>
       </div>
@@ -563,13 +606,21 @@ function openEditProductModal(pid){
       <hr style="margin:4px 0">
       <button class="btn btn-danger btn-full" onclick="closeModal();confirmDeleteProduct('${pid}')">Delete Product</button>
     </div>`);
+  updateEditProductUnitLabels();
+}
+
+function updateEditProductUnitLabels(){
+  const unit=unitSymbol(g('ep-unit')?.value);
+  const lbl=g('ep-thresh-label');
+  if(lbl) lbl.textContent=`Low Stock Threshold (${unit})`;
 }
 
 async function submitEditProduct(pid){
   const name=g('ep-name')?.value.trim(); if(!name){toast('Name required','err');return;}
+  const unit=unitSymbol(g('ep-unit')?.value);
   const thresh=parseFloat(g('ep-thresh')?.value||500);
   try{
-    const updated=await api.put(`/api/products/${pid}`,{name,lowStockThreshold:thresh});
+    const updated=await api.put(`/api/products/${pid}`,{name,lowStockThreshold:thresh,unit});
     const idx=S.products.findIndex(x=>x.id===pid); if(idx>=0) Object.assign(S.products[idx],updated);
     closeModal(); toast(name+' updated','ok'); rProducts(); rStock(); rDash();
   }catch(e){toast('Error: '+e.message,'err');}
