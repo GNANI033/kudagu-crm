@@ -1271,8 +1271,14 @@ def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "
     now_ms = int(time.time() * 1000)
     auth_provider = str(raw.get("authProvider") or raw.get("auth_provider") or "").strip().lower()
     google_sub = str(raw.get("googleSub") or raw.get("google_sub") or "").strip()
-    if auth_provider not in {"password", "google"}:
-        auth_provider = "google" if google_sub and not preserve_password_hash else "password"
+    microsoft_sub = str(raw.get("microsoftSub") or raw.get("microsoft_sub") or "").strip()
+    if auth_provider not in {"password", "google", "microsoft"}:
+        if google_sub and not preserve_password_hash:
+            auth_provider = "google"
+        elif microsoft_sub and not preserve_password_hash:
+            auth_provider = "microsoft"
+        else:
+            auth_provider = "password"
     return {
         "id": int(raw.get("id") or 0),
         "email": email,
@@ -1285,6 +1291,7 @@ def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "
         "passwordHash": preserve_password_hash,
         "authProvider": auth_provider,
         "googleSub": google_sub,
+        "microsoftSub": microsoft_sub,
         "emailVerified": bool(raw.get("emailVerified", raw.get("email_verified", False))),
         "isActive": bool(raw.get("isActive", True)),
         "createdAt": int(raw.get("createdAt") or now_ms),
@@ -1708,8 +1715,9 @@ def migrate(data: dict) -> dict:
             continue
         password_hash = str(raw_user.get("passwordHash") or "").strip()
         google_sub = str(raw_user.get("googleSub") or raw_user.get("google_sub") or "").strip()
+        microsoft_sub = str(raw_user.get("microsoftSub") or raw_user.get("microsoft_sub") or "").strip()
         auth_provider = str(raw_user.get("authProvider") or raw_user.get("auth_provider") or "").strip().lower()
-        if not password_hash and not (auth_provider == "google" or google_sub):
+        if not password_hash and not (auth_provider in {"google", "microsoft"} or google_sub or microsoft_sub):
             continue
         merged = _normalize_website_user_record(
             {
