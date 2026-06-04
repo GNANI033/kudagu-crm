@@ -5506,6 +5506,7 @@ function insertAwbPlaceholder(i){
   inp.selectionStart=pos;
   inp.selectionEnd=pos;
   inp.focus();
+  updateShippingRow(i,'trackingTemplate',inp.value);
   updateTrackingTemplatePreview(i);
 }
 async function saveShippingSettings(){
