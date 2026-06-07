@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>GeoSnap</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --ink:#0b0b0d;--ink2:#141416;--ink3:#1e1e22;--rule:#28282e;
+  --muted:#52525e;--dim:#7a7a8a;--text:#dddde8;--white:#f2f2f6;
+  --gold:#c9a84c;--gold-lt:#e8c87a;--gold-dim:rgba(201,168,76,0.15);
+  --red:#d95555;--green:#3dba84;--r:14px;--r-sm:9px;
+  --ease:cubic-bezier(0.22,1,0.36,1);--f:'Syne',sans-serif;
+}
+html,body{height:100%;width:100%;background:var(--ink);color:var(--text);font-family:var(--f);font-weight:400;overflow:hidden;-webkit-font-smoothing:antialiased;}
+body::after{content:'';position:fixed;inset:0;pointer-events:none;z-index:9998;background-image:url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='g'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23g)' opacity='0.04'/%3E%3C/svg%3E");opacity:.55;}
+
+.screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;transition:opacity .45s var(--ease),transform .45s var(--ease);}
+.screen.hidden{opacity:0;pointer-events:none;transform:translateY(20px);}
+
+/* ══ WELCOME ══ */
+#welcome{background:radial-gradient(ellipse 120% 55% at 50% -5%,#1c1a10 0%,transparent 65%),var(--ink);padding:36px 24px;overflow-y:auto;gap:0;}
+#welcome::before{content:'';position:fixed;inset:0;pointer-events:none;background-image:repeating-linear-gradient(0deg,transparent,transparent 63px,rgba(201,168,76,.035) 64px),repeating-linear-gradient(90deg,transparent,transparent 63px,rgba(201,168,76,.035) 64px);}
+.w-inner{width:100%;max-width:400px;display:flex;flex-direction:column;align-items:center;gap:24px;}
+
+.logo-wrap{position:relative;width:76px;height:76px;display:flex;align-items:center;justify-content:center;}
+.logo-ring{position:absolute;inset:0;border-radius:50%;border:1px solid rgba(201,168,76,.3);animation:ring-spin 14s linear infinite;}
+.logo-ring::before{content:'';position:absolute;width:5px;height:5px;border-radius:50%;background:var(--gold);top:-2.5px;left:50%;transform:translateX(-50%);box-shadow:0 0 10px var(--gold);}
+.logo-ring-inner{position:absolute;inset:10px;border-radius:50%;border:1px solid rgba(201,168,76,.12);animation:ring-spin 9s linear infinite reverse;}
+.logo-core{width:42px;height:42px;border-radius:50%;background:linear-gradient(145deg,#1c1a0f,#28240f);border:1px solid rgba(201,168,76,.45);display:flex;align-items:center;justify-content:center;box-shadow:0 0 24px rgba(201,168,76,.08),inset 0 1px 0 rgba(201,168,76,.18);}
+.logo-core svg{width:18px;height:18px;}
+@keyframes ring-spin{to{transform:rotate(360deg);}}
+
+.wordmark{text-align:center;}
+.wordmark-name{font-size:clamp(38px,11vw,60px);font-weight:800;letter-spacing:-0.03em;color:var(--white);line-height:1;}
+.wordmark-name em{font-style:normal;color:var(--gold);}
+.wordmark-tag{font-size:10px;font-weight:500;color:var(--muted);letter-spacing:0.28em;text-transform:uppercase;margin-top:7px;}
+
+.rule{width:100%;display:flex;align-items:center;gap:14px;}
+.rule::before,.rule::after{content:'';flex:1;height:1px;background:linear-gradient(90deg,transparent,var(--rule),transparent);}
+.rule span{font-size:9px;font-weight:600;color:var(--muted);letter-spacing:0.22em;text-transform:uppercase;white-space:nowrap;}
+
+.perm-list{width:100%;display:flex;flex-direction:column;gap:6px;}
+.perm-card{display:flex;align-items:center;gap:14px;padding:13px 16px;background:var(--ink2);border:1px solid var(--rule);border-radius:var(--r);transition:border-color .25s var(--ease);}
+.perm-card:hover{border-color:rgba(201,168,76,.3);}
+.perm-icon{width:36px;height:36px;border-radius:var(--r-sm);background:var(--ink3);border:1px solid var(--rule);display:flex;align-items:center;justify-content:center;flex-shrink:0;}
+.perm-icon svg{width:17px;height:17px;}
+.perm-label strong{display:block;font-size:13px;font-weight:700;color:var(--white);letter-spacing:-0.01em;margin-bottom:2px;}
+.perm-label span{font-size:11px;font-weight:400;color:var(--dim);letter-spacing:.01em;}
+
+.cta-wrap{width:100%;display:flex;flex-direction:column;gap:10px;}
+.btn-cta{width:100%;padding:16px 24px;background:linear-gradient(135deg,#b8922e 0%,#d4a84e 45%,#b8922e 100%);background-size:200% 100%;color:#0c0900;border:none;border-radius:var(--r);font-family:var(--f);font-size:13px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;cursor:pointer;position:relative;overflow:hidden;transition:background-position .5s var(--ease),box-shadow .25s;box-shadow:0 4px 28px rgba(201,168,76,.22);}
+.btn-cta::after{content:'';position:absolute;inset:0;border-radius:inherit;background:linear-gradient(135deg,rgba(255,255,255,.18) 0%,transparent 55%);}
+.btn-cta:hover{background-position:100% 0;box-shadow:0 6px 36px rgba(201,168,76,.38);}
+.btn-cta:active{transform:scale(.975);}
+.err{font-size:11px;font-weight:500;color:var(--red);text-align:center;letter-spacing:.03em;display:none;}
+.err.show{display:block;}
+
+@media(orientation:landscape){
+  #welcome{flex-direction:row;justify-content:center;gap:32px;padding:20px 32px;}
+  .w-inner{max-width:300px;gap:18px;}
+  .wordmark-name{font-size:clamp(28px,5.5vw,46px);}
+}
+
+/* ══ CAMERA ══ */
+#camera{background:#000;padding:0;}
+#video{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;}
+.cam-ui{position:absolute;inset:0;display:flex;flex-direction:column;justify-content:space-between;pointer-events:none;}
+
+.cam-top{display:flex;align-items:center;gap:10px;justify-content:space-between;padding:clamp(40px,8vh,54px) 16px 14px;background:linear-gradient(to bottom,rgba(0,0,0,.7) 0%,transparent 100%);pointer-events:all;}
+@media(orientation:landscape){.cam-top{padding:14px 80px 14px 16px;}}
+.cam-top-left{display:flex;align-items:center;gap:8px;flex:1;min-width:0;}
+.brand-tag{display:flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:var(--gold);letter-spacing:.12em;flex-shrink:0;}
+.brand-pip{width:4px;height:4px;border-radius:50%;background:var(--gold);}
+.gps-pill{display:flex;align-items:center;gap:7px;background:rgba(8,8,10,.78);border:1px solid rgba(255,255,255,.07);border-radius:100px;padding:5px 12px;backdrop-filter:blur(14px);flex:1;min-width:0;}
+.gps-led{width:6px;height:6px;border-radius:50%;flex-shrink:0;background:var(--red);box-shadow:0 0 6px var(--red);animation:led-pulse 1.7s ease-in-out infinite;transition:background .4s,box-shadow .4s;}
+.gps-led.locked{background:var(--green);box-shadow:0 0 9px var(--green);animation:none;}
+@keyframes led-pulse{0%,100%{opacity:1}50%{opacity:.2}}
+.gps-label{font-size:10px;font-weight:500;color:rgba(255,255,255,.6);letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.btn-icon{width:40px;height:40px;border-radius:50%;flex-shrink:0;background:rgba(8,8,10,.78);border:1px solid rgba(255,255,255,.09);display:flex;align-items:center;justify-content:center;cursor:pointer;pointer-events:all;backdrop-filter:blur(14px);color:rgba(255,255,255,.7);transition:transform .2s;}
+.btn-icon:active{transform:scale(.88);}
+.btn-icon svg{width:16px;height:16px;}
+
+.reticle{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:min(62vw,250px);height:min(62vw,250px);pointer-events:none;}
+@media(orientation:landscape){.reticle{width:min(42vh,190px);height:min(42vh,190px);}}
+.rc{position:absolute;width:16px;height:16px;border-color:rgba(201,168,76,.65);border-style:solid;}
+.rc.tl{top:0;left:0;border-width:1.5px 0 0 1.5px;}.rc.tr{top:0;right:0;border-width:1.5px 1.5px 0 0;}
+.rc.bl{bottom:0;left:0;border-width:0 0 1.5px 1.5px;}.rc.br{bottom:0;right:0;border-width:0 1.5px 1.5px 0;}
+.rc-cx{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:12px;height:12px;}
+.rc-cx::before,.rc-cx::after{content:'';position:absolute;background:rgba(201,168,76,.45);}
+.rc-cx::before{width:1px;height:100%;left:50%;transform:translateX(-50%);}
+.rc-cx::after{height:1px;width:100%;top:50%;transform:translateY(-50%);}
+
+/* ── LIVE STAMP PREVIEW ── */
+.live-stamp{position:absolute;bottom:100px;left:12px;right:12px;pointer-events:none;}
+@media(orientation:landscape){.live-stamp{bottom:12px;right:auto;max-width:55vw;}}
+.stamp-card{background:rgba(8,8,10,.9);border:1px solid rgba(255,255,255,.07);border-radius:var(--r);overflow:hidden;backdrop-filter:blur(20px);box-shadow:0 12px 40px rgba(0,0,0,.55);}
+/* Map + info row */
+.stamp-main-row{display:flex;gap:0;}
+.stamp-map-thumb{width:110px;min-width:110px;height:110px;background:#1a2a1a;position:relative;flex-shrink:0;overflow:hidden;}
+.stamp-map-thumb canvas{width:100%;height:100%;display:block;}
+.stamp-map-pin{position:absolute;top:50%;left:50%;transform:translate(-50%,-90%);font-size:22px;line-height:1;filter:drop-shadow(0 2px 4px rgba(0,0,0,.7));}
+@media(orientation:landscape){.stamp-map-thumb{width:90px;min-width:90px;height:90px;}}
+.stamp-info{flex:1;min-width:0;padding:10px 12px;display:flex;flex-direction:column;gap:0;}
+.stamp-city-row{display:flex;align-items:flex-start;gap:6px;margin-bottom:4px;}
+.stamp-flag{font-size:clamp(15px,4vw,20px);line-height:1.2;flex-shrink:0;margin-top:1px;}
+/* City wraps to 2 lines max — never truncates mid-word */
+.stamp-city{font-size:clamp(14px,4.2vw,22px);font-weight:800;color:var(--white);letter-spacing:-0.02em;line-height:1.15;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;word-break:break-word;}
+@media(orientation:landscape){.stamp-city{font-size:clamp(12px,3vh,17px);}}
+.stamp-addr-text{font-size:clamp(9px,2.2vw,11px);font-weight:500;color:rgba(255,255,255,.5);line-height:1.6;white-space:pre-line;}
+@media(orientation:landscape){.stamp-addr-text{font-size:clamp(8px,1.6vh,10px);}}
+.stamp-rule{height:1px;background:rgba(255,255,255,.07);}
+.stamp-meta-row{display:flex;align-items:center;padding:7px 12px;gap:8px;}
+.stamp-coords-txt{font-size:clamp(9px,2vw,11px);font-weight:500;color:rgba(255,255,255,.35);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.stamp-time-txt{font-size:clamp(9px,2vw,11px);font-weight:500;color:rgba(255,255,255,.25);white-space:nowrap;flex-shrink:0;}
+
+.cam-bottom{display:flex;align-items:center;justify-content:space-between;padding:12px 32px clamp(32px,6vh,52px);background:linear-gradient(to top,rgba(0,0,0,.75) 0%,transparent 100%);pointer-events:all;}
+@media(orientation:landscape){.cam-bottom{position:absolute;right:0;top:0;bottom:0;width:82px;padding:0;flex-direction:column;justify-content:center;gap:18px;background:linear-gradient(to left,rgba(0,0,0,.65) 0%,transparent 100%);}}
+.side-slot{width:40px;display:flex;align-items:center;justify-content:center;}
+.orient-chip{font-size:9px;font-weight:700;color:rgba(255,255,255,.25);letter-spacing:.12em;text-transform:uppercase;}
+.shutter-wrap{display:flex;align-items:center;justify-content:center;}
+.shutter-outer{width:80px;height:80px;border-radius:50%;border:1px solid rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;}
+.shutter-ring{width:72px;height:72px;border-radius:50%;border:1.5px solid rgba(201,168,76,.38);display:flex;align-items:center;justify-content:center;position:relative;}
+.shutter-ring::before{content:'';position:absolute;width:5px;height:5px;border-radius:50%;background:var(--gold);top:-2.5px;left:50%;transform:translateX(-50%);box-shadow:0 0 8px var(--gold);}
+.shutter-btn{width:56px;height:56px;border-radius:50%;border:none;cursor:pointer;background:linear-gradient(160deg,#efefef 0%,#c8c8c8 100%);box-shadow:0 3px 10px rgba(0,0,0,.45),inset 0 1.5px 0 rgba(255,255,255,.88),inset 0 -1px 0 rgba(0,0,0,.12);position:relative;overflow:hidden;transition:transform .12s,box-shadow .12s;}
+.shutter-btn::before{content:'';position:absolute;inset:0;border-radius:50%;background:linear-gradient(135deg,rgba(255,255,255,.45) 0%,transparent 52%);}
+.shutter-btn:active{transform:scale(.9);box-shadow:0 1px 5px rgba(0,0,0,.5),inset 0 2px 5px rgba(0,0,0,.18);}
+
+/* ══ PREVIEW ══ */
+#preview{background:#000;justify-content:flex-start;}
+.preview-bar{width:100%;flex-shrink:0;display:flex;align-items:center;justify-content:center;padding:clamp(38px,7vh,52px) 20px 12px;background:linear-gradient(to bottom,rgba(0,0,0,.75) 0%,transparent 100%);}
+.preview-bar-title{font-size:11px;font-weight:700;color:rgba(255,255,255,.4);letter-spacing:.18em;text-transform:uppercase;}
+#canvas-wrap{flex:1;width:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;min-height:0;}
+#output-canvas{max-width:100%;max-height:100%;object-fit:contain;display:block;}
+.preview-actions{width:100%;flex-shrink:0;display:flex;gap:10px;padding:14px 18px clamp(30px,6vh,48px);background:linear-gradient(to top,rgba(0,0,0,.9) 0%,transparent 100%);}
+@media(orientation:landscape){.preview-actions{padding:10px 18px 14px;}}
+.btn-ghost{flex:1;padding:14px 10px;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.09);border-radius:var(--r);color:rgba(255,255,255,.55);font-family:var(--f);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;white-space:nowrap;transition:background .2s;}
+.btn-ghost:hover{background:rgba(255,255,255,.1);}
+.btn-gold{flex:1.8;padding:14px 10px;background:linear-gradient(135deg,#b8922e 0%,#d4a84e 100%);border:none;border-radius:var(--r);color:#0c0900;font-family:var(--f);font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;cursor:pointer;white-space:nowrap;box-shadow:0 4px 20px rgba(201,168,76,.28);transition:opacity .2s;}
+.btn-gold:active{opacity:.85;}
+
+#flash{position:fixed;inset:0;background:#fff;pointer-events:none;opacity:0;z-index:1000;transition:opacity .07s;}
+#flash.pop{opacity:1;}
+.spinner{width:15px;height:15px;display:inline-block;vertical-align:middle;border:2px solid rgba(12,9,0,.18);border-top-color:#0c0900;border-radius:50%;animation:sp .6s linear infinite;}
+@keyframes sp{to{transform:rotate(360deg);}}
+canvas#capture-canvas{display:none;}
+</style>
+</head>
+<body>
+<div id="flash"></div>
+<canvas id="capture-canvas"></canvas>
+
+<!-- ══ WELCOME ══ -->
+<div class="screen" id="welcome">
+  <div class="w-inner">
+    <div class="logo-wrap">
+      <div class="logo-ring"></div>
+      <div class="logo-ring-inner"></div>
+      <div class="logo-core">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#c9a84c" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="10" r="3.5"/><path d="M12 14c0 0-6 6.5-6 9"/><path d="M12 14c0 0 6 6.5 6 9"/>
+          <circle cx="12" cy="10" r="1.2" fill="#c9a84c" stroke="none"/>
+        </svg>
+      </div>
+    </div>
+    <div class="wordmark">
+      <div class="wordmark-name">Geo<em>Snap</em></div>
+      <div class="wordmark-tag">Precision Location Imaging</div>
+    </div>
+    <div class="rule"><span>Permissions Required</span></div>
+    <div class="perm-list">
+      <div class="perm-card">
+        <div class="perm-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(201,168,76,.75)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+            <circle cx="12" cy="13" r="4"/>
+          </svg>
+        </div>
+        <div class="perm-label"><strong>Camera</strong><span>Capture geo-tagged photographs</span></div>
+      </div>
+      <div class="perm-card">
+        <div class="perm-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="rgba(201,168,76,.75)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="10" r="3"/><path d="M12 2a8 8 0 0 1 8 8c0 5.5-8 13-8 13S4 15.5 4 10a8 8 0 0 1 8-8z"/>
+          </svg>
+        </div>
+        <div class="perm-label"><strong>GPS Location</strong><span>City · District · State · Pincode · Coordinates</span></div>
+      </div>
+    </div>
+    <div class="cta-wrap">
+      <button class="btn-cta" id="btn-start">Open Camera</button>
+      <div class="err" id="err-msg">⚠ &nbsp;Permission denied — enable camera &amp; location in browser settings</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ CAMERA ══ -->
+<div class="screen hidden" id="camera">
+  <video id="video" autoplay playsinline muted></video>
+  <div class="cam-ui">
+    <div class="cam-top">
+      <div class="cam-top-left">
+        <div class="brand-tag"><div class="brand-pip"></div>GEOSNAP</div>
+        <div class="gps-pill">
+          <div class="gps-led" id="gps-led"></div>
+          <span class="gps-label" id="gps-label">Acquiring signal…</span>
+        </div>
+      </div>
+      <button class="btn-icon" id="btn-flip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M1 4v6h6"/><path d="M23 20v-6h-6"/>
+          <path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10"/><path d="M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/>
+        </svg>
+      </button>
+    </div>
+    <div class="reticle">
+      <div class="rc tl"></div><div class="rc tr"></div>
+      <div class="rc bl"></div><div class="rc br"></div>
+      <div class="rc-cx"></div>
+    </div>
+    <!-- Live stamp -->
+    <div class="live-stamp">
+      <div class="stamp-card">
+        <div class="stamp-main-row">
+          <div class="stamp-map-thumb">
+            <canvas id="mini-map-canvas" width="110" height="110"></canvas>
+            <div class="stamp-map-pin">📍</div>
+          </div>
+          <div class="stamp-info">
+            <div class="stamp-city-row">
+              <span class="stamp-flag" id="live-flag">🌐</span>
+              <span class="stamp-city" id="live-city">—</span>
+            </div>
+            <div class="stamp-addr-text" id="live-addr">Waiting for GPS lock…</div>
+          </div>
+        </div>
+        <div class="stamp-rule"></div>
+        <div class="stamp-meta-row">
+          <span class="stamp-coords-txt" id="live-coords">—</span>
+          <span class="stamp-time-txt"   id="live-time">—</span>
+        </div>
+      </div>
+    </div>
+    <div class="cam-bottom">
+      <div class="side-slot"></div>
+      <div class="shutter-wrap">
+        <div class="shutter-outer"><div class="shutter-ring">
+          <button class="shutter-btn" id="btn-shutter"></button>
+        </div></div>
+      </div>
+      <div class="side-slot"><span class="orient-chip" id="orient-chip">P</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══ PREVIEW ══ -->
+<div class="screen hidden" id="preview">
+  <div class="preview-bar"><span class="preview-bar-title">Review Photo</span></div>
+  <div id="canvas-wrap"><canvas id="output-canvas"></canvas></div>
+  <div class="preview-actions">
+    <button class="btn-ghost" id="btn-retake">↩ Retake</button>
+    <button class="btn-gold"  id="btn-save">Save Photo</button>
+  </div>
+</div>
+
+<script>
+const state = {
+  stream: null, facingMode: 'environment',
+  coords: null, geoData: null,
+  flag: '🌐', country: '', mapDrawn: false
+};
+
+const $  = id => document.getElementById(id);
+const $welcome=$('welcome'),$camera=$('camera'),$preview=$('preview');
+const $video=$('video'),$capCanvas=$('capture-canvas'),$outCanvas=$('output-canvas');
+const $flash=$('flash');
+const $btnStart=$('btn-start'),$btnFlip=$('btn-flip'),$btnShutter=$('btn-shutter');
+const $btnRetake=$('btn-retake'),$btnSave=$('btn-save'),$errMsg=$('err-msg');
+const $gpsLed=$('gps-led'),$gpsLabel=$('gps-label');
+const $liveFlag=$('live-flag'),$liveCity=$('live-city'),$liveAddr=$('live-addr');
+const $liveCoords=$('live-coords'),$liveTime=$('live-time');
+const $miniMapCanvas=$('mini-map-canvas');
+const $orientChip=$('orient-chip');
+
+function showScreen(el){[$welcome,$camera,$preview].forEach(s=>s.classList.add('hidden'));el.classList.remove('hidden');}
+
+// ── CLOCK ──
+function fmtTime(d){
+  const dd=String(d.getDate()).padStart(2,'0');
+  const mo=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+  const yr=d.getFullYear();
+  let h=d.getHours(),m=String(d.getMinutes()).padStart(2,'0'),s=String(d.getSeconds()).padStart(2,'0');
+  const ampm=h>=12?'PM':'AM'; h=h%12||12;
+  const off=d.getTimezoneOffset(); const sign=off<=0?'+':'-';
+  const ah=String(Math.floor(Math.abs(off)/60)).padStart(2,'0');
+  const am=String(Math.abs(off)%60).padStart(2,'0');
+  return `${dd}/${String(d.getMonth()+1).padStart(2,'0')}/${yr} ${String(h).padStart(2,'0')}:${m}:${s} ${ampm} GMT${sign}${ah}:${am}`;
+}
+setInterval(()=>{$liveTime.textContent=fmtTime(new Date());},1000);
+$liveTime.textContent=fmtTime(new Date());
+
+// ── COORDS ──
+function fmtCoords(lat,lon){
+  const f=(v,p,n)=>`${Math.abs(v).toFixed(6)}° ${v>=0?p:n}`;
+  return `Lat ${f(lat,'N','S')}  Long ${f(lon,'E','W')}`;
+}
+
+// ── COUNTRY → FLAG ──
+function countryToFlag(code){
+  if(!code||code.length!==2) return '🌐';
+  return String.fromCodePoint(...[...code.toUpperCase()].map(c=>c.charCodeAt(0)+127397));
+}
+
+// ── ADDRESS ──
+// Priority: city (proper city) > town > municipality > county — never village/hamlet for headline
+function buildAddress(a){
+  // HEADLINE city — only proper administrative cities/towns, not hyper-local villages
+  const city     = a.city || a.town || a.municipality || '';
+  // Sub-locality for address detail
+  const suburb   = a.city_district || a.suburb || a.neighbourhood || '';
+  const village  = a.village || a.hamlet || '';
+  const road     = a.road || a.pedestrian || a.footway || a.path || '';
+  const district = a.county || a.state_district || '';
+  const stateStr = a.state || '';
+  const pin      = a.postcode || '';
+  const country  = a.country || '';
+
+  // Big headline: "Tiruchirappalli, Tamil Nadu, India"
+  // Always prefer city-level name, never a hyper-local village for the headline
+  const headline = city || district || village || '';
+  const cityLabel = [headline, stateStr, country].filter(Boolean).join(', ');
+
+  // Address block — detailed lines matching GPS Map Camera style
+  // "P-18, 14th Cross Rd, Balaji Nagar, Pappakurichi Kattur,"
+  // "Tiruchirappalli, Tamil Nadu 620019, India"
+  const lines = [];
+
+  // Line 1: road + suburb/village
+  const roadPart   = road;
+  const localParts = [suburb, village].filter(Boolean).filter((v,i,a)=>a.indexOf(v)===i); // dedupe
+  if(roadPart && localParts.length) lines.push(`${roadPart}, ${localParts.join(', ')}`);
+  else if(roadPart)                 lines.push(roadPart);
+  else if(localParts.length)        lines.push(localParts.join(', '));
+
+  // Line 2: city, state pin
+  const line2 = [city || district, stateStr + (pin ? ' '+pin : '')].filter(Boolean).join(', ');
+  if(line2) lines.push(line2);
+
+  // Line 3: country
+  if(country) lines.push(country);
+
+  return { cityLabel, lines, countryCode: a.country_code?.toUpperCase()||'' };
+}
+
+// ── MINI MAP (OpenStreetMap tile) ──
+async function drawMiniMap(lat, lon){
+  const THUMB=110; // canvas pixel size
+  const zoom=16;   // higher zoom = more detail
+  const pow2=Math.pow(2,zoom);
+
+  // Tile coordinates
+  const tileX=Math.floor((lon+180)/360*pow2);
+  const latRad=lat*Math.PI/180;
+  const tileY=Math.floor((1-Math.log(Math.tan(latRad)+1/Math.cos(latRad))/Math.PI)/2*pow2);
+
+  // Pixel position of our exact coordinate within that tile (256px tile)
+  const fracX=((lon+180)/360*pow2 - tileX);
+  const fracY=((1-Math.log(Math.tan(latRad)+1/Math.cos(latRad))/Math.PI)/2*pow2 - tileY);
+  const px=Math.round(fracX*256);
+  const py=Math.round(fracY*256);
+
+  // Source crop: center our point in the 110×110 thumb
+  const sx=Math.max(0, Math.min(256-THUMB, px - THUMB/2));
+  const sy=Math.max(0, Math.min(256-THUMB, py - THUMB/2));
+
+  const url=`https://tile.openstreetmap.org/${zoom}/${tileX}/${tileY}.png`;
+  const ctx=$miniMapCanvas.getContext('2d');
+  $miniMapCanvas.width=THUMB; $miniMapCanvas.height=THUMB;
+
+  try{
+    const img=new Image(); img.crossOrigin='anonymous';
+    await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=url;});
+    ctx.drawImage(img, sx, sy, THUMB, THUMB, 0, 0, THUMB, THUMB);
+    // slight dark overlay for readability
+    ctx.fillStyle='rgba(0,0,0,0.12)';ctx.fillRect(0,0,THUMB,THUMB);
+    state.mapDrawn=true;
+  } catch(e){
+    // Styled fallback grid
+    ctx.fillStyle='#0d180d'; ctx.fillRect(0,0,THUMB,THUMB);
+    ctx.strokeStyle='rgba(201,168,76,.2)'; ctx.lineWidth=0.5;
+    for(let i=0;i<THUMB;i+=18){
+      ctx.beginPath();ctx.moveTo(i,0);ctx.lineTo(i,THUMB);ctx.stroke();
+      ctx.beginPath();ctx.moveTo(0,i);ctx.lineTo(THUMB,i);ctx.stroke();
+    }
+    // Draw concentric circles like a target
+    ctx.strokeStyle='rgba(201,168,76,.25)';
+    [12,24,36].forEach(r=>{ctx.beginPath();ctx.arc(THUMB/2,THUMB/2,r,0,Math.PI*2);ctx.stroke();});
+    state.mapDrawn=false;
+  }
+}
+
+// ── GPS ──
+let geoTimer=null, mapInfo=null;
+function startGPS(){
+  if(!('geolocation' in navigator)){$gpsLabel.textContent='GPS unavailable';return;}
+  navigator.geolocation.watchPosition(async pos=>{
+    const {latitude:lat,longitude:lon,accuracy}=pos.coords;
+    state.coords={lat,lon,accuracy};
+    $gpsLed.classList.add('locked');
+    $gpsLabel.textContent=`±${Math.round(accuracy)}m`;
+    $liveCoords.textContent=fmtCoords(lat,lon);
+    clearTimeout(geoTimer);
+    geoTimer=setTimeout(()=>doGeocode(lat,lon),900);
+    if(!state.mapDrawn) drawMiniMap(lat,lon);
+  },err=>{$gpsLabel.textContent='Signal error';},
+  {enableHighAccuracy:true,maximumAge:4000,timeout:20000});
+}
+
+async function doGeocode(lat,lon){
+  try{
+    const r=await fetch(`https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&addressdetails=1&accept-language=en`,{headers:{'Accept-Language':'en'}});
+    const d=await r.json();
+    state.geoData=d;
+    const a=d.address||{};
+    const {cityLabel,lines,countryCode}=buildAddress(a);
+    state.flag=countryToFlag(countryCode);
+    $liveFlag.textContent=state.flag;
+    $liveCity.textContent=cityLabel||'—';
+    $liveAddr.textContent=lines.join('\n')||d.display_name?.split(',').slice(0,4).join(',')||'—';
+    // Redraw map now that we have precise location
+    drawMiniMap(lat,lon);
+  }catch{
+    $liveCity.textContent='—';
+    $liveAddr.textContent='Address unavailable';
+  }
+}
+
+// ── CAMERA ──
+async function startCamera(mode='environment'){
+  if(state.stream) state.stream.getTracks().forEach(t=>t.stop());
+  state.stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:mode,width:{ideal:1920},height:{ideal:1080}},audio:false});
+  $video.srcObject=state.stream; state.facingMode=mode;
+}
+
+function isLand(){return window.innerWidth>window.innerHeight;}
+function syncOrient(){$orientChip.textContent=isLand()?'L':'P';}
+function onOrientChange(){syncOrient();setTimeout(async()=>{if(state.stream){try{await startCamera(state.facingMode);}catch{}}},350);}
+window.addEventListener('resize',syncOrient);
+window.addEventListener('orientationchange',onOrientChange);
+if(screen.orientation) screen.orientation.addEventListener('change',onOrientChange);
+
+$btnStart.addEventListener('click',async()=>{
+  $btnStart.innerHTML='<span class="spinner"></span>';
+  $btnStart.disabled=true;
+  try{await startCamera(state.facingMode);syncOrient();showScreen($camera);startGPS();}
+  catch{$errMsg.classList.add('show');$btnStart.textContent='Open Camera';$btnStart.disabled=false;}
+});
+$btnFlip.addEventListener('click',async()=>{try{await startCamera(state.facingMode==='environment'?'user':'environment');}catch{}});
+$btnShutter.addEventListener('click',()=>{
+  $flash.classList.add('pop'); setTimeout(()=>$flash.classList.remove('pop'),150);
+  const vw=$video.videoWidth||1280,vh=$video.videoHeight||720;
+  $capCanvas.width=vw;$capCanvas.height=vh;
+  const ctx=$capCanvas.getContext('2d');
+  if(state.facingMode==='user'){ctx.save();ctx.translate(vw,0);ctx.scale(-1,1);ctx.drawImage($video,0,0,vw,vh);ctx.restore();}
+  else ctx.drawImage($video,0,0,vw,vh);
+  drawStamp(ctx,vw,vh,vw>vh?'landscape':'portrait');
+  renderPreview($capCanvas);
+});
+$btnRetake.addEventListener('click',()=>showScreen($camera));
+$btnSave.addEventListener('click',()=>{const a=document.createElement('a');a.download=`GeoSnap_${Date.now()}.jpg`;a.href=$outCanvas.toDataURL('image/jpeg',0.95);a.click();});
+
+// ══════════════════════════════════════════
+//  DRAW STAMP ON CAPTURED CANVAS
+// ══════════════════════════════════════════
+function drawStamp(ctx, W, H, orient){
+  const isLand=orient==='landscape';
+  const ref=isLand?H:W;
+  const s=Math.max(ref/430,0.75);
+  const fm=isLand?0.80:1;
+  const FONT="'Syne',sans-serif";
+  const setF=(sz,wt=500)=>{ctx.font=`${wt} ${sz}px ${FONT}`;};
+
+  // ── Sizes ──
+  const mapSz   = Math.round(110*s*fm);   // map thumbnail square
+  const fCity   = Math.round(22*s*fm);    // dominant city name
+  const fFlag   = Math.round(20*s*fm);    // flag emoji
+  const fAddr   = Math.round(13*s*fm);    // address lines
+  const fMeta   = Math.round(11*s*fm);    // coords + time — same size
+  const pad     = Math.round(14*s);
+  const rr      = Math.round(12*s);
+  const margin  = Math.round(16*s);
+  const rowGap  = Math.round(4*s);
+  const divH    = Math.max(Math.round(s*0.8),1);
+
+  // ── Content ──
+  const timeStr  = fmtTime(new Date());
+  const coordStr = state.coords ? fmtCoords(state.coords.lat,state.coords.lon) : 'GPS not locked';
+  let cityLabel='—', addrLines=[], flagChar=state.flag||'🌐';
+
+  if(state.geoData){
+    const a=state.geoData.address||{};
+    const {cityLabel:cl,lines}=buildAddress(a);
+    cityLabel=cl||'—'; addrLines=lines;
+  }
+
+  // ── Measure info column width ──
+  setF(fCity,800);
+  let infoW=ctx.measureText(cityLabel).width + Math.round(fFlag*1.4) + pad;
+
+  setF(fAddr,500);
+  addrLines.forEach(l=>{infoW=Math.max(infoW,ctx.measureText(l).width);});
+
+  setF(fMeta,500);
+  const metaW=ctx.measureText(coordStr).width+Math.round(20*s)+ctx.measureText(timeStr).width;
+  infoW=Math.max(infoW,metaW);
+
+  const maxInfoW=isLand?W*0.42-mapSz-pad*2:W-margin*2-mapSz-pad*2;
+  infoW=Math.min(infoW,maxInfoW);
+
+  // ── Row heights ──
+  const cityH   = fCity*1.3;
+  const addrH   = addrLines.length*(fAddr+rowGap);
+  const metaRowH= fMeta+pad*1.2;
+  const infoBodyH=pad+cityH+addrH+pad;
+  const cardH   =Math.max(mapSz,infoBodyH)+divH+metaRowH;
+  const cardW   =mapSz+pad+infoW+pad;
+  const bx=margin, by=H-cardH-margin;
+
+  ctx.save();
+
+  // ── Drop shadow ──
+  ctx.shadowColor='rgba(0,0,0,0.65)';ctx.shadowBlur=Math.round(30*s);ctx.shadowOffsetY=Math.round(6*s);
+  rrRect(ctx,bx,by,cardW,cardH,rr);
+  ctx.fillStyle='rgba(7,7,9,0.93)';ctx.fill();
+  ctx.shadowColor='transparent';ctx.shadowBlur=0;ctx.shadowOffsetY=0;
+
+  // ── Border ──
+  rrRect(ctx,bx,by,cardW,cardH,rr);
+  ctx.strokeStyle='rgba(255,255,255,0.07)';ctx.lineWidth=Math.max(s*0.7,0.5);ctx.stroke();
+
+  // ── MAP THUMBNAIL ──
+  const mapX=bx, mapY=by, mapH=Math.max(mapSz,infoBodyH);
+  ctx.save();
+  rrRect(ctx,mapX,mapY,mapSz,mapH,[rr,0,0,rr]);
+  ctx.clip();
+  if(state.mapDrawn){
+    // Draw the 110×110 mini-map canvas, scaled to fill mapSz×mapH
+    ctx.drawImage($miniMapCanvas, 0, 0, 110, 110, mapX, mapY, mapSz, mapH);
+    ctx.fillStyle='rgba(0,0,0,0.12)'; ctx.fillRect(mapX,mapY,mapSz,mapH);
+  } else {
+    // Styled fallback
+    ctx.fillStyle='#0d180d'; ctx.fillRect(mapX,mapY,mapSz,mapH);
+    ctx.strokeStyle='rgba(201,168,76,0.18)'; ctx.lineWidth=Math.max(s*0.5,0.5);
+    const gs=Math.round(18*s);
+    for(let i=0;i<mapSz;i+=gs){ctx.beginPath();ctx.moveTo(mapX+i,mapY);ctx.lineTo(mapX+i,mapY+mapH);ctx.stroke();}
+    for(let i=0;i<mapH;i+=gs){ctx.beginPath();ctx.moveTo(mapX,mapY+i);ctx.lineTo(mapX+mapSz,mapY+i);ctx.stroke();}
+    // Concentric circles
+    ctx.strokeStyle='rgba(201,168,76,0.25)';
+    [Math.round(12*s),Math.round(22*s),Math.round(34*s)].forEach(r=>{ctx.beginPath();ctx.arc(mapX+mapSz/2,mapY+mapH/2,r,0,Math.PI*2);ctx.stroke();});
+  }
+  ctx.restore();
+
+  // Map pin — centered
+  const pinFontSz=Math.round(22*s);
+  ctx.font=`${pinFontSz}px sans-serif`;
+  ctx.textBaseline='bottom'; ctx.textAlign='center';
+  ctx.fillText('📍', mapX+mapSz/2, mapY+mapH/2+Math.round(pinFontSz*0.55));
+  ctx.textAlign='left';
+
+  // Vertical divider between map and info
+  ctx.fillStyle='rgba(255,255,255,0.07)';
+  ctx.fillRect(bx+mapSz, by, divH, Math.max(mapSz,infoBodyH));
+
+  // ── INFO COLUMN ──
+  const ix=bx+mapSz+divH+pad;
+  let iy=by+pad;
+  ctx.textBaseline='top';
+
+  // Flag
+  const flagFontSz=Math.round(fFlag*1.15);
+  ctx.font=`${flagFontSz}px sans-serif`;
+  const flagStr=flagChar+' ';
+  const flagPxW=ctx.measureText(flagStr).width;
+  ctx.fillText(flagStr, ix, iy);
+
+  // City name — word-wrap to 2 lines max
+  setF(fCity,800); ctx.fillStyle='#f2f2f6';
+  const cityX=ix+flagPxW;
+  const cityMaxW=infoW-flagPxW;
+  wrapText(ctx, cityLabel, cityX, iy, cityMaxW, fCity*1.25, 2);
+  // Calculate actual city height used
+  const cityLines=measureWrapLines(ctx, cityLabel, cityMaxW);
+  const actualCityH=Math.min(cityLines,2)*fCity*1.25;
+  iy+=Math.max(actualCityH, flagFontSz)+Math.round(4*s);
+
+  // Address lines
+  setF(fAddr,500); ctx.fillStyle='rgba(255,255,255,0.52)';
+  addrLines.forEach(line=>{
+    ctx.save(); ctx.rect(ix,iy,infoW,fAddr+rowGap+2); ctx.clip();
+    ctx.fillText(line,ix,iy); ctx.restore();
+    iy+=fAddr+rowGap;
+  });
+
+  // Horizontal divider before meta
+  const divY=by+Math.max(mapSz,infoBodyH);
+  ctx.fillStyle='rgba(255,255,255,0.07)';
+  ctx.fillRect(bx,divY,cardW,divH);
+
+  // ── META ROW ──
+  const metaY=divY+divH+Math.round((metaRowH-fMeta)/2);
+  setF(fMeta,500); ctx.textBaseline='top';
+  ctx.fillStyle='rgba(255,255,255,0.32)';
+  ctx.fillText(coordStr, bx+pad, metaY);
+  const twPx=ctx.measureText(timeStr).width;
+  ctx.fillStyle='rgba(255,255,255,0.25)';
+  ctx.fillText(timeStr, bx+cardW-pad-twPx, metaY);
+
+  ctx.restore();
+}
+
+// Word-wrap helper: draws text wrapping at maxW, up to maxLines
+function wrapText(ctx, text, x, y, maxW, lineH, maxLines=2){
+  const words=text.split(' ');
+  let line='', lineN=0;
+  for(let i=0;i<words.length;i++){
+    const test=line?line+' '+words[i]:words[i];
+    if(ctx.measureText(test).width>maxW && line){
+      ctx.fillText(line,x,y+lineN*lineH);
+      line=words[i]; lineN++;
+      if(lineN>=maxLines){
+        // truncate remaining with ellipsis
+        let remaining=line;
+        while(ctx.measureText(remaining+'…').width>maxW && remaining.length>1) remaining=remaining.slice(0,-1);
+        ctx.fillText(remaining+'…',x,y+lineN*lineH);
+        return;
+      }
+    } else { line=test; }
+  }
+  if(line) ctx.fillText(line,x,y+lineN*lineH);
+}
+
+// Count how many lines text will wrap to
+function measureWrapLines(ctx, text, maxW){
+  const words=text.split(' ');
+  let line='', lines=1;
+  for(const w of words){
+    const test=line?line+' '+w:w;
+    if(ctx.measureText(test).width>maxW && line){ lines++; line=w; }
+    else line=test;
+  }
+  return lines;
+}
+
+function rrRect(ctx,x,y,w,h,r){
+  if(typeof r==='number') r=[r,r,r,r];
+  const[tl,tr,br,bl]=r;
+  ctx.beginPath();
+  ctx.moveTo(x+tl,y);ctx.lineTo(x+w-tr,y);ctx.arcTo(x+w,y,x+w,y+tr,tr);
+  ctx.lineTo(x+w,y+h-br);ctx.arcTo(x+w,y+h,x+w-br,y+h,br);
+  ctx.lineTo(x+bl,y+h);ctx.arcTo(x,y+h,x,y+h-bl,bl);
+  ctx.lineTo(x,y+tl);ctx.arcTo(x,y,x+tl,y,tl);
+  ctx.closePath();
+}
+
+function renderPreview(src){
+  $outCanvas.width=src.width;$outCanvas.height=src.height;
+  $outCanvas.style.display='block';
+  $outCanvas.getContext('2d').drawImage(src,0,0);
+  showScreen($preview);
+}
+</script>
+</body>
+</html>

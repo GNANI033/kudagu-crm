@@ -151,6 +151,8 @@ INVENTORY_CIRCUIT_UNTIL = 0.0
 DISABLE_IN_MEMORY_CACHE = str(os.environ.get("DISABLE_IN_MEMORY_CACHE", "")).strip().lower() in ("1", "true", "yes", "on")
 MAX_IMPORT_BYTES = int(os.environ.get("MAX_IMPORT_BYTES", str(5 * 1024 * 1024)))
 ALLOW_PRIVATE_AI_BASE_URL = os.environ.get("ALLOW_PRIVATE_AI_BASE_URL", "").strip().lower() in ("1", "true", "yes", "on")
+SERVER_AWB_BARCODE_DECODE_ENABLED = str(os.environ.get("SERVER_AWB_BARCODE_DECODE_ENABLED", "")).strip().lower() in ("1", "true", "yes", "on")
+SERVER_AWB_BARCODE_MAX_IMAGE_BYTES = max(64 * 1024, int(os.environ.get("SERVER_AWB_BARCODE_MAX_IMAGE_BYTES", str(768 * 1024))))
 DATA_LOCK = threading.RLock()
 UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
@@ -4317,6 +4319,7 @@ async def auth_status(request: Request):
         "featureConfig": {
             "usernamePasswordAuthEnabled": _auth_enabled(),
             "roleBasedAccessEnabled": _rbac_enabled(),
+            "serverAwbBarcodeDecodeEnabled": SERVER_AWB_BARCODE_DECODE_ENABLED,
         },
     }
 
@@ -4534,9 +4537,72 @@ async def get_bootstrap(request: Request):
             "featureConfig": {
                 "usernamePasswordAuthEnabled": _auth_enabled(),
                 "roleBasedAccessEnabled": _rbac_enabled(),
+                "serverAwbBarcodeDecodeEnabled": SERVER_AWB_BARCODE_DECODE_ENABLED,
             },
         }
     )
+
+
+def _normalize_awb_candidate(raw: Any) -> str:
+    text = re.sub(r"\s+", "", str(raw or "")).strip().upper()
+    text = re.sub(r"^AWB[:#]?", "", text, flags=re.IGNORECASE)
+    return text if re.fullmatch(r"[A-Z0-9]+", text or "") else ""
+
+
+def _decode_awb_image_bytes(image_bytes: bytes) -> str:
+    try:
+        import cv2  # type: ignore
+        import numpy as np  # type: ignore
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Server barcode decoder is not installed.") from exc
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img is None:
+        raise HTTPException(status_code=400, detail="Invalid barcode image.")
+    detector_factory = getattr(cv2, "barcode_BarcodeDetector", None)
+    if detector_factory is None:
+        raise HTTPException(status_code=503, detail="Server barcode decoder does not support barcode detection.")
+    detector = detector_factory()
+    candidates: list[str] = []
+    try:
+        result = detector.detectAndDecode(img)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Barcode could not be decoded.") from exc
+    if isinstance(result, tuple):
+        for item in result:
+            if isinstance(item, str):
+                candidates.append(item)
+            elif isinstance(item, (list, tuple)):
+                candidates.extend(str(v) for v in item if str(v or "").strip())
+    else:
+        candidates.append(str(result or ""))
+    for candidate in candidates:
+        awb = _normalize_awb_candidate(candidate)
+        if awb:
+            return awb
+    raise HTTPException(status_code=422, detail="AWB barcode not found.")
+
+
+@app.post("/api/shipping/decode-awb")
+async def decode_shipping_awb(request: Request):
+    if not SERVER_AWB_BARCODE_DECODE_ENABLED:
+        raise HTTPException(status_code=404, detail="Server AWB barcode decoding is disabled.")
+    data = read_data()
+    _require_signed_in(request, data)
+    body = await request.json()
+    raw = str(body.get("imageData") or body.get("image") or "").strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Barcode image is required.")
+    if "," in raw and raw.lower().startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    try:
+        image_bytes = base64.b64decode(raw, validate=True)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Barcode image must be base64 encoded.") from exc
+    if len(image_bytes) > SERVER_AWB_BARCODE_MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Barcode image is too large.")
+    awb = await asyncio.to_thread(_decode_awb_image_bytes, image_bytes)
+    return {"awb": awb}
 
 
 @app.put("/api/data")

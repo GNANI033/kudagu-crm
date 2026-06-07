@@ -62,7 +62,7 @@ let S = null;
 let FULL_DATA_READY = false;
 let FULL_DATA_PROMISE = null;
 let DASH_BOOTSTRAP_METRICS = null;
-let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false };
+let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false, serverAwbBarcodeDecodeEnabled:false };
 let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
 let ORDER_PAGES = { active: 1, completed: 1 };
 let CUSTOMER_PAGE = 1;
@@ -76,7 +76,7 @@ let _lastActionAt = 0;
 let _uiReqDepth = 0;
 let _uiLoadingEl = null;
 let _marketingLastWaUrl = '';
-let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, orderId:null, from:'orders', shipDate:'', courier:'' };
+let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, serverInFlight:false, lastServerAt:0, orderId:null, from:'orders', shipDate:'', courier:'' };
 
 function _isActionEl(el){
   if(!el) return false;
@@ -1353,6 +1353,8 @@ function stopAwbScanner(){
   st.candidate='';
   if(st.confirmTimer) clearTimeout(st.confirmTimer);
   st.confirmTimer=0;
+  st.serverInFlight=false;
+  st.lastServerAt=0;
 }
 function normalizeScannedAwb(raw){
   return String(raw||'').replace(/\s+/g,'').replace(/^AWB[:#]?/i,'').trim().toUpperCase();
@@ -1361,7 +1363,7 @@ function isValidScannedAwb(awb){
   return /^[A-Za-z0-9]+$/.test(String(awb||''));
 }
 function barcodeFormatsForScanner(){
-  return ['code_128','code_39','code_93','codabar','ean_13','ean_8','itf','upc_a','upc_e','qr_code','data_matrix'];
+  return ['code_128','code_39','code_93','codabar','ean_13','ean_8','itf','upc_a','upc_e'];
 }
 async function supportedBarcodeFormatsForScanner(){
   const wanted=barcodeFormatsForScanner();
@@ -1391,6 +1393,66 @@ function shippedWaUrlForOrder(order, shipping){
   if(!p) return '';
   const text=buildShippedWaText(order, shipping);
   return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
+}
+async function decodeAwbCrop(crop){
+  const st=AWB_SCAN_STATE;
+  const codes=await st.detector.detect(crop);
+  return (codes||[]).map(c=>c.rawValue).find(Boolean) || '';
+}
+function barcodeLikeScore(canvas){
+  const w=canvas?.width||0, h=canvas?.height||0;
+  if(w<80 || h<40) return 0;
+  const ctx=canvas.getContext('2d', {willReadFrequently:true});
+  if(!ctx) return 0;
+  const data=ctx.getImageData(0,0,w,h).data;
+  let transitions=0, samples=0, dark=0, light=0, contrastSum=0;
+  const rowStep=Math.max(2, Math.floor(h/28));
+  const colStep=Math.max(1, Math.floor(w/240));
+  for(let y=Math.floor(h*0.18); y<Math.floor(h*0.82); y+=rowStep){
+    let prev=null;
+    let rowTransitions=0;
+    for(let x=Math.floor(w*0.06); x<Math.floor(w*0.94); x+=colStep){
+      const i=(y*w+x)*4;
+      const lum=(data[i]*0.299)+(data[i+1]*0.587)+(data[i+2]*0.114);
+      if(lum<90) dark++;
+      if(lum>165) light++;
+      if(prev!==null){
+        const diff=Math.abs(lum-prev);
+        if(diff>45) rowTransitions++;
+        contrastSum += diff;
+        samples++;
+      }
+      prev=lum;
+    }
+    if(rowTransitions>=18) transitions += rowTransitions;
+  }
+  if(!samples) return 0;
+  const transitionScore=Math.min(1, transitions/(samples*0.18));
+  const contrastScore=Math.min(1, (contrastSum/samples)/38);
+  const balanceScore=Math.min(1, Math.min(dark,light)/Math.max(1, Math.max(dark,light))*2.2);
+  return (transitionScore*0.50)+(contrastScore*0.30)+(balanceScore*0.20);
+}
+async function decodeAwbCropOnServer(crop){
+  const st=AWB_SCAN_STATE;
+  if(st.serverInFlight || Date.now()-st.lastServerAt<850) return '';
+  const score=barcodeLikeScore(crop);
+  if(score<0.48){
+    setAwbScanStatus('Align the AWB barcode inside the rectangle.');
+    return '';
+  }
+  st.serverInFlight=true;
+  st.lastServerAt=Date.now();
+  setAwbScanStatus('Barcode detected. Decoding...');
+  try{
+    const imageData=crop.toDataURL('image/jpeg',0.72);
+    const res=await api.post('/api/shipping/decode-awb',{imageData});
+    return String(res?.awb||'').trim();
+  }catch(e){
+    if(st.active) setAwbScanStatus('Server could not decode yet. Hold the barcode steady.');
+    return '';
+  }finally{
+    st.serverInFlight=false;
+  }
 }
 function playAwbScanSuccessSound(){
   try{
@@ -1507,7 +1569,8 @@ async function scanAwbFrame(){
   const st=AWB_SCAN_STATE;
   if(!st.active || st.saving) return;
   const video=g('awb-scan-video');
-  if(!video || !st.detector || video.readyState < 2){
+  const useServer=!!FEATURE_CONFIG.serverAwbBarcodeDecodeEnabled;
+  if(!video || (!useServer && !st.detector) || video.readyState < 2){
     st.raf=requestAnimationFrame(scanAwbFrame);
     return;
   }
@@ -1517,14 +1580,15 @@ async function scanAwbFrame(){
       st.raf=requestAnimationFrame(scanAwbFrame);
       return;
     }
-    const codes=await st.detector.detect(crop);
-    const hit=(codes||[]).map(c=>c.rawValue).find(Boolean);
+    const hit=useServer ? await decodeAwbCropOnServer(crop) : await decodeAwbCrop(crop);
     if(hit){
       await completeAwbScan(hit);
       return;
     }
   }catch(e){
-    setAwbScanStatus('Scanner could not read the camera frame. Try manual AWB entry.','err');
+    if(!(e && (e.name==='NotFoundException' || e.name==='NotFoundError'))){
+      setAwbScanStatus('Scanner could not read the camera frame. Try manual AWB entry.','err');
+    }
   }
   if(st.active) st.raf=requestAnimationFrame(scanAwbFrame);
 }
@@ -1533,12 +1597,15 @@ async function startAwbScanner(){
   const video=g('awb-scan-video');
   if(!video) return;
   try{
-    if(!('BarcodeDetector' in window)){
-      setAwbScanStatus('Barcode scanning is not supported in this browser. Use Chrome on Android or enter AWB manually.','err');
+    const useServer=!!FEATURE_CONFIG.serverAwbBarcodeDecodeEnabled;
+    if(!useServer && !('BarcodeDetector' in window)){
+      setAwbScanStatus('Barcode scanning is not supported in this browser. Use Chrome/Edge or enter AWB manually.','err');
       return;
     }
-    const formats=await supportedBarcodeFormatsForScanner();
-    st.detector=new BarcodeDetector({formats});
+    if(!useServer){
+      const formats=await supportedBarcodeFormatsForScanner();
+      st.detector=new BarcodeDetector({formats});
+    }
     st.stream=await navigator.mediaDevices.getUserMedia({
       video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}},
       audio:false,
@@ -1546,7 +1613,7 @@ async function startAwbScanner(){
     video.srcObject=st.stream;
     await video.play();
     st.active=true;
-    setAwbScanStatus('Align only the AWB barcode inside the rectangle. Shipment saves after a short hold.');
+    setAwbScanStatus(useServer ? 'Align the AWB barcode inside the rectangle. Decoding happens on this server.' : 'Align only the AWB barcode inside the rectangle. Shipment saves after a short hold.');
     scanAwbFrame();
   }catch(e){
     stopAwbScanner();
@@ -1565,7 +1632,7 @@ function openAwbScanner(oid, from='orders'){
     return;
   }
   stopAwbScanner();
-  AWB_SCAN_STATE={ active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, orderId:oid, from, shipDate, courier };
+  AWB_SCAN_STATE={ active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, serverInFlight:false, lastServerAt:0, orderId:oid, from, shipDate, courier };
   openModal(`
     <div class="modal-title">Scan AWB Barcode</div>
     <div style="font-size:12px;color:var(--text-3);margin-top:6px">Order #${order.id} · ${esc(order.cname)} · ${esc(courier)}</div>

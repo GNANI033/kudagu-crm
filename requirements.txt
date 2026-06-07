@@ -4,3 +4,4 @@ gunicorn
 httpx
 reportlab
 openpyxl
+opencv-contrib-python-headless
