@@ -76,7 +76,7 @@ let _lastActionAt = 0;
 let _uiReqDepth = 0;
 let _uiLoadingEl = null;
 let _marketingLastWaUrl = '';
-let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', candidateCount:0, saving:false, orderId:null, from:'orders', shipDate:'', courier:'' };
+let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, orderId:null, from:'orders', shipDate:'', courier:'' };
 
 function _isActionEl(el){
   if(!el) return false;
@@ -1351,7 +1351,8 @@ function stopAwbScanner(){
   st.detector=null;
   st.canvas=null;
   st.candidate='';
-  st.candidateCount=0;
+  if(st.confirmTimer) clearTimeout(st.confirmTimer);
+  st.confirmTimer=0;
 }
 function normalizeScannedAwb(raw){
   return String(raw||'').replace(/\s+/g,'').replace(/^AWB[:#]?/i,'').trim().toUpperCase();
@@ -1438,24 +1439,9 @@ async function saveOrderAsShipped(oid, shipping, notifyWhatsApp=false, opts={}){
   }
   return updated;
 }
-async function completeAwbScan(raw){
+async function finalizeAwbScan(awb){
   const st=AWB_SCAN_STATE;
-  if(!st.active || st.saving) return;
-  const awb=normalizeScannedAwb(raw);
-  if(!isValidScannedAwb(awb)){
-    setAwbScanStatus('Ignored scanned code because AWB must contain only letters and numbers. Align the AWB barcode inside the rectangle.','err');
-    st.candidate='';
-    st.candidateCount=0;
-    return;
-  }
-  if(st.candidate!==awb){
-    st.candidate=awb;
-    st.candidateCount=1;
-    setAwbScanStatus(`Detected ${awb}. Hold steady for confirmation...`);
-    return;
-  }
-  st.candidateCount += 1;
-  if(st.candidateCount < 2) return;
+  if(!st.active || st.saving || st.candidate!==awb) return;
   st.saving=true;
   stopAwbScanner();
   setAwbScanStatus(`Scanned ${awb}. Saving shipment and opening WhatsApp...`,'ok');
@@ -1469,6 +1455,23 @@ async function completeAwbScan(raw){
   }finally{
     st.saving=false;
   }
+}
+async function completeAwbScan(raw){
+  const st=AWB_SCAN_STATE;
+  if(!st.active || st.saving) return;
+  const awb=normalizeScannedAwb(raw);
+  if(!isValidScannedAwb(awb)){
+    setAwbScanStatus('Ignored scanned code because AWB must contain only letters and numbers. Align the AWB barcode inside the rectangle.','err');
+    st.candidate='';
+    if(st.confirmTimer) clearTimeout(st.confirmTimer);
+    st.confirmTimer=0;
+    return;
+  }
+  if(st.candidate===awb && st.confirmTimer) return;
+  st.candidate=awb;
+  if(st.confirmTimer) clearTimeout(st.confirmTimer);
+  setAwbScanStatus(`Detected ${awb}. Saving in 1 second...`);
+  st.confirmTimer=setTimeout(()=>finalizeAwbScan(awb),1200);
 }
 function awbScanCropCanvas(video){
   const st=AWB_SCAN_STATE;
@@ -1543,7 +1546,7 @@ async function startAwbScanner(){
     video.srcObject=st.stream;
     await video.play();
     st.active=true;
-    setAwbScanStatus('Align only the AWB barcode inside the rectangle. Shipment saves after the same alphanumeric AWB is confirmed.');
+    setAwbScanStatus('Align only the AWB barcode inside the rectangle. Shipment saves after a short hold.');
     scanAwbFrame();
   }catch(e){
     stopAwbScanner();
@@ -1562,7 +1565,7 @@ function openAwbScanner(oid, from='orders'){
     return;
   }
   stopAwbScanner();
-  AWB_SCAN_STATE={ active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', candidateCount:0, saving:false, orderId:oid, from, shipDate, courier };
+  AWB_SCAN_STATE={ active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, orderId:oid, from, shipDate, courier };
   openModal(`
     <div class="modal-title">Scan AWB Barcode</div>
     <div style="font-size:12px;color:var(--text-3);margin-top:6px">Order #${order.id} · ${esc(order.cname)} · ${esc(courier)}</div>
