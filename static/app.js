@@ -76,6 +76,7 @@ let _lastActionAt = 0;
 let _uiReqDepth = 0;
 let _uiLoadingEl = null;
 let _marketingLastWaUrl = '';
+let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, saving:false, orderId:null, from:'orders', shipDate:'', courier:'' };
 
 function _isActionEl(el){
   if(!el) return false;
@@ -973,7 +974,11 @@ function openModal(html,size=''){
   const box=g('modal-box'); box.className='modal-box'+(size?' modal-'+size:''); box.innerHTML=html;
   g('modal').classList.add('open');
 }
-function closeModal(){ g('modal').classList.remove('open'); g('modal-box').innerHTML=''; }
+function closeModal(){
+  stopAwbScanner();
+  g('modal').classList.remove('open');
+  g('modal-box').innerHTML='';
+}
 document.addEventListener('keydown',e=>{ if(e.key==='Escape') closeModal(); });
 function isTypingTarget(target){
   if(!(target instanceof Element)) return false;
@@ -1269,6 +1274,14 @@ async function copyTrackingLinkFromModal(){
     toast('Could not copy link','err');
   }
 }
+function buildAwbInputHtml(awb='', oid=null, from='orders'){
+  const scanAttr=oid===null ? '' : ` onclick="openAwbScanner(${oid},'${from}')"`;
+  return `
+    <div class="awb-entry-row">
+      <input id="ship-awb" type="text" value="${esc(awb||'')}" placeholder="Courier AWB" oninput="updateTrackingLinkPreview()">
+      <button type="button" class="btn btn-s"${scanAttr}>Scan</button>
+    </div>`;
+}
 function openShippedStatusPopup(oid, from='orders'){
   const order=S.orders.find(o=>o.id===oid); if(!order){ toast('Order not found','err'); return; }
   const ship=order.shipping||{};
@@ -1279,7 +1292,7 @@ function openShippedStatusPopup(oid, from='orders'){
     <div style="display:flex;flex-direction:column;gap:12px;margin-top:14px">
       <div class="fg"><label>Shipped Date <span class="req">*</span></label><input id="ship-date" type="date" value="${esc(ship.shipDate||safeDateISO(Date.now()))}"></div>
       <div class="fr">
-        <div class="fg"><label>AWB Number <span class="req">*</span></label><input id="ship-awb" type="text" value="${esc(ship.awb||'')}" placeholder="Courier AWB" oninput="updateTrackingLinkPreview()"></div>
+        <div class="fg"><label>AWB Number <span class="req">*</span></label>${buildAwbInputHtml(ship.awb||'', oid, from)}</div>
         <div class="fg"><label>Courier <span class="req">*</span></label><select id="ship-courier" onchange="onCourierInputChange()">${courierSelectOptions(courierVal)}</select></div>
       </div>
       <div class="fg">
@@ -1315,25 +1328,181 @@ async function submitShippedStatus(oid, from='orders'){
   const awb=(g('ship-awb')?.value||'').trim();
   const courier=(g('ship-courier')?.value||'').trim();
   if(!shipDate || !awb || !courier){ toast('Shipped date, AWB and courier are required','err'); return; }
-  const codeType=defaultCodeTypeForCourier(courier);
-  const trackingUrl=buildTrackingLink(trackingTemplateForCourier(courier), awb);
-  const shipping={shipDate,awb,courier,codeType,trackingUrl,updatedAt:Date.now()};
   const doWa=!!g('ship-wa-toggle')?.checked;
   try{
-    const updated=await api.put(`/api/orders/${oid}`,{status:'shipped',shipping});
-    syncOrder(updated); closeModal();
-    rOrders(); rDash(); updBadge();
-    toast('Order marked as shipped','ok');
-    if(doWa){
-      const p=waPhoneForOrder(updated);
-      if(p){
-        const text=buildShippedWaText(updated, shipping);
-        window.open(`https://wa.me/${p}?text=${encodeURIComponent(text)}`,'_blank');
-      }else{
-        toast('Customer phone is invalid for WhatsApp','err');
-      }
-    }
+    await saveOrderAsShipped(oid, {shipDate,awb,courier}, doWa);
+    closeModal();
   }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function setAwbScanStatus(msg, type=''){
+  const el=g('awb-scan-status');
+  if(!el) return;
+  el.textContent=msg;
+  el.style.color=type==='err'?'var(--red)':(type==='ok'?'var(--green)':'var(--text-2)');
+}
+function stopAwbScanner(){
+  const st=AWB_SCAN_STATE;
+  if(!st) return;
+  st.active=false;
+  if(st.raf) cancelAnimationFrame(st.raf);
+  st.raf=0;
+  if(st.stream) st.stream.getTracks().forEach(t=>t.stop());
+  st.stream=null;
+  st.detector=null;
+}
+function normalizeScannedAwb(raw){
+  return String(raw||'').replace(/\s+/g,'').replace(/^AWB[:#-]?/i,'').trim();
+}
+function barcodeFormatsForScanner(){
+  return ['code_128','code_39','code_93','codabar','ean_13','ean_8','itf','upc_a','upc_e','qr_code','data_matrix'];
+}
+async function supportedBarcodeFormatsForScanner(){
+  const wanted=barcodeFormatsForScanner();
+  if(typeof BarcodeDetector.getSupportedFormats!=='function') return wanted;
+  try{
+    const supported=await BarcodeDetector.getSupportedFormats();
+    const set=new Set(supported||[]);
+    const filtered=wanted.filter(f=>set.has(f));
+    return filtered.length ? filtered : wanted;
+  }catch(_){
+    return wanted;
+  }
+}
+function openWhatsAppUrl(url, forceNavigate=false){
+  if(!url) return false;
+  const opened=window.open(url,'_blank');
+  if(opened) return true;
+  if(forceNavigate){
+    window.location.href=url;
+    return true;
+  }
+  toast('WhatsApp popup blocked. Please allow popups and try again.','err');
+  return false;
+}
+function shippedWaUrlForOrder(order, shipping){
+  const p=waPhoneForOrder(order);
+  if(!p) return '';
+  const text=buildShippedWaText(order, shipping);
+  return `https://wa.me/${p}?text=${encodeURIComponent(text)}`;
+}
+async function saveOrderAsShipped(oid, shipping, notifyWhatsApp=false, opts={}){
+  const cleanShipping={
+    shipDate:String(shipping?.shipDate||'').trim(),
+    awb:String(shipping?.awb||'').trim(),
+    courier:String(shipping?.courier||'').trim(),
+  };
+  if(!cleanShipping.shipDate || !cleanShipping.awb || !cleanShipping.courier){
+    toast('Shipped date, AWB and courier are required','err');
+    return null;
+  }
+  cleanShipping.codeType=defaultCodeTypeForCourier(cleanShipping.courier);
+  cleanShipping.trackingUrl=buildTrackingLink(trackingTemplateForCourier(cleanShipping.courier), cleanShipping.awb);
+  cleanShipping.updatedAt=Date.now();
+  const updated=await api.put(`/api/orders/${oid}`,{status:'shipped',shipping:cleanShipping});
+  syncOrder(updated);
+  rOrders(); rDash(); updBadge();
+  toast('Order marked as shipped','ok');
+  if(notifyWhatsApp){
+    const waUrl=shippedWaUrlForOrder(updated, cleanShipping);
+    if(waUrl) openWhatsAppUrl(waUrl, !!opts.forceWhatsAppNavigate);
+    else toast('Customer phone is invalid for WhatsApp','err');
+  }
+  return updated;
+}
+async function completeAwbScan(raw){
+  const st=AWB_SCAN_STATE;
+  if(!st.active || st.saving) return;
+  const awb=normalizeScannedAwb(raw);
+  if(!awb) return;
+  st.saving=true;
+  stopAwbScanner();
+  setAwbScanStatus(`Scanned ${awb}. Saving shipment and opening WhatsApp...`,'ok');
+  try{
+    await saveOrderAsShipped(st.orderId, {shipDate:st.shipDate, awb, courier:st.courier}, true, {forceWhatsAppNavigate:true});
+    closeModal();
+  }catch(e){
+    setAwbScanStatus('Could not save shipment: '+e.message,'err');
+    toast('Error: '+e.message,'err');
+  }finally{
+    st.saving=false;
+  }
+}
+async function scanAwbFrame(){
+  const st=AWB_SCAN_STATE;
+  if(!st.active || st.saving) return;
+  const video=g('awb-scan-video');
+  if(!video || !st.detector || video.readyState < 2){
+    st.raf=requestAnimationFrame(scanAwbFrame);
+    return;
+  }
+  try{
+    const codes=await st.detector.detect(video);
+    const hit=(codes||[]).map(c=>c.rawValue).find(Boolean);
+    if(hit){
+      await completeAwbScan(hit);
+      return;
+    }
+  }catch(e){
+    setAwbScanStatus('Scanner could not read the camera frame. Try manual AWB entry.','err');
+  }
+  if(st.active) st.raf=requestAnimationFrame(scanAwbFrame);
+}
+async function startAwbScanner(){
+  const st=AWB_SCAN_STATE;
+  const video=g('awb-scan-video');
+  if(!video) return;
+  try{
+    if(!('BarcodeDetector' in window)){
+      setAwbScanStatus('Barcode scanning is not supported in this browser. Use Chrome on Android or enter AWB manually.','err');
+      return;
+    }
+    const formats=await supportedBarcodeFormatsForScanner();
+    st.detector=new BarcodeDetector({formats});
+    st.stream=await navigator.mediaDevices.getUserMedia({
+      video:{facingMode:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}},
+      audio:false,
+    });
+    video.srcObject=st.stream;
+    await video.play();
+    st.active=true;
+    setAwbScanStatus('Point the camera at the AWB barcode. Shipment saves automatically after a scan.');
+    scanAwbFrame();
+  }catch(e){
+    stopAwbScanner();
+    const insecure=location.protocol!=='https:' && location.hostname!=='localhost';
+    const msg=insecure ? 'Camera scanning needs HTTPS. Use the live CRM URL or enter AWB manually.' : 'Camera could not be opened. Check camera permission or enter AWB manually.';
+    setAwbScanStatus(msg,'err');
+  }
+}
+function openAwbScanner(oid, from='orders'){
+  const order=S.orders.find(o=>o.id===oid); if(!order){ toast('Order not found','err'); return; }
+  const shipDate=(g('ship-date')?.value||'').trim();
+  const courier=(g('ship-courier')?.value||'').trim();
+  if(!shipDate || !courier){ toast('Select shipped date and courier before scanning','err'); return; }
+  if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+    toast('Camera is not available in this browser','err');
+    return;
+  }
+  stopAwbScanner();
+  AWB_SCAN_STATE={ active:false, stream:null, raf:0, detector:null, saving:false, orderId:oid, from, shipDate, courier };
+  openModal(`
+    <div class="modal-title">Scan AWB Barcode</div>
+    <div style="font-size:12px;color:var(--text-3);margin-top:6px">Order #${order.id} · ${esc(order.cname)} · ${esc(courier)}</div>
+    <div class="awb-scan-wrap">
+      <div class="awb-scan-frame">
+        <video id="awb-scan-video" playsinline muted></video>
+        <div class="awb-scan-guide"></div>
+      </div>
+      <div class="awb-scan-status" id="awb-scan-status">Starting camera...</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-s" style="flex:1" onclick="stopAwbScanner();openShippedStatusPopup(${oid},'${from}')">Manual Entry</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+  const box=g('modal-box');
+  if(box) box.classList.add('modal-no-scroll');
+  startAwbScanner();
 }
 function updateTrackingLinkPreview(){
   const courier=(g('ship-courier')?.value||'').trim();
