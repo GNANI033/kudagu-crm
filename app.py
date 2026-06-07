@@ -34,6 +34,9 @@ import sqlite3
 import secrets
 import hashlib
 import hmac
+import shutil
+import subprocess
+import tempfile
 from contextlib import asynccontextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -4550,33 +4553,33 @@ def _normalize_awb_candidate(raw: Any) -> str:
 
 
 def _decode_awb_image_bytes(image_bytes: bytes) -> str:
+    zbarimg = shutil.which("zbarimg")
+    if not zbarimg:
+        raise HTTPException(status_code=503, detail="Server barcode decoder is not installed. Install zbar-tools.")
+    tmp_path = ""
     try:
-        import cv2  # type: ignore
-        import numpy as np  # type: ignore
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Server barcode decoder is not installed.") from exc
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img is None:
-        raise HTTPException(status_code=400, detail="Invalid barcode image.")
-    detector_factory = getattr(cv2, "barcode_BarcodeDetector", None)
-    if detector_factory is None:
-        raise HTTPException(status_code=503, detail="Server barcode decoder does not support barcode detection.")
-    detector = detector_factory()
-    candidates: list[str] = []
-    try:
-        result = detector.detectAndDecode(img)
+        with tempfile.NamedTemporaryFile(prefix="awb-scan-", suffix=".jpg", delete=False) as tmp:
+            tmp.write(image_bytes)
+            tmp_path = tmp.name
+        proc = subprocess.run(
+            [zbarimg, "--quiet", "--raw", tmp_path],
+            capture_output=True,
+            text=True,
+            timeout=4,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise HTTPException(status_code=422, detail="Barcode decode timed out.") from exc
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Barcode could not be decoded.") from exc
-    if isinstance(result, tuple):
-        for item in result:
-            if isinstance(item, str):
-                candidates.append(item)
-            elif isinstance(item, (list, tuple)):
-                candidates.extend(str(v) for v in item if str(v or "").strip())
-    else:
-        candidates.append(str(result or ""))
-    for candidate in candidates:
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+    output = "\n".join([proc.stdout or "", proc.stderr or ""])
+    for candidate in output.splitlines():
         awb = _normalize_awb_candidate(candidate)
         if awb:
             return awb
