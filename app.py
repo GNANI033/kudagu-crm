@@ -1744,6 +1744,7 @@ def migrate(data: dict) -> dict:
 def _build_loyalty_snapshot_index(data: dict) -> dict[str, dict[str, Any]]:
     snapshots = data.get("loyaltySnapshots") if isinstance(data.get("loyaltySnapshots"), dict) else {}
     result: dict[str, dict[str, Any]] = {}
+    order_counts_by_customer = _valid_order_counts_by_customer(data)
     for key, row in snapshots.items():
         if not isinstance(row, dict):
             continue
@@ -1756,8 +1757,38 @@ def _build_loyalty_snapshot_index(data: dict) -> dict[str, dict[str, Any]]:
         if cid <= 0:
             continue
         row["customerId"] = cid
+        row = _apply_crm_loyalty_overrides(row, order_counts_by_customer)
         result[str(cid)] = row
     return result
+
+
+def _valid_order_counts_by_customer(data: dict) -> dict[int, int]:
+    counts: dict[int, int] = {}
+    for order in data.get("orders", []) or []:
+        if not isinstance(order, dict):
+            continue
+        if str(order.get("status") or "").lower() in {"cancelled", "returned"}:
+            continue
+        cid = int(_safe_float(order.get("cid")))
+        if cid > 0:
+            counts[cid] = counts.get(cid, 0) + 1
+    return counts
+
+
+def _apply_crm_loyalty_overrides(snapshot: dict[str, Any], order_counts_by_customer: dict[int, int]) -> dict[str, Any]:
+    cid = int(_safe_float(snapshot.get("customerId")))
+    if cid <= 0 or int(order_counts_by_customer.get(cid) or 0) < 1:
+        return snapshot
+    badges = snapshot.get("badges") if isinstance(snapshot.get("badges"), list) else []
+    for badge in badges:
+        if not isinstance(badge, dict):
+            continue
+        if str(badge.get("id") or "") == "first_order":
+            badge["earned"] = True
+            if not badge.get("earnedAt"):
+                badge["earnedAt"] = int(time.time() * 1000)
+            break
+    return snapshot
 
 
 def sync_loyalty_snapshots(data: dict) -> dict[str, Any]:
@@ -1778,6 +1809,7 @@ def sync_loyalty_snapshots(data: dict) -> dict[str, Any]:
         seen_wuids.add(wuid)
         pairs.append((wuid, cid))
 
+    order_counts_by_customer = _valid_order_counts_by_customer(data)
     snapshots_by_customer = _build_loyalty_snapshot_index(data)
     if not pairs:
         data["loyaltySnapshots"] = snapshots_by_customer
@@ -1809,14 +1841,14 @@ def sync_loyalty_snapshots(data: dict) -> dict[str, Any]:
                 if not isinstance(snap, dict) or snap.get("error"):
                     failed += 1
                     continue
-                snapshots_by_customer[str(cid)] = {
+                snapshots_by_customer[str(cid)] = _apply_crm_loyalty_overrides({
                     "customerId": cid,
                     "websiteUserId": wuid,
                     "generatedAt": float(snap.get("generatedAt") or 0),
                     "syncedAt": now_ms,
                     "referral": snap.get("referral") if isinstance(snap.get("referral"), dict) else {},
                     "badges": snap.get("badges") if isinstance(snap.get("badges"), list) else [],
-                }
+                }, order_counts_by_customer)
                 synced += 1
 
         data["loyaltySnapshots"] = snapshots_by_customer
@@ -2821,13 +2853,7 @@ def _compute_dashboard_metrics(data: dict) -> dict:
     ordered_customers = len(counts_by_customer)
     repeat_customers = sum(1 for n in counts_by_customer.values() if n >= 2)
     retention_pct = (repeat_customers / ordered_customers * 100.0) if ordered_customers > 0 else None
-    valid_orders_by_customer: dict[int, int] = {}
-    for o in orders:
-        if str(o.get("status") or "").lower() in {"cancelled", "returned"}:
-            continue
-        cid = int(_safe_float(o.get("cid")))
-        if cid > 0:
-            valid_orders_by_customer[cid] = valid_orders_by_customer.get(cid, 0) + 1
+    valid_orders_by_customer = _valid_order_counts_by_customer(data)
     website_users_total = len(website_users)
     website_users_active = 0
     website_users_passive = 0

@@ -547,16 +547,17 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
 
 /* ─── CUSTOMER CARDS ────────────────────────────────────────────────────── */
 .cg { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px,1fr)); gap: 12px; }
-.cc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; box-shadow: var(--sh-sm); transition: box-shadow .15s, border-color .15s; }
+.cc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 16px 18px; box-shadow: var(--sh-sm); transition: box-shadow .15s, border-color .15s; display: flex; flex-direction: column; min-height: 238px; }
 .cc:hover { box-shadow: var(--sh); border-color: var(--border-s); }
 .cc-top { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
 .cav { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); color: #fff; display: flex; align-items: center; justify-content: center; font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 700; flex-shrink: 0; }
 .cnm { font-weight: 600; font-size: 14px; line-height: 1.2; }
 .car { font-size: 12px; color: var(--text-3); }
-.cm { display: flex; flex-direction: column; gap: 6px; }
+.cm { display: flex; flex-direction: column; gap: 6px; flex: 1; }
 .cmr { font-size: 12.5px; color: var(--text-2); display: flex; align-items: center; gap: 6px; }
 .cmi { color: var(--text-3); width: 14px; font-size: 12px; }
-.cf { margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.cf { margin-top: auto; padding-top: 11px; border-top: 1px solid var(--border); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; align-items: center; }
+.cf .pill { justify-content: center; width: 100%; white-space: nowrap; }
 .c-menu-btn {
   width: 32px; height: 32px; border-radius: var(--r-sm);
   border: 1px solid var(--border); background: none;
