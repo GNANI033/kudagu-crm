@@ -3026,7 +3026,6 @@ function rCustomers(){
   const cards=pageCustomers.map(c=>{
     const oc=S.orders.filter(o=>o.cid===c.id).length;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
-    const orderTag=oc>0?'Order recorded':'No order yet';
     const tags=normalizeCustomerProductTags(c.productTags||[]);
     const earnedBadges=(Array.isArray(getCustomerLoyaltySnapshot(c.id)?.badges)?getCustomerLoyaltySnapshot(c.id).badges:[]).filter((b)=>!!b?.earned).length;
     return`<div class="cc" onclick="openCustomerAnalytics(${c.id})" style="cursor:pointer">
@@ -3049,9 +3048,7 @@ function rCustomers(){
       </div>
       <div class="cf">
         <span class="pill pn">${oc} order${oc!==1?'s':''}</span>
-        <span class="pill pn">${orderTag}</span>
         <span class="pill pn">${earnedBadges} badge${earnedBadges!==1?'s':''}</span>
-        ${oc>=5?`<span class="pill pg">Smart alerts on</span>`:`<span class="pill pn">${oc}/5 for smart</span>`}
       </div>
     </div>`;
   }).join('');

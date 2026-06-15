@@ -4550,7 +4550,7 @@ async def get_bootstrap(request: Request):
     ctx = _require_signed_in(request, data)
     filtered = _filtered_data_for_user(data, ctx.get("user"))
     bootstrap_state = _client_safe_data(filtered, request, auth_source_data=data)
-    metrics_source = filtered
+    metrics_source = {**filtered, "websiteUsers": data.get("websiteUsers", []) or []}
     return JSONResponse(
         {
             "state": bootstrap_state,
