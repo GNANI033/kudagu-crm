@@ -489,6 +489,16 @@ For multi-item carts, the website should treat `orders[]` as authoritative. CRM 
 
 `couponQuoteId` is a short-lived CRM snapshot of a successful coupon validation. The website should pass it into order sync after payment so a checkout that was already approved by CRM does not fail because the live coupon rule changes while the customer is inside the payment gateway. CRM still verifies that the quote belongs to the same `websiteUserId`, coupon code, and cart lines.
 
+Website loyalty coupon reminder flow:
+
+- CRM syncs badge state from the website internal loyalty API: `POST /internal/loyalty/snapshots/by-users`.
+- For dashboard WhatsApp reminders, each earned badge may include coupon reward fields:
+  - `couponCode`: coupon code to mention in the WhatsApp message.
+  - `couponStatus`: one of `unused`, `used`, `expired`, or `not_issued`.
+  - `couponExpiresAt`: optional expiry timestamp; CRM accepts epoch seconds or milliseconds.
+  - `couponLabel`: optional human label such as `10% off`.
+- CRM shows reminders only for earned badges with `couponCode` and `couponStatus: "unused"`.
+
 Example Caddy snippets (public domains -> helper instances):
 
 ```caddy

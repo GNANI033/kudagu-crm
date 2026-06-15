@@ -54,6 +54,7 @@ const STATUS_LABEL = {
 
 const DEFAULT_WA_TPL = `Hi {{customer_name}}, your last order was on {{last_order_date}}. Would you like to order {{product_name}} ({{variant}}) again? We'd love to offer you a great deal!`;
 const DEFAULT_SHIPPED_WA_TPL = `Hi {{customer_name}}, your order #{{order_id}} for {{product_name}} has been shipped on {{ship_date}}.\nAWB: {{awb}}\nCourier: {{courier}}{{tracking_line}}`;
+const DEFAULT_BADGE_COUPON_WA_TPL = `Hi {{customer_name}}, you have unlocked {{badge_name}}. Your coupon {{coupon_code}} is still unused. Use it on your next order.`;
 
 const WA_ICON = `<svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 01-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 01-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 012.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0012.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L.057 24l6.305-1.654a11.882 11.882 0 005.683 1.448h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 00-3.48-8.413z"/></svg>`;
 
@@ -619,6 +620,7 @@ function emptyState(){
     couponId: 1,
     pid: 1,
     waDefaultTpl: DEFAULT_WA_TPL,
+    badgeCouponWaTpl: DEFAULT_BADGE_COUPON_WA_TPL,
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
     marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' },
     uiPreferences: { theme: 'light' },
@@ -633,6 +635,7 @@ function normalizeAppState(){
   if(!S.loyaltySnapshots || typeof S.loyaltySnapshots!=='object' || Array.isArray(S.loyaltySnapshots)) S.loyaltySnapshots={};
   if(!Array.isArray(S.loyaltyBadgesCatalog)) S.loyaltyBadgesCatalog=[];
   if(!S.loyaltySync || typeof S.loyaltySync!=='object') S.loyaltySync={ status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 };
+  if(typeof S.badgeCouponWaTpl!=='string') S.badgeCouponWaTpl=DEFAULT_BADGE_COUPON_WA_TPL;
   if(!S.shippingProfile || typeof S.shippingProfile!=='object') S.shippingProfile={ paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} };
   if(!S.marketingSettings || typeof S.marketingSettings!=='object') S.marketingSettings={ aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' };
 }
@@ -2134,6 +2137,55 @@ function refreshLoyaltyBadgeCounts(){
   });
   LOYALTY_BADGE_COUNTS=counts;
 }
+function badgeCouponCode(badge){
+  const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
+  const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
+  return normalizeCouponCode(badge?.couponCode || badge?.coupon_code || coupon.code || coupon.couponCode || reward.couponCode || reward.coupon_code);
+}
+function badgeCouponStatus(badge){
+  const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
+  const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
+  return String(badge?.couponStatus || badge?.coupon_status || coupon.status || coupon.couponStatus || reward.couponStatus || reward.status || '').trim().toLowerCase();
+}
+function badgeCouponLabel(badge){
+  const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
+  const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
+  return String(badge?.couponLabel || badge?.coupon_label || coupon.label || coupon.couponLabel || reward.couponLabel || reward.label || '').trim();
+}
+function badgeCouponExpiresAt(badge){
+  const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
+  const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
+  const raw=badge?.couponExpiresAt || badge?.coupon_expires_at || coupon.expiresAt || coupon.couponExpiresAt || reward.couponExpiresAt || reward.expiresAt || 0;
+  const n=Number(raw||0);
+  if(!Number.isFinite(n) || n<=0) return 0;
+  return n < 10000000000 ? n * 1000 : n;
+}
+function unusedBadgeCouponReminders(){
+  const snapshots=S?.loyaltySnapshots&&typeof S.loyaltySnapshots==='object'?S.loyaltySnapshots:{};
+  const customersById=new Map((S.customers||[]).map(c=>[Number(c.id),c]));
+  const rows=[];
+  Object.values(snapshots).forEach((snap)=>{
+    if(!snap || typeof snap!=='object' || !Number(snap.websiteUserId||0)) return;
+    const cid=Number(snap.customerId||0);
+    const customer=customersById.get(cid);
+    if(!customer) return;
+    const badges=Array.isArray(snap.badges)?snap.badges:[];
+    badges.forEach((badge)=>{
+      if(!badge || typeof badge!=='object' || !badge.earned) return;
+      const couponCode=badgeCouponCode(badge);
+      const couponStatus=badgeCouponStatus(badge);
+      if(!couponCode || couponStatus!=='unused') return;
+      rows.push({
+        customer,
+        badgeName:String(badge.name||badge.id||'Badge'),
+        couponCode,
+        couponLabel:badgeCouponLabel(badge),
+        couponExpiresAt:badgeCouponExpiresAt(badge),
+      });
+    });
+  });
+  return rows.sort((a,b)=>(Number(a.couponExpiresAt||Infinity)-Number(b.couponExpiresAt||Infinity)) || String(a.customer.name||'').localeCompare(String(b.customer.name||'')));
+}
 function refreshLoyaltyBadgeFilterOptions(){
   refreshLoyaltyBadgeCounts();
   const el=g('mkt-f-badge-id');
@@ -2182,9 +2234,11 @@ async function triggerLoyaltySync(){
   try{
     const res=await api.post('/api/admin/loyalty/sync',{});
     if(res?.sync && typeof res.sync==='object') S.loyaltySync=res.sync;
+    await fetchFullData();
     await refreshLoyaltyStatusFromApi();
     toast(`Loyalty sync complete (${Number(res?.synced||0)} customers)`, 'ok');
     rCustomers();
+    rDash();
   }catch(e){
     toast('Error: '+e.message,'err');
   }
@@ -4965,6 +5019,7 @@ function rDash(){
       </div>
     </div>`;
   }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">📋</div><div class="et">No orders yet</div></div>`;
+  renderDashboardBadgeCoupons();
 
   applyDashboardCardVisibility();
 }
@@ -5563,10 +5618,50 @@ async function renameProductPrompt(pid){
 function getWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(prod&&prod.waTpl&&prod.waTpl.trim())return prod.waTpl;return(S.waDefaultTpl&&S.waDefaultTpl.trim())?S.waDefaultTpl:DEFAULT_WA_TPL; }
 function applyWaTokens(tpl,d){ return tpl.replace(/\{\{customer_name\}\}/g,d.customer_name||'').replace(/\{\{last_order_date\}\}/g,d.last_order_date||'').replace(/\{\{product_name\}\}/g,d.product_name||'').replace(/\{\{variant\}\}/g,d.variant||'').replace(/\{\{qty\}\}/g,d.qty||''); }
 function buildWaUrl(alert){ const tpl=getWaTpl(alert.last.prodId);const msg=applyWaTokens(tpl,{customer_name:alert.cust.name,last_order_date:fd(alert.last.at),product_name:alert.last.prod,variant:VL[alert.last.variant]||alert.last.variant,qty:String(alert.last.qty)});return`https://wa.me/91${alert.cust.phone}?text=${encodeURIComponent(msg)}`; }
+function applyBadgeCouponWaTokens(tpl,row){
+  return String(tpl||DEFAULT_BADGE_COUPON_WA_TPL)
+    .replace(/\{\{customer_name\}\}/g,String(row?.customer?.name||''))
+    .replace(/\{\{badge_name\}\}/g,String(row?.badgeName||''))
+    .replace(/\{\{coupon_code\}\}/g,String(row?.couponCode||''))
+    .replace(/\{\{coupon_label\}\}/g,String(row?.couponLabel||''))
+    .replace(/\{\{coupon_expires_at\}\}/g,row?.couponExpiresAt?fd(row.couponExpiresAt):'');
+}
+function badgeCouponWaUrl(row){
+  const phone=marketingWaPhone(row?.customer?.phone);
+  if(!phone) return '';
+  const tpl=String(S?.badgeCouponWaTpl||'').trim()||DEFAULT_BADGE_COUPON_WA_TPL;
+  const msg=applyBadgeCouponWaTokens(tpl,row);
+  return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
+}
+function renderDashboardBadgeCoupons(){
+  const host=g('d-badge-coupons');
+  if(!host) return;
+  const rows=unusedBadgeCouponReminders();
+  if(!rows.length){
+    host.innerHTML='<div class="empty" style="padding:28px 18px"><div class="ei">%</div><div class="et">No unused badge coupons</div><div class="es">Run loyalty sync after website coupon rewards are updated.</div></div>';
+    return;
+  }
+  host.innerHTML=rows.slice(0,6).map((row)=>{
+    const wa=badgeCouponWaUrl(row);
+    const expiry=row.couponExpiresAt?` · expires ${fd(row.couponExpiresAt)}`:'';
+    return `<div class="dash-order-row">
+      <div class="dash-order-info">
+        <div class="dor-name">${esc(row.customer.name||'Customer')}</div>
+        <div class="dor-prod">${esc(row.badgeName)} · <span class="pill pn" style="padding:1px 7px;font-size:10.5px">${esc(row.couponCode)}</span>${esc(expiry)}</div>
+      </div>
+      <div class="dash-order-meta">
+        ${wa?`<a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
+      </div>
+    </div>`;
+  }).join('');
+}
 function rWaMessages(){
   const de=g('wa-tpl-default');
   if(de) de.value=S.waDefaultTpl||DEFAULT_WA_TPL;
+  const badgeTpl=g('wa-tpl-badge-coupon');
+  if(badgeTpl) badgeTpl.value=S.badgeCouponWaTpl||DEFAULT_BADGE_COUPON_WA_TPL;
   previewWa('default');
+  previewBadgeCouponWa();
   const c=g('wa-prod-cards');
   if(!c) return;
   c.innerHTML=S.products.map(p=>{
@@ -5579,6 +5674,15 @@ function rWaMessages(){
   S.products.forEach(p=>previewWa(p.id));
 }
 function insertToken(taId,token,pk){ const el=g(taId);if(!el)return;const s=el.selectionStart,e=el.selectionEnd;el.value=el.value.slice(0,s)+token+el.value.slice(e);el.selectionStart=el.selectionEnd=s+token.length;el.focus();previewWa(pk); }
+function insertBadgeCouponToken(token){
+  const el=g('wa-tpl-badge-coupon');
+  if(!el) return;
+  const s=el.selectionStart,e=el.selectionEnd;
+  el.value=el.value.slice(0,s)+token+el.value.slice(e);
+  el.selectionStart=el.selectionEnd=s+token.length;
+  el.focus();
+  previewBadgeCouponWa();
+}
 function insertShippingToken(token){
   const el=g('ship-wa-template');
   if(!el) return;
@@ -5589,7 +5693,26 @@ function insertShippingToken(token){
   el.focus();
 }
 function previewWa(key){ const taId=key==='default'?'wa-tpl-default':`wa-tpl-${key}`;const prId=key==='default'?'wa-prev-default':`wa-prev-${key}`;const el=g(taId),pr=g(prId);if(!el||!pr)return;let tpl=el.value.trim();if(!tpl&&key!=='default')tpl=S.waDefaultTpl||DEFAULT_WA_TPL;if(!tpl)tpl=DEFAULT_WA_TPL;const merged=applyWaTokens(tpl,{customer_name:'Priya Shankar',last_order_date:'12 Jun 2025',product_name:key==='default'?'Coorg Filter Coffee':((S.products.find(p=>p.id===key)||{}).name||'Item'),variant:'250g',qty:'1'});pr.innerHTML=esc(merged).replace(/\n/g,'<br>'); }
+function previewBadgeCouponWa(){
+  const el=g('wa-tpl-badge-coupon'),pr=g('wa-prev-badge-coupon');
+  if(!el||!pr) return;
+  const tpl=el.value.trim()||DEFAULT_BADGE_COUPON_WA_TPL;
+  const merged=applyBadgeCouponWaTokens(tpl,{customer:{name:'Priya Shankar'},badgeName:'First Order',couponCode:'FIRSTORDER10',couponLabel:'10% off',couponExpiresAt:Date.now()+7*86400000});
+  pr.innerHTML=esc(merged).replace(/\n/g,'<br>');
+}
 async function saveWaTpl(key){ if(key==='default'){const el=g('wa-tpl-default');if(!el)return;S.waDefaultTpl=el.value.trim();try{await api.put('/api/settings',{waDefaultTpl:S.waDefaultTpl});toast('Default template saved','ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}}else{const prod=S.products.find(p=>p.id===key);if(!prod)return;const el=g(`wa-tpl-${key}`);if(!el)return;prod.waTpl=el.value.trim();try{await api.put(`/api/products/${key}`,{waTpl:prod.waTpl});toast(`Template saved for ${prod.name}`,'ok');rWaMessages();}catch(e){toast('Error: '+e.message,'err');}} }
+async function saveBadgeCouponWaTpl(){
+  if(!hasActionAccess('settings','manage')){ toast('Settings access is restricted','err'); return; }
+  const el=g('wa-tpl-badge-coupon');
+  if(!el) return;
+  S.badgeCouponWaTpl=el.value.trim()||DEFAULT_BADGE_COUPON_WA_TPL;
+  try{
+    await api.put('/api/settings',{badgeCouponWaTpl:S.badgeCouponWaTpl});
+    toast('Badge coupon template saved','ok');
+    rWaMessages();
+    rDash();
+  }catch(e){toast('Error: '+e.message,'err');}
+}
 async function clearProdWaTpl(pid){ const prod=S.products.find(p=>p.id===pid);if(!prod)return;prod.waTpl='';try{await api.put(`/api/products/${pid}`,{waTpl:''});toast('Reset to default');rWaMessages();}catch(e){toast('Error: '+e.message,'err');} }
 
 // ─── COUPONS ────────────────────────────────────────────────────────────────

@@ -559,6 +559,10 @@ DEFAULT_DATA: dict = {
         "Would you like to order {{product_name}} ({{variant}}) again? "
         "We'd love to offer you a great deal!"
     ),
+    "badgeCouponWaTpl": (
+        "Hi {{customer_name}}, you have unlocked {{badge_name}}. "
+        "Your coupon {{coupon_code}} is still unused. Use it on your next order."
+    ),
     "shippingProfile": {
         "companyName": "",
         "address": "",
@@ -1478,6 +1482,8 @@ def migrate(data: dict) -> dict:
         data["pid"] = len(data["products"]) + 1
     if "waDefaultTpl" not in data:
         data["waDefaultTpl"] = DEFAULT_DATA["waDefaultTpl"]
+    if "badgeCouponWaTpl" not in data or not isinstance(data.get("badgeCouponWaTpl"), str):
+        data["badgeCouponWaTpl"] = DEFAULT_DATA["badgeCouponWaTpl"]
     if "shippingProfile" not in data or not isinstance(data.get("shippingProfile"), dict):
         data["shippingProfile"] = copy.deepcopy(DEFAULT_DATA["shippingProfile"])
     if "marketingSettings" not in data or not isinstance(data.get("marketingSettings"), dict):
@@ -5997,6 +6003,8 @@ async def update_settings(request: Request):
     _ensure_action_access(ctx.get("user"), "settings", "manage")
     if "waDefaultTpl" in body:
         data["waDefaultTpl"] = body["waDefaultTpl"]
+    if "badgeCouponWaTpl" in body:
+        data["badgeCouponWaTpl"] = str(body.get("badgeCouponWaTpl") or "").strip() or DEFAULT_DATA["badgeCouponWaTpl"]
     if "shippingProfile" in body and isinstance(body["shippingProfile"], dict):
         profile = copy.deepcopy(data.get("shippingProfile", {}))
         for key in ("companyName", "address", "phone", "email", "gstin"):
