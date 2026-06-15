@@ -2121,28 +2121,6 @@ function customerHasBadge(customerId, badgeId){
   const badges=Array.isArray(snap.badges)?snap.badges:[];
   return badges.some((b)=>String(b?.id||'')===String(badgeId||'') && !!b?.earned);
 }
-function loyaltyBadgeImageSrc(badge){
-  const raw=String(badge?.image||'').trim();
-  if(raw){
-    if(raw.startsWith('/static/')) return raw;
-    if(raw.startsWith('/')) return `/static${raw}`;
-    return `/static/${raw.replace(/^static\//,'')}`;
-  }
-  const byId={
-    first_order:'First-order.webp',
-    first_referral:'First-referral.webp',
-    three_referrals:'3-referral.webp',
-    five_orders:'IT-Guy.webp',
-    ten_orders:'10-orders.webp',
-    twenty_five_orders:'25-orders.webp',
-    fifty_orders:'50-orders.webp',
-    hundred_orders:'100-orders.webp',
-    filter_coffee_fan:'Filter-coffee.webp',
-    night_shift_first_order:'404-sleep.webp',
-  };
-  const file=byId[String(badge?.id||'')]||'IT-Guy.webp';
-  return `/static/${file}`;
-}
 function refreshLoyaltyBadgeCounts(){
   const counts={};
   const snapshots=S?.loyaltySnapshots&&typeof S.loyaltySnapshots==='object'?S.loyaltySnapshots:{};
@@ -2904,7 +2882,6 @@ function openCustomerAnalytics(cid){
     return {
       id,
       name:String(b?.name||id||'Badge'),
-      image:b?.image,
       earned:!!st?.earned,
       earnedAt:st?.earnedAt||null,
     };
@@ -2915,9 +2892,8 @@ function openCustomerAnalytics(cid){
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:8px">
           ${mergedBadges.map((badge)=>{
             const earned=!!badge.earned;
-            return `<div title="${esc(badge.name)}" style="border:1px ${earned?'solid':'dashed'} var(--border);border-radius:10px;padding:6px;background:${earned?'var(--surface-2)':'transparent'};text-align:center">
-              <img src="${esc(loyaltyBadgeImageSrc(badge))}" alt="${esc(badge.name)}" style="width:100%;height:72px;object-fit:contain;filter:${earned?'none':'grayscale(100%) opacity(.45)'}">
-              <div style="margin-top:4px;font-size:10.5px;line-height:1.2;color:var(--text-2)">${esc(badge.name)}</div>
+            return `<div title="${esc(badge.name)}" style="border:1px ${earned?'solid':'dashed'} var(--border);border-radius:10px;padding:10px 8px;background:${earned?'var(--surface-2)':'transparent'};text-align:center;min-height:46px;display:flex;align-items:center;justify-content:center">
+              <div style="font-size:12px;line-height:1.2;font-weight:700;color:${earned?'var(--text)':'var(--text-3)'}">${esc(badge.name)}</div>
             </div>`;
           }).join('')}
         </div>
