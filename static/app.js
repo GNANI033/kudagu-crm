@@ -5737,7 +5737,7 @@ function renderDashboardBadgeCoupons(){
       </div>
       <div class="dash-order-meta">
         ${wa?`<a href="${wa}" target="_blank" rel="noopener noreferrer" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
-        <button class="btn btn-g btn-xs" onclick="completeBadgeCouponReminder(decodeURIComponent('${encodeURIComponent(row.key)}'))" title="Mark message complete" aria-label="Mark message complete" style="width:34px;height:34px;min-height:34px;padding:0;border-radius:10px;font-size:16px;line-height:1">✓</button>
+        <button class="btn coupon-complete-btn" onclick="completeBadgeCouponReminder(decodeURIComponent('${encodeURIComponent(row.key)}'))" title="Mark message complete" aria-label="Mark message complete">✓</button>
       </div>
     </div>`;
   }).join('')}</div>`;
