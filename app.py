@@ -561,7 +561,7 @@ DEFAULT_DATA: dict = {
     ),
     "badgeCouponWaTpl": (
         "Hi {{customer_name}}, you have unlocked {{badge_name}}. "
-        "Your coupon {{coupon_code}} is still unused. Use it on your next order."
+        "Reward: {{coupon_label}}. Use coupon {{coupon_code}} on your next order."
     ),
     "shippingProfile": {
         "companyName": "",

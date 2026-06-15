@@ -496,7 +496,8 @@ Website loyalty coupon reminder flow:
   - `couponCode`: coupon code to mention in the WhatsApp message.
   - `couponStatus`: one of `unused`, `used`, `expired`, or `not_issued`.
   - `couponExpiresAt`: optional expiry timestamp; CRM accepts epoch seconds or milliseconds.
-  - `couponLabel`: optional human label such as `10% off`.
+  - `couponLabel`: recommended human label such as `Flat INR 50 off on minimum cart INR 500`.
+  - If `couponLabel` is omitted, CRM can build a label from optional `discountType`, `discountValue`, and `minCartValue` fields.
 - CRM shows reminders only for earned badges with `couponCode` and `couponStatus: "unused"`.
 
 Example Caddy snippets (public domains -> helper instances):

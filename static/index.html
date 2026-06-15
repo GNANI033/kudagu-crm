@@ -1478,7 +1478,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
               <div><div class="wa-card-title">Badge Coupon Reminder</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">Used from the dashboard for earned badge coupons that are still unused</div></div>
             </div>
             <div class="wa-card-body">
-              <div class="fg"><label>Message Template</label><textarea id="wa-tpl-badge-coupon" rows="3" oninput="previewBadgeCouponWa()" placeholder="Hi {{customer_name}}, you have unlocked {{badge_name}}…"></textarea></div>
+              <div class="fg"><label>Message Template</label><textarea id="wa-tpl-badge-coupon" rows="3" oninput="previewBadgeCouponWa()" placeholder="Hi {{customer_name}}, Reward: {{coupon_label}}…"></textarea></div>
               <div class="token-chips">
                 <span class="token-chip" onclick="insertBadgeCouponToken('{{customer_name}}')">{{customer_name}}</span>
                 <span class="token-chip" onclick="insertBadgeCouponToken('{{badge_name}}')">{{badge_name}}</span>
