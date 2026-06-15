@@ -206,6 +206,11 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .sbox-inner { display: flex; min-width: 0; }
 .sbox-half { flex: 1; min-width: 0; padding: 18px 20px; }
 .sbox-half + .sbox-half { border-left: 1px solid var(--border); }
+.website-users-split { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.website-users-stat { min-width: 0; padding: 10px 8px; text-align: center; }
+.website-users-stat + .website-users-stat { border-left: 1px solid var(--border); }
+.website-users-label { font-size: 10px; font-weight: 800; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+.website-users-value { margin-top: 3px; font-size: 22px; font-weight: 850; color: var(--text); line-height: 1.05; }
 .sl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; }
 .sv { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin-top: 5px; line-height: 1; }
 .sv.red { color: var(--red); } .sv.green { color: var(--green); }
@@ -931,10 +936,6 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
       <div class="card">
         <div class="ch"><div class="ct">Recent Orders</div><button class="btn btn-g btn-xs" onclick="nav('orders')">View all →</button></div>
         <div id="d-orders"></div>
-      </div>
-      <div class="card">
-        <div class="ch"><div class="ct">Alerts <span id="d-ab"></span></div><button class="btn btn-g btn-xs" onclick="nav('alerts')">View all →</button></div>
-        <div id="d-al"></div>
       </div>
     </div>
   </div>

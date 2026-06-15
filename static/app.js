@@ -376,6 +376,7 @@ function calcFin(){
   const oPY=S.orders.filter(o=>o.at>=py.s&&o.at<py.e);
   const rM=sumRev(oM),rPM=sumRev(oPM),rY=sumRev(oY),rPY=sumRev(oPY);
   const allComp=S.orders.filter(isCompleted);
+  const bootMetrics=DASH_BOOTSTRAP_METRICS||{};
   return{
     revAll:sumRev(S.orders),profAll:sumProf(S.orders),
     revM:rM,profM:sumProf(oM),
@@ -383,6 +384,9 @@ function calcFin(){
     completedToday:S.orders.filter(o=>isCompleted(o)&&o.at>=new Date().setHours(0,0,0,0)).length,
     mom:rPM>0?((rM-rPM)/rPM*100):null,
     yoy:rPY>0?((rY-rPY)/rPY*100):null,
+    websiteUsersTotal:Number(bootMetrics.websiteUsersTotal)||0,
+    websiteUsersActive:Number(bootMetrics.websiteUsersActive)||0,
+    websiteUsersPassive:Number(bootMetrics.websiteUsersPassive)||0,
   };
 }
 
@@ -744,8 +748,6 @@ function showStartupRenderError(err){
   ['sg','sg2'].forEach(id=>{ const el=g(id); if(el) el.innerHTML=''; });
   const orders=g('d-orders');
   if(orders) orders.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Dashboard could not render</div><div class="es">${esc(msg)}</div></div>`;
-  const alerts=g('d-al');
-  if(alerts) alerts.innerHTML='<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Reload after deployment</div></div>';
   toast('Dashboard render failed: '+msg,'err');
 }
 function ensureAuthUi(){
@@ -4689,7 +4691,7 @@ function applyDashboardCardVisibility(){
     ['Avg Order Value','avgOrderValue'],
     ['Inventory Moved','inventoryMoved'],
     ['Customers','customers'],
-    ['Alerts','alerts'],
+    ['Website Users','websiteUsers'],
   ];
   map.forEach(([label,key])=>{
     const half=dashboardHalfByLabel(label);
@@ -4829,9 +4831,6 @@ function showInventoryAnalyticsInfo(){
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
 function rDash(){
-  const alerts=getAlerts();
-  const distAlerts=getDistributorAgingAlerts(15);
-  const allOpsAlerts=alerts.length+distAlerts.length;
   const visibleInventory=visibleInventorySnapshot();
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const f=calcFin();
@@ -4866,6 +4865,9 @@ function rDash(){
   const totalCustomers=hasBoot ? (Number(f.totalCustomers)||0) : S.customers.length;
   const totalOrders=hasBoot ? (Number(f.totalOrders)||0) : S.orders.length;
   const ordersPerCustomer=hasBoot ? (Number(f.ordersPerCustomer)||0) : (totalCustomers>0?(totalOrders/totalCustomers):0);
+  const websiteUsersTotal=Number(f.websiteUsersTotal)||0;
+  const websiteUsersActive=Number(f.websiteUsersActive)||0;
+  const websiteUsersPassive=Number(f.websiteUsersPassive)||0;
   const orderCountByCid={};
   (S.orders||[]).forEach(o=>{
     if(!o||!o.cid||o.cid<=0) return;
@@ -4914,7 +4916,7 @@ function rDash(){
       </div>
     </div>`;
 
-  // Row 2: Avg Order Value + Inventory Moved | Customers + Alerts
+  // Row 2: Avg Order Value + Inventory Moved | Customers + Website Users
   g('sg2').innerHTML=`
     <div class="sbox accent-top">
       <div class="sbox-inner">
@@ -4940,7 +4942,7 @@ function rDash(){
         </div>
       </div>
     </div>
-    <div class="sbox ${allOpsAlerts?'red-top':'accent-top'}">
+    <div class="sbox accent-top">
       <div class="sbox-inner">
         <div class="sbox-half" style="padding:16px 20px 12px">
           <div class="sl">Customers</div>
@@ -4951,9 +4953,21 @@ function rDash(){
           </div>
         </div>
         <div class="sbox-half" style="padding:16px 20px 12px">
-          <div class="sl">Alerts</div>
-          <div class="sv ${allOpsAlerts?'red':''}">${allOpsAlerts}</div>
-          <div class="sn" style="font-size:13px;line-height:1.35">${allOpsAlerts?'Need attention':'All on track'}</div>
+          <div class="sl">Website Users</div>
+          <div class="website-users-split">
+            <div class="website-users-stat">
+              <div class="website-users-label">Sign Ups</div>
+              <div class="website-users-value">${websiteUsersTotal}</div>
+            </div>
+            <div class="website-users-stat">
+              <div class="website-users-label">Active</div>
+              <div class="website-users-value green">${websiteUsersActive}</div>
+            </div>
+            <div class="website-users-stat">
+              <div class="website-users-label">Passive</div>
+              <div class="website-users-value">${websiteUsersPassive}</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>`;
@@ -4979,29 +4993,6 @@ function rDash(){
     </div>`;
   }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">📋</div><div class="et">No orders yet</div></div>`;
 
-  // Alerts panel
-  const dA=g('d-al');
-  const totalAlerts=alerts.length+stockAlerts.length+distAlerts.length;
-  g('d-ab').innerHTML=totalAlerts?`<span class="pill pr" style="font-size:10px;padding:1px 7px">${totalAlerts}</span>`:'';
-  const dashAlertRows=[];
-  alerts.forEach(a=>dashAlertRows.push({type:'reorder',data:a}));
-  stockAlerts.forEach(s=>dashAlertRows.push({type:'stock',data:s}));
-  distAlerts.forEach(d=>dashAlertRows.push({type:'dist',data:d}));
-
-  dA.innerHTML=dashAlertRows.length?dashAlertRows.slice(0,6).map(item=>{
-    if(item.type==='reorder'){
-      const a=item.data;
-      const ov=a.dl<=0,wa=buildWaUrl(a);
-      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${a.mode==='smart'?'sm':ov?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(a.cust.name)} <span class="pill pn" style="margin-left:6px">Re-order</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(a.last.prod)} · ${esc(VL[a.last.variant]||a.last.variant)}</div><div style="margin-top:5px">${ov?`<span class="pill pr">${Math.abs(a.dl)}d overdue</span>`:`<span class="pill pa">Due in ${a.dl}d</span>`}</div></div><a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs" style="flex-shrink:0">${WA_ICON} Remind</a></div>`;
-    }
-    if(item.type==='stock'){
-      const s=item.data;
-      const isCrit=(Number(s.stockGrams)||0)<=Number(s.lowStockThreshold||0)*0.5;
-      return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot ${isCrit?'ov':'ds'}" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(s.name)} <span class="pill pn" style="margin-left:6px">Stock</span></div><div style="font-size:11.5px;color:var(--text-3)">${fGrams(Number(s.stockGrams)||0)} left · threshold ${fGrams(Number(s.lowStockThreshold)||0)}</div><div style="margin-top:5px">${isCrit?`<span class="pill pr">Critical stock</span>`:`<span class="pill pa">Low stock</span>`}</div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('dashboard')">View</button></div>`;
-    }
-    const d=item.data;
-    return`<div style="display:flex;align-items:center;gap:12px;padding:11px 18px;border-bottom:1px solid var(--border)"><div class="adot sm" style="flex-shrink:0"></div><div style="flex:1;min-width:0"><div style="font-weight:600;font-size:13px">${esc(d.distributorName||'Distributor')} <span class="pill pn" style="margin-left:6px">Distribution</span></div><div style="font-size:11.5px;color:var(--text-3)">${esc(d.prod||'Item')} · ${VL[d.variant]||d.variant} · ${d.qty||0} pcs</div><div style="margin-top:5px"><span class="pill pa">${d.ageDays} days pending</span></div></div><button class="btn btn-s btn-xs" style="flex-shrink:0" onclick="nav('distribution')">View</button></div>`;
-  }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">✓</div><div class="et">All alerts clear</div></div>`;
   applyDashboardCardVisibility();
 }
 
@@ -5117,7 +5108,7 @@ async function rUsersSettings(){
   }
 }
 const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',expenses:'Expenses',customers:'Customers',settings:'Settings'};
-const USER_CARD_LABELS={revenue:'Revenue',profit:'Profit',momChange:'MoM Change',analytics:'Analytics',avgOrderValue:'Avg Order Value',inventoryMoved:'Inventory Moved',customers:'Customers',alerts:'Alerts'};
+const USER_CARD_LABELS={revenue:'Revenue',profit:'Profit',momChange:'MoM Change',analytics:'Analytics',avgOrderValue:'Avg Order Value',inventoryMoved:'Inventory Moved',customers:'Customers',websiteUsers:'Website Users'};
 const USER_ACTION_LABELS={
   customers:{create:'Create customers',edit:'Edit customers',delete:'Delete customers'},
   orders:{create:'Create orders',edit:'Edit orders',delete:'Delete orders'},

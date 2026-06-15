@@ -184,7 +184,7 @@ DASHBOARD_CARD_KEYS = (
     "avgOrderValue",
     "inventoryMoved",
     "customers",
-    "alerts",
+    "websiteUsers",
 )
 ACTION_KEYS: dict[str, tuple[str, ...]] = {
     "customers": ("create", "edit", "delete"),
@@ -616,7 +616,7 @@ def _default_permissions_for_role(role: str) -> dict:
             "avgOrderValue": False,
             "inventoryMoved": True,
             "customers": True,
-            "alerts": True,
+            "websiteUsers": True,
         }
         actions = {
             "customers": {"create": True, "edit": True, "delete": False},
@@ -2772,6 +2772,7 @@ def _month_range(now_ts: float, month_offset: int = 0) -> tuple[float, float]:
 def _compute_dashboard_metrics(data: dict) -> dict:
     orders = data.get("orders", []) or []
     customers = data.get("customers", []) or []
+    website_users = [u for u in (data.get("websiteUsers", []) or []) if isinstance(u, dict)]
     products_by_id = {p.get("id"): p for p in (data.get("products", []) or []) if isinstance(p, dict)}
     gateway_pct = _payment_gateway_commission_pct(data)
     now_ms = time.time() * 1000.0
@@ -2820,6 +2821,23 @@ def _compute_dashboard_metrics(data: dict) -> dict:
     ordered_customers = len(counts_by_customer)
     repeat_customers = sum(1 for n in counts_by_customer.values() if n >= 2)
     retention_pct = (repeat_customers / ordered_customers * 100.0) if ordered_customers > 0 else None
+    valid_orders_by_customer: dict[int, int] = {}
+    for o in orders:
+        if str(o.get("status") or "").lower() in {"cancelled", "returned"}:
+            continue
+        cid = int(_safe_float(o.get("cid")))
+        if cid > 0:
+            valid_orders_by_customer[cid] = valid_orders_by_customer.get(cid, 0) + 1
+    website_users_total = len(website_users)
+    website_users_active = 0
+    website_users_passive = 0
+    for user in website_users:
+        customer_id = int(_safe_float(user.get("customerId")))
+        order_count = valid_orders_by_customer.get(customer_id, 0) if customer_id > 0 else 0
+        if order_count >= 3:
+            website_users_active += 1
+        elif order_count >= 1:
+            website_users_passive += 1
 
     return {
         "revAll": rev_all,
@@ -2835,6 +2853,9 @@ def _compute_dashboard_metrics(data: dict) -> dict:
         "completedOrders": completed_count,
         "ordersPerCustomer": orders_per_customer,
         "retentionPct": retention_pct,
+        "websiteUsersTotal": website_users_total,
+        "websiteUsersActive": website_users_active,
+        "websiteUsersPassive": website_users_passive,
         "generatedAt": int(now_ms),
     }
 
