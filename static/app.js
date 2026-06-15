@@ -610,6 +610,7 @@ function emptyState(){
     operationalExpenses: [],
     closedFollowUps: [],
     coupons: [],
+    badgeCouponCompletions: [],
     loyaltyBadgesCatalog: [],
     loyaltySnapshots: {},
     loyaltySync: { status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 },
@@ -629,7 +630,7 @@ function emptyState(){
 }
 function normalizeAppState(){
   if(!S || typeof S!=='object') S=emptyState();
-  ['customers','customerProductTags','orders','products','distributorBatches','distributionChannels','operationalExpenses','closedFollowUps','coupons'].forEach(key=>{
+  ['customers','customerProductTags','orders','products','distributorBatches','distributionChannels','operationalExpenses','closedFollowUps','coupons','badgeCouponCompletions'].forEach(key=>{
     if(!Array.isArray(S[key])) S[key]=[];
   });
   if(!S.loyaltySnapshots || typeof S.loyaltySnapshots!=='object' || Array.isArray(S.loyaltySnapshots)) S.loyaltySnapshots={};
@@ -2177,13 +2178,33 @@ function badgeCouponExpiresAt(badge){
 function badgeCouponBadgeId(row){
   return String(row?.badgeId || row?.badge_id || row?.id || row?.badge?.id || '').trim();
 }
+function badgeCouponCompletionKey(customerId,badgeName,couponCode){
+  return `${Number(customerId||0)}:${normalizeCouponCode(couponCode)}:${String(badgeName||'').trim().toLowerCase()}`;
+}
+function badgeCouponCompletionMap(){
+  const map=new Map();
+  (S.badgeCouponCompletions||[]).forEach((row)=>{
+    const key=String(row?.key||'').trim();
+    if(key) map.set(key,row);
+  });
+  return map;
+}
+function shouldShowCompletedBadgeCoupon(row, completion){
+  if(!completion) return true;
+  const expiresAt=Number(row?.couponExpiresAt||0);
+  if(!expiresAt) return false;
+  const msLeft=expiresAt-Date.now();
+  return msLeft > 0 && msLeft <= 7*86400000;
+}
 function pushUnusedBadgeCouponRow(rows, customer, badgeName, source){
   const couponCode=badgeCouponCode(source);
   const couponStatus=badgeCouponStatus(source);
   if(!couponCode || couponStatus!=='unused') return;
+  const resolvedBadgeName=String(badgeName||source?.badgeName||source?.badge_name||source?.name||source?.id||'Badge');
   rows.push({
     customer,
-    badgeName:String(badgeName||source?.badgeName||source?.badge_name||source?.name||source?.id||'Badge'),
+    key:badgeCouponCompletionKey(customer.id,resolvedBadgeName,couponCode),
+    badgeName:resolvedBadgeName,
     couponCode,
     couponLabel:badgeCouponLabel(source),
     couponExpiresAt:badgeCouponExpiresAt(source),
@@ -2214,11 +2235,11 @@ function unusedBadgeCouponReminders(){
     });
   });
   const seen=new Set();
+  const completions=badgeCouponCompletionMap();
   return rows.filter((row)=>{
-    const key=`${Number(row.customer.id||0)}:${row.badgeName}:${row.couponCode}`;
-    if(seen.has(key)) return false;
-    seen.add(key);
-    return true;
+    if(seen.has(row.key)) return false;
+    seen.add(row.key);
+    return shouldShowCompletedBadgeCoupon(row, completions.get(row.key));
   }).sort((a,b)=>(Number(a.couponExpiresAt||Infinity)-Number(b.couponExpiresAt||Infinity)) || String(a.customer.name||'').localeCompare(String(b.customer.name||'')));
 }
 function refreshLoyaltyBadgeFilterOptions(){
@@ -5668,6 +5689,25 @@ function badgeCouponWaUrl(row){
   const msg=applyBadgeCouponWaTokens(tpl,row);
   return `https://wa.me/${phone}?text=${encodeURIComponent(msg)}`;
 }
+async function completeBadgeCouponReminder(key){
+  const rows=unusedBadgeCouponReminders();
+  const row=rows.find(item=>item.key===key);
+  if(!row) return;
+  try{
+    const res=await api.post('/api/retention-coupons/complete',{
+      key:row.key,
+      customerId:row.customer.id,
+      couponCode:row.couponCode,
+      badgeName:row.badgeName,
+    });
+    if(res?.completion){
+      S.badgeCouponCompletions=(S.badgeCouponCompletions||[]).filter(item=>String(item?.key||'')!==row.key);
+      S.badgeCouponCompletions.push(res.completion);
+    }
+    renderDashboardBadgeCoupons();
+    toast('Marked complete','ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
 function renderDashboardBadgeCoupons(){
   const host=g('d-badge-coupons');
   if(!host) return;
@@ -5697,6 +5737,7 @@ function renderDashboardBadgeCoupons(){
       </div>
       <div class="dash-order-meta">
         ${wa?`<a href="${wa}" target="_blank" rel="noopener noreferrer" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
+        <button class="btn btn-g btn-xs" onclick="completeBadgeCouponReminder(decodeURIComponent('${encodeURIComponent(row.key)}'))" title="Mark message complete" aria-label="Mark message complete" style="width:34px;height:34px;min-height:34px;padding:0;border-radius:10px;font-size:16px;line-height:1">✓</button>
       </div>
     </div>`;
   }).join('')}</div>`;

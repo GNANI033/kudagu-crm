@@ -542,6 +542,7 @@ DEFAULT_DATA: dict = {
     "authSessions": [],
     "coupons": [],
     "couponQuotes": [],
+    "badgeCouponCompletions": [],
     "loyaltyBadgesCatalog": [],
     "loyaltySnapshots": {},
     "loyaltySync": {"status": "idle", "lastAttemptAt": 0, "lastSuccessAt": 0, "lastError": "", "totalSynced": 0},
@@ -1472,7 +1473,7 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons", "couponQuotes"):
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons", "couponQuotes", "badgeCouponCompletions"):
         if key not in data:
             data[key] = []
     for key in ("cid", "oid", "dbid", "uid", "wuid", "exid", "couponId", "couponQuoteId"):
@@ -4914,6 +4915,35 @@ async def admin_loyalty_sync_status(request: Request):
         "counts": counts,
         "linkedCustomers": len(snapshots),
     }
+
+
+@app.post("/api/retention-coupons/complete")
+async def complete_retention_coupon(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "dashboard")
+    key = str(body.get("key") or "").strip()[:240]
+    if not key:
+        raise HTTPException(status_code=400, detail="Completion key is required.")
+    now_ms = int(time.time() * 1000)
+    completions = [row for row in (data.get("badgeCouponCompletions") or []) if isinstance(row, dict)]
+    existing = next((row for row in completions if str(row.get("key") or "") == key), None)
+    if existing:
+        existing["completedAt"] = now_ms
+    else:
+        completions.append(
+            {
+                "key": key,
+                "customerId": int(_safe_float(body.get("customerId"))),
+                "couponCode": _normalize_coupon_code(body.get("couponCode")),
+                "badgeName": str(body.get("badgeName") or "").strip()[:120],
+                "completedAt": now_ms,
+            }
+        )
+    data["badgeCouponCompletions"] = completions[-1000:]
+    write_data(data)
+    return {"ok": True, "completion": next(row for row in data["badgeCouponCompletions"] if str(row.get("key") or "") == key)}
 
 
 @app.delete("/api/customers/{customer_id}/website-account")
