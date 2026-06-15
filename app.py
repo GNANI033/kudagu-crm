@@ -1854,6 +1854,8 @@ def sync_loyalty_snapshots(data: dict) -> dict[str, Any]:
                     "syncedAt": now_ms,
                     "referral": snap.get("referral") if isinstance(snap.get("referral"), dict) else {},
                     "badges": snap.get("badges") if isinstance(snap.get("badges"), list) else [],
+                    "badgeCoupons": snap.get("badgeCoupons") if isinstance(snap.get("badgeCoupons"), list) else [],
+                    "couponRewards": snap.get("couponRewards") if isinstance(snap.get("couponRewards"), list) else [],
                 }, order_counts_by_customer)
                 synced += 1
 

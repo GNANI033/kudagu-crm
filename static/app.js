@@ -2140,25 +2140,45 @@ function refreshLoyaltyBadgeCounts(){
 function badgeCouponCode(badge){
   const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
   const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
-  return normalizeCouponCode(badge?.couponCode || badge?.coupon_code || coupon.code || coupon.couponCode || reward.couponCode || reward.coupon_code);
+  const rewardDefinition=badge?.rewardDefinition && typeof badge.rewardDefinition==='object' ? badge.rewardDefinition : {};
+  return normalizeCouponCode(badge?.couponCode || badge?.coupon_code || badge?.code || coupon.code || coupon.couponCode || reward.couponCode || reward.coupon_code || rewardDefinition.couponCode || rewardDefinition.code);
 }
 function badgeCouponStatus(badge){
   const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
   const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
-  return String(badge?.couponStatus || badge?.coupon_status || coupon.status || coupon.couponStatus || reward.couponStatus || reward.status || '').trim().toLowerCase();
+  const raw=String(badge?.couponStatus || badge?.coupon_status || coupon.status || coupon.couponStatus || reward.couponStatus || reward.status || '').trim().toLowerCase();
+  if(raw==='available' || raw==='active' || raw==='issued') return 'unused';
+  if(raw==='redeemed') return 'used';
+  return raw;
 }
 function badgeCouponLabel(badge){
   const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
   const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
-  return String(badge?.couponLabel || badge?.coupon_label || coupon.label || coupon.couponLabel || reward.couponLabel || reward.label || '').trim();
+  const rewardDefinition=badge?.rewardDefinition && typeof badge.rewardDefinition==='object' ? badge.rewardDefinition : {};
+  return String(badge?.couponLabel || badge?.coupon_label || coupon.label || coupon.couponLabel || reward.couponLabel || reward.label || rewardDefinition.couponLabel || rewardDefinition.label || '').trim();
 }
 function badgeCouponExpiresAt(badge){
   const coupon=badge?.coupon && typeof badge.coupon==='object' ? badge.coupon : {};
   const reward=badge?.reward && typeof badge.reward==='object' ? badge.reward : {};
-  const raw=badge?.couponExpiresAt || badge?.coupon_expires_at || coupon.expiresAt || coupon.couponExpiresAt || reward.couponExpiresAt || reward.expiresAt || 0;
+  const raw=badge?.couponExpiresAt || badge?.coupon_expires_at || badge?.expiresAt || coupon.expiresAt || coupon.couponExpiresAt || reward.couponExpiresAt || reward.expiresAt || 0;
   const n=Number(raw||0);
   if(!Number.isFinite(n) || n<=0) return 0;
   return n < 10000000000 ? n * 1000 : n;
+}
+function badgeCouponBadgeId(row){
+  return String(row?.badgeId || row?.badge_id || row?.id || row?.badge?.id || '').trim();
+}
+function pushUnusedBadgeCouponRow(rows, customer, badgeName, source){
+  const couponCode=badgeCouponCode(source);
+  const couponStatus=badgeCouponStatus(source);
+  if(!couponCode || couponStatus!=='unused') return;
+  rows.push({
+    customer,
+    badgeName:String(badgeName||source?.badgeName||source?.badge_name||source?.name||source?.id||'Badge'),
+    couponCode,
+    couponLabel:badgeCouponLabel(source),
+    couponExpiresAt:badgeCouponExpiresAt(source),
+  });
 }
 function unusedBadgeCouponReminders(){
   const snapshots=S?.loyaltySnapshots&&typeof S.loyaltySnapshots==='object'?S.loyaltySnapshots:{};
@@ -2170,21 +2190,27 @@ function unusedBadgeCouponReminders(){
     const customer=customersById.get(cid);
     if(!customer) return;
     const badges=Array.isArray(snap.badges)?snap.badges:[];
+    const earnedBadgeNamesById=new Map();
     badges.forEach((badge)=>{
       if(!badge || typeof badge!=='object' || !badge.earned) return;
-      const couponCode=badgeCouponCode(badge);
-      const couponStatus=badgeCouponStatus(badge);
-      if(!couponCode || couponStatus!=='unused') return;
-      rows.push({
-        customer,
-        badgeName:String(badge.name||badge.id||'Badge'),
-        couponCode,
-        couponLabel:badgeCouponLabel(badge),
-        couponExpiresAt:badgeCouponExpiresAt(badge),
-      });
+      const badgeId=String(badge.id||'').trim();
+      if(badgeId) earnedBadgeNamesById.set(badgeId,String(badge.name||badgeId));
+      pushUnusedBadgeCouponRow(rows, customer, badge.name||badge.id||'Badge', badge);
+    });
+    [...(Array.isArray(snap.badgeCoupons)?snap.badgeCoupons:[]), ...(Array.isArray(snap.couponRewards)?snap.couponRewards:[])].forEach((reward)=>{
+      if(!reward || typeof reward!=='object') return;
+      const badgeId=badgeCouponBadgeId(reward);
+      const badgeName=earnedBadgeNamesById.get(badgeId) || reward.badgeName || reward.badge_name || reward.name || badgeId || 'Badge';
+      pushUnusedBadgeCouponRow(rows, customer, badgeName, reward);
     });
   });
-  return rows.sort((a,b)=>(Number(a.couponExpiresAt||Infinity)-Number(b.couponExpiresAt||Infinity)) || String(a.customer.name||'').localeCompare(String(b.customer.name||'')));
+  const seen=new Set();
+  return rows.filter((row)=>{
+    const key=`${Number(row.customer.id||0)}:${row.badgeName}:${row.couponCode}`;
+    if(seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((a,b)=>(Number(a.couponExpiresAt||Infinity)-Number(b.couponExpiresAt||Infinity)) || String(a.customer.name||'').localeCompare(String(b.customer.name||'')));
 }
 function refreshLoyaltyBadgeFilterOptions(){
   refreshLoyaltyBadgeCounts();
@@ -5636,9 +5662,16 @@ function badgeCouponWaUrl(row){
 function renderDashboardBadgeCoupons(){
   const host=g('d-badge-coupons');
   if(!host) return;
-  const rows=unusedBadgeCouponReminders();
+  let rows=[];
+  try{
+    rows=unusedBadgeCouponReminders();
+  }catch(e){
+    host.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Badge coupon data could not render</div><div class="es">${esc(e.message||'Unknown error')}</div></div>`;
+    return;
+  }
   if(!rows.length){
-    host.innerHTML='<div class="empty" style="padding:28px 18px"><div class="ei">%</div><div class="et">No unused badge coupons</div><div class="es">Run loyalty sync after website coupon rewards are updated.</div></div>';
+    const linked=Object.keys(S?.loyaltySnapshots||{}).length;
+    host.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">%</div><div class="et">No unused badge coupons</div><div class="es">${linked?`${linked} linked loyalty snapshots synced. No earned unused coupon rewards found.`:'Run loyalty sync after website coupon rewards are updated.'}</div></div>`;
     return;
   }
   host.innerHTML=rows.slice(0,6).map((row)=>{
@@ -5650,7 +5683,7 @@ function renderDashboardBadgeCoupons(){
         <div class="dor-prod">${esc(row.badgeName)} · <span class="pill pn" style="padding:1px 7px;font-size:10.5px">${esc(row.couponCode)}</span>${esc(expiry)}</div>
       </div>
       <div class="dash-order-meta">
-        ${wa?`<a href="${wa}" target="_blank" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
+        ${wa?`<a href="${wa}" target="_blank" rel="noopener noreferrer" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
       </div>
     </div>`;
   }).join('');
