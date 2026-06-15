@@ -5662,19 +5662,22 @@ function badgeCouponWaUrl(row){
 function renderDashboardBadgeCoupons(){
   const host=g('d-badge-coupons');
   if(!host) return;
+  const countEl=g('d-bc-count');
   let rows=[];
   try{
     rows=unusedBadgeCouponReminders();
   }catch(e){
+    if(countEl) countEl.innerHTML='';
     host.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">!</div><div class="et">Badge coupon data could not render</div><div class="es">${esc(e.message||'Unknown error')}</div></div>`;
     return;
   }
+  if(countEl) countEl.innerHTML=rows.length?`<span class="pill pn" style="font-size:10px;padding:1px 7px;margin-left:6px">${rows.length}</span>`:'';
   if(!rows.length){
     const linked=Object.keys(S?.loyaltySnapshots||{}).length;
     host.innerHTML=`<div class="empty" style="padding:28px 18px"><div class="ei">%</div><div class="et">No unused badge coupons</div><div class="es">${linked?`${linked} linked loyalty snapshots synced. No earned unused coupon rewards found.`:'Run loyalty sync after website coupon rewards are updated.'}</div></div>`;
     return;
   }
-  host.innerHTML=rows.slice(0,6).map((row)=>{
+  host.innerHTML=`<div class="retention-coupon-list">${rows.map((row)=>{
     const wa=badgeCouponWaUrl(row);
     const expiry=row.couponExpiresAt?` · expires ${fd(row.couponExpiresAt)}`:'';
     return `<div class="dash-order-row">
@@ -5686,7 +5689,7 @@ function renderDashboardBadgeCoupons(){
         ${wa?`<a href="${wa}" target="_blank" rel="noopener noreferrer" class="btn btn-follow-up btn-xs">${WA_ICON} WhatsApp</a>`:`<span class="pill pn">No phone</span>`}
       </div>
     </div>`;
-  }).join('');
+  }).join('')}</div>`;
 }
 function rWaMessages(){
   const de=g('wa-tpl-default');
