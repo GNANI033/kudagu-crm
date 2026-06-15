@@ -4997,15 +4997,15 @@ function rDash(){
     </div>
     <div class="sbox accent-top">
       <div class="sbox-inner">
-        <div class="sbox-half" style="padding:16px 20px 12px">
+        <div class="sbox-half" style="flex:0.82;padding:16px 18px 12px">
           <div class="sl">Customers</div>
           <div class="sv">${totalCustomers}</div>
           <div class="sn" style="font-size:13px;line-height:1.35">
-            ${totalCustomers>0?`${ordersPerCustomer.toFixed(2)} orders/customer`:'No customers yet'}
-            ${retentionPct==null?'':' · '+retentionPct.toFixed(0)+'% retention'}
+            <div>${totalCustomers>0?`${ordersPerCustomer.toFixed(2)} orders/customer`:'No customers yet'}</div>
+            ${retentionPct==null?'':`<div>${retentionPct.toFixed(0)}% retention</div>`}
           </div>
         </div>
-        <div class="sbox-half" style="padding:16px 20px 12px">
+        <div class="sbox-half" style="flex:1.18;padding:16px 18px 12px">
           <div class="sl">Website Users</div>
           <div class="website-users-split">
             <div class="website-users-stat">

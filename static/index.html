@@ -206,10 +206,10 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .sbox-inner { display: flex; min-width: 0; }
 .sbox-half { flex: 1; min-width: 0; padding: 18px 20px; }
 .sbox-half + .sbox-half { border-left: 1px solid var(--border); }
-.website-users-split { display: grid; grid-template-columns: repeat(3,1fr); gap: 0; margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
-.website-users-stat { min-width: 0; padding: 10px 8px; text-align: center; }
+.website-users-split { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
+.website-users-stat { min-width: 0; padding: 10px 6px; text-align: center; }
 .website-users-stat + .website-users-stat { border-left: 1px solid var(--border); }
-.website-users-label { font-size: 10px; font-weight: 800; color: var(--text-3); text-transform: uppercase; letter-spacing: .08em; white-space: nowrap; }
+.website-users-label { font-size: 9.5px; font-weight: 800; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .website-users-value { margin-top: 3px; font-size: 22px; font-weight: 850; color: var(--text); line-height: 1.05; }
 .sl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; }
 .sv { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin-top: 5px; line-height: 1; }
@@ -939,7 +939,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
         <div id="d-orders"></div>
       </div>
       <div class="card">
-        <div class="ch"><div class="ct">Unused Badge Coupons</div><button class="btn btn-g btn-xs" onclick="triggerLoyaltySync()">Sync →</button></div>
+        <div class="ch"><div class="ct">Customer Retention - Coupon</div><button class="btn btn-g btn-xs" onclick="triggerLoyaltySync()">Sync →</button></div>
         <div id="d-badge-coupons"></div>
       </div>
     </div>
