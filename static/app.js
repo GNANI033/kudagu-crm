@@ -317,7 +317,15 @@ async function postJSONWithTimeout(path, body, timeoutMs=45000){
 
 // ─── PRICING ─────────────────────────────────────────────────────────────────
 function getPricing(pid,sz){ const p=S.products.find(x=>x.id===pid); if(!p||!p.pricing||!p.pricing[sz]) return null; return p.pricing[sz]; }
-function getSalePrice(pid,sz,ch){ const pr=getPricing(pid,sz); if(!pr||!pr.salePrices) return 0; return parseFloat(pr.salePrices[ch]||pr.salePrices.retail||0); }
+function getBulkMinQty(pidOrProduct){
+  const prod=typeof pidOrProduct==='object'?pidOrProduct:S.products.find(p=>p.id===pidOrProduct);
+  const n=parseInt(prod?.bulkMinQty||0,10);
+  return Number.isFinite(n)&&n>0?n:0;
+}
+function getNormalSalePrice(pid,sz,ch){ const pr=getPricing(pid,sz); if(!pr||!pr.salePrices) return 0; return parseFloat(pr.salePrices[ch]||pr.salePrices.retail||0)||0; }
+function getBulkPrice(pid,sz){ const pr=getPricing(pid,sz); return parseFloat(pr?.bulkPrice||0)||0; }
+function qualifiesForBulk(pid,sz,qty){ const min=getBulkMinQty(pid),bp=getBulkPrice(pid,sz); return min>0&&bp>0&&(parseFloat(qty||0)||0)>=min; }
+function getSalePrice(pid,sz,ch,qty=1){ return qualifiesForBulk(pid,sz,qty)?getBulkPrice(pid,sz):getNormalSalePrice(pid,sz,ch); }
 function pricingExpensesByChannel(pr){
   const by=pr&&typeof pr==='object'&&pr.expensesByChannel&&typeof pr.expensesByChannel==='object'?pr.expensesByChannel:{};
   const legacy=Array.isArray(pr?.expenses)?pr.expenses:[];
@@ -333,7 +341,7 @@ function getTotalCost(pid,sz,ch='retail'){
 function orderRevenue(o){
   const rr=parseFloat(o.realizedRevenue);
   if(Number.isFinite(rr)&&rr>=0) return rr;
-  return getSalePrice(o.prodId,o.variant,o.channel||'retail')*(o.qty||1);
+  return getSalePrice(o.prodId,o.variant,o.channel||'retail',o.qty||1)*(o.qty||1);
 }
 function paymentGatewayCommissionPct(){
   const raw=parseFloat(S?.shippingProfile?.paymentGatewayCommissionPct);
@@ -623,7 +631,7 @@ function emptyState(){
     waDefaultTpl: DEFAULT_WA_TPL,
     badgeCouponWaTpl: DEFAULT_BADGE_COUPON_WA_TPL,
     shippingProfile: { paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} },
-    marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' },
+    marketingSettings: { aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', companyAddress: '', invoiceAdditionalDetails: '', systemPrompt: '' },
     uiPreferences: { theme: 'light' },
     authContext: { ...AUTH_STATE },
   };
@@ -638,7 +646,7 @@ function normalizeAppState(){
   if(!S.loyaltySync || typeof S.loyaltySync!=='object') S.loyaltySync={ status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 };
   if(typeof S.badgeCouponWaTpl!=='string') S.badgeCouponWaTpl=DEFAULT_BADGE_COUPON_WA_TPL;
   if(!S.shippingProfile || typeof S.shippingProfile!=='object') S.shippingProfile={ paymentGatewayCommissionPct: 3, couriers: [], trackingTemplates: {} };
-  if(!S.marketingSettings || typeof S.marketingSettings!=='object') S.marketingSettings={ aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', systemPrompt: '' };
+  if(!S.marketingSettings || typeof S.marketingSettings!=='object') S.marketingSettings={ aiBaseUrl: 'https://api.openai.com/v1', aiModel: '', aiApiKey: '', brandName: '', companyAddress: '', invoiceAdditionalDetails: '', systemPrompt: '' };
 }
 
 function normalizeCustomerProductTags(values){
@@ -1079,6 +1087,7 @@ function openOrderMenu(oid, btnEl){
   menu.className='ctx-menu'; menu.id='ctx-menu';
   menu.innerHTML=`
     ${canEdit?`<button class="ctx-item" onclick="closeOrderMenu();openEditOrder(${oid})">Edit Order</button>`:''}
+    <button class="ctx-item" onclick="closeOrderMenu();downloadInvoice(${oid})">Download Invoice</button>
     ${canShip && canShipLabel
       ? `<button class="ctx-item" onclick="closeOrderMenu();shippingLabel(${oid},'download')">Download Label</button>
          <button class="ctx-item" onclick="closeOrderMenu();shippingLabel(${oid},'print')">Print Label</button>`
@@ -1756,6 +1765,24 @@ function shippingLabel(oid,action){
     </div>
   `,'lg');
   updateTrackingLinkPreview();
+}
+async function downloadInvoice(oid){
+  try{
+    const r=await fetch(`/api/orders/${oid}/invoice.pdf`);
+    if(!r.ok){
+      const msg=await r.text();
+      throw new Error(msg || `Invoice download failed (${r.status})`);
+    }
+    const blob=await r.blob();
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=`invoice-order-${oid}.pdf`;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    toast('Invoice PDF downloaded','ok');
+  }catch(e){
+    toast('Could not download invoice: '+e.message,'err');
+  }
 }
 
 // ─── MOBILE HELPERS ──────────────────────────────────────────────────────────
@@ -2577,6 +2604,8 @@ function rMarketingSettings(){
   if(g('mkt-ai-base-url')) g('mkt-ai-base-url').value=ms.aiBaseUrl||'https://api.openai.com/v1';
   if(g('mkt-ai-model')) g('mkt-ai-model').value=ms.aiModel||'';
   if(g('mkt-ai-brand-name')) g('mkt-ai-brand-name').value=ms.brandName||'';
+  if(g('mkt-ai-company-address')) g('mkt-ai-company-address').value=ms.companyAddress||'';
+  if(g('mkt-ai-invoice-details')) g('mkt-ai-invoice-details').value=ms.invoiceAdditionalDetails||'';
   if(g('mkt-ai-api-key')) g('mkt-ai-api-key').value='';
   if(g('mkt-ai-system-prompt')) g('mkt-ai-system-prompt').value=ms.systemPrompt||'';
   const note=g('mkt-ai-key-note');
@@ -2596,10 +2625,12 @@ async function saveMarketingSettings(){
   const aiBaseUrl=(g('mkt-ai-base-url')?.value||'').trim();
   const aiModel=(g('mkt-ai-model')?.value||'').trim();
   const brandName=(g('mkt-ai-brand-name')?.value||'').trim();
+  const companyAddress=(g('mkt-ai-company-address')?.value||'').trim();
+  const invoiceAdditionalDetails=(g('mkt-ai-invoice-details')?.value||'').trim();
   const aiApiKey=(g('mkt-ai-api-key')?.value||'').trim();
   const systemPrompt=(g('mkt-ai-system-prompt')?.value||'').trim();
   if(!aiModel){ toast('Model is required','err'); return; }
-  const marketingSettings={ aiBaseUrl, aiModel, brandName, systemPrompt };
+  const marketingSettings={ aiBaseUrl, aiModel, brandName, companyAddress, invoiceAdditionalDetails, systemPrompt };
   if(aiApiKey) marketingSettings.aiApiKey=aiApiKey;
   const payload={ marketingSettings };
   try{
@@ -2609,6 +2640,8 @@ async function saveMarketingSettings(){
     const persisted =
       String(saved.aiBaseUrl||'').trim() === String(marketingSettings.aiBaseUrl||'').trim() &&
       String(saved.aiModel||'').trim() === String(marketingSettings.aiModel||'').trim() &&
+      String(saved.companyAddress||'').trim() === String(marketingSettings.companyAddress||'').trim() &&
+      String(saved.invoiceAdditionalDetails||'').trim() === String(marketingSettings.invoiceAdditionalDetails||'').trim() &&
       String(saved.systemPrompt||'').trim() === String(marketingSettings.systemPrompt||'').trim();
     // Compatibility fallback: some deployments may ignore marketingSettings in /api/settings.
     if(!persisted){
@@ -3319,6 +3352,11 @@ function toggleDelivered(){
   updateDeliveredToggle();
   refreshSum();
 }
+function toggleSaleDueDate(){
+  const status=(g('sale-invoice-payment')?.value||'prepaid');
+  const row=g('sale-due-date-row');
+  if(row) row.style.display=status==='due'?'block':'none';
+}
 function updateDeliveredToggle(){
   const toggle=g('delivered-toggle');
   const pmRow=g('sale-pm-row');
@@ -3332,7 +3370,8 @@ function refreshSum(){
   if(!selC||!pid||!selV){box.style.display='none';return;}
   box.style.display='block';
   const prod=S.products.find(p=>p.id===pid);
-  const sp=getSalePrice(pid,selV,selCh),cost=getTotalCost(pid,selV,selCh),ad=variantCycleDays(prod,selV)*qty;
+  const normalSp=getNormalSalePrice(pid,selV,selCh),sp=getSalePrice(pid,selV,selCh,qty),cost=getTotalCost(pid,selV,selCh),ad=variantCycleDays(prod,selV)*qty;
+  const bulkOn=qualifiesForBulk(pid,selV,qty),bulkMin=getBulkMinQty(pid);
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
   let priceRows='';
@@ -3341,8 +3380,11 @@ function refreshSum(){
     const pgComm=websiteGatewayCommission(rev,selCh,disc);
     const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
     priceRows=`<hr class="sdiv">
-      <div class="sr"><span class="sk">Sale price / pack</span><span class="sval">₹${sp.toFixed(0)}</span></div>
+      <div class="sr"><span class="sk">${bulkOn?'Bulk price / pack':'Sale price / pack'}</span><span class="sval">₹${sp.toFixed(0)}</span></div>
+      ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Normal price / pack</span><span class="sval" style="color:var(--text-3)">₹${normalSp.toFixed(0)}</span></div>`:''}
+      ${bulkMin>0&&!bulkOn?`<div class="sr"><span class="sk">Bulk starts at</span><span class="sval">${bulkMin} packs</span></div>`:''}
       <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>
+      ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${((normalSp-sp)*qty).toFixed(0)} (${(((normalSp-sp)/normalSp)*100).toFixed(1)}%)</span></div>`:''}
       ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
       ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
       ${pgComm>0?`<div class="sr"><span class="sk">Gateway commission (${paymentGatewayCommissionPct().toFixed(2)}%)</span><span class="sval" style="color:var(--amber)">−₹${pgComm.toFixed(0)}</span></div>`:''}
@@ -3375,16 +3417,24 @@ async function recSale(){
   if(dateVal){const[y,m,d]=dateVal.split('-').map(Number);const dt=new Date(y,m-1,d,12,0,0);if(!isNaN(dt.getTime()))at=dt.getTime();}
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
+  const invoicePaymentStatus=(g('sale-invoice-payment')?.value||'prepaid');
+  const invoiceDueDate=(g('sale-due-date')?.value||'').trim();
   const status=saleDelivered?'completed':(selCh==='retail'?'confirmed':'pending');
   const pm=saleDelivered?(g('sale-pm')?.value||''):'';
+  if(invoicePaymentStatus==='due'&&!invoiceDueDate){toast('Select invoice due date','err');return;}
   try{
-    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,status,paymentMethod:pm,at});
+    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,status,paymentMethod:pm,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails:(g('sale-invoice-details')?.value||'').trim(),invoiceTerms:(g('sale-invoice-terms')?.value||'').trim()});
     S.orders.unshift(order);S.oid=order.id+1;
     updBadge();clearC();selV=null;qty=1;selCh='retail';saleDelivered=false;
     g('ps').value='';g('vr-row').innerHTML='';g('qv').textContent='1';
     if(g('sale-discount'))g('sale-discount').value='';
     if(g('sale-commission'))g('sale-commission').value='';
+    if(g('sale-invoice-payment'))g('sale-invoice-payment').value='prepaid';
+    if(g('sale-due-date'))g('sale-due-date').value='';
+    if(g('sale-invoice-details'))g('sale-invoice-details').value='';
+    if(g('sale-invoice-terms'))g('sale-invoice-terms').value='';
     g('sale-sum').style.display='none';setDefaultDate();renderChannelPicker();updateDeliveredToggle();
+    toggleSaleDueDate();
     toast('Sale recorded','ok');
     if(status==='completed') rDash(); // refresh dashboard counts
   }catch(e){toast('Error: '+e.message,'err');}
@@ -3749,8 +3799,8 @@ function openEditOrder(oid){
     <div style="font-size:12px;color:var(--text-3);margin:4px 0 18px">${esc(o.cname)} · ${chBadge(o.channel||'retail')}</div>
     <div style="display:flex;flex-direction:column;gap:14px">
       <div class="fr">
-        <div class="fg"><label>Pack Size</label><select id="eo-var">${sizes}</select></div>
-        <div class="fg"><label>Quantity</label><input type="number" id="eo-qty" value="${o.qty}" min="1"></div>
+        <div class="fg"><label>Pack Size</label><select id="eo-var" onchange="eoPreview(${oid})">${sizes}</select></div>
+        <div class="fg"><label>Quantity</label><input type="number" id="eo-qty" value="${o.qty}" min="1" oninput="eoPreview(${oid})"></div>
       </div>
       <div class="fr">
         <div class="fg"><label>Discount (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-disc" value="${o.discount||0}" min="0" oninput="eoPreview(${oid})"></div></div>
@@ -3764,6 +3814,12 @@ function openEditOrder(oid){
         <label>Order Date</label>
         <input type="date" id="eo-date" value="${dateToISO(o.at)}">
       </div>
+      <div class="fr">
+        <div class="fg"><label>Invoice Payment</label><select id="eo-invoice-payment" onchange="toggleEditDueDate()"><option value="prepaid" ${(o.invoicePaymentStatus||'prepaid')==='prepaid'?'selected':''}>Prepaid</option><option value="due" ${o.invoicePaymentStatus==='due'?'selected':''}>Payment Due</option></select></div>
+        <div class="fg" id="eo-due-date-row" style="display:${o.invoicePaymentStatus==='due'?'block':'none'}"><label>Due Date <span class="req">*</span></label><input type="date" id="eo-due-date" value="${esc(o.invoiceDueDate||'')}"></div>
+      </div>
+      <div class="fg"><label>Additional Details</label><textarea id="eo-invoice-details" rows="3">${esc(o.invoiceAdditionalDetails||'')}</textarea></div>
+      <div class="fg"><label>Terms</label><textarea id="eo-invoice-terms" rows="3">${esc(o.invoiceTerms||'')}</textarea></div>
       <div class="sumbox" id="eo-preview"></div>
       <div style="display:flex;gap:8px;margin-top:4px">
         <button class="btn btn-p" style="flex:1" onclick="submitEditOrder(${oid})">Save Changes</button>
@@ -3773,12 +3829,18 @@ function openEditOrder(oid){
   eoPreview(oid);
 }
 
+function toggleEditDueDate(){
+  const row=g('eo-due-date-row');
+  if(row) row.style.display=(g('eo-invoice-payment')?.value||'prepaid')==='due'?'block':'none';
+}
+
 function eoPreview(oid){
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
   const prev=g('eo-preview'); if(!prev) return;
   const sz=g('eo-var')?.value||o.variant;
   const qty=parseInt(g('eo-qty')?.value||o.qty)||1;
-  const sp=getSalePrice(o.prodId,sz,o.channel||'retail');
+  const normalSp=getNormalSalePrice(o.prodId,sz,o.channel||'retail');
+  const sp=getSalePrice(o.prodId,sz,o.channel||'retail',qty);
   const cost=getTotalCost(o.prodId,sz,o.channel||'retail');
   const disc=parseFloat(g('eo-disc')?.value||0)||0;
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
@@ -3786,8 +3848,11 @@ function eoPreview(oid){
   const rev=sp*qty;
   const pgComm=websiteGatewayCommission(rev,o.channel||'retail',disc);
   const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
+  const bulkOn=qualifiesForBulk(o.prodId,sz,qty),bulkSavings=bulkOn&&normalSp>sp?(normalSp-sp)*qty:0;
   prev.innerHTML=`
+    ${bulkOn?`<div class="sr"><span class="sk">Bulk price applied</span><span class="sval">₹${sp.toFixed(0)} / pack</span></div>`:''}
     <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>
+    ${bulkSavings>0?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${bulkSavings.toFixed(0)} (${((bulkSavings/(normalSp*qty))*100).toFixed(1)}%)</span></div>`:''}
     <div class="sr"><span class="sk">Gross profit</span><span class="sval">₹${gross.toFixed(0)}</span></div>
     ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
     ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
@@ -3803,12 +3868,19 @@ async function submitEditOrder(oid){
   const pm=g('eo-pm').value||'';
   const qty=parseInt(g('eo-qty').value)||1;
   const variant=g('eo-var').value;
+  const invoicePaymentStatus=g('eo-invoice-payment')?.value||'prepaid';
+  const invoiceDueDate=(g('eo-due-date')?.value||'').trim();
+  const invoiceAdditionalDetails=(g('eo-invoice-details')?.value||'').trim();
+  const invoiceTerms=(g('eo-invoice-terms')?.value||'').trim();
   const dateVal=g('eo-date').value;
   let at=S.orders.find(x=>x.id===oid)?.at||Date.now();
   if(dateVal){const[y,m,d]=dateVal.split('-').map(Number);const dt=new Date(y,m-1,d,12,0,0);if(!isNaN(dt.getTime()))at=dt.getTime();}
   // If setting to completed, require payment method
   if(status==='completed'&&!pm){
     toast('Select a payment method for completed orders','err'); return;
+  }
+  if(invoicePaymentStatus==='due'&&!invoiceDueDate){
+    toast('Select invoice due date','err'); return;
   }
   if(status==='shipped'){
     const o=S.orders.find(x=>x.id===oid);
@@ -3819,7 +3891,7 @@ async function submitEditOrder(oid){
     }
   }
   try{
-    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at});
+    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms});
     syncOrder(updated); closeModal();
     rOrders(); rDash(); updBadge();
     toast('Order updated','ok');
@@ -3905,7 +3977,7 @@ async function createDistributorBatch(){
 function openCompleteDistributorBatch(batchId){
   const b=(S.distributorBatches||[]).find(x=>x.id===batchId);
   if(!b) return;
-  const suggested=(getSalePrice(b.prodId,b.variant,'retail')*(parseInt(b.qty||0)||0))||0;
+  const suggested=(getSalePrice(b.prodId,b.variant,'retail',parseInt(b.qty||0)||0)*(parseInt(b.qty||0)||0))||0;
   openModal(`
     <div class="modal-title">Complete Distributor Batch</div>
     <div style="font-size:12px;color:var(--text-3);margin-top:6px">
@@ -4213,7 +4285,7 @@ function rDistribution(){
   const activeQty=active.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0);
   const activeHoldWorth=active.reduce((s,b)=>{
     const qty=parseInt(b.qty||0)||0;
-    const unitPrice=getSalePrice(b.prodId,b.variant,'retail');
+    const unitPrice=getSalePrice(b.prodId,b.variant,'retail',qty);
     return s + (qty*unitPrice);
   },0);
   const doneQty=done.reduce((s,b)=>s+(parseInt(b.qty||0)||0),0);
@@ -5470,8 +5542,9 @@ function buildProdCard(p){
   const st=p.sizes.map((sz,i)=>`<button class="size-tab ${i===0?'active':''}" onclick="switchSizeTab('${p.id}','${sz}')" id="tab-${p.id}-${variantIdToken(sz)}">${VL[sz]||sz}</button>`).join('');
   const sp=p.sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
   const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
-  const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
-  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+  const bulkMin=getBulkMinQty(p);
+  const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), bulkMin?`Bulk from ${bulkMin} packs`:'Bulk: Not set', comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
+  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="sl-label" style="margin-bottom:10px">Bulk Order Rule</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Quantity Qualifies As Bulk</label><input type="number" id="bulk-min-${esc(p.id)}" value="${bulkMin||''}" min="0" step="1" placeholder="Optional"></div><button class="btn btn-p btn-sm" onclick="saveBulkMinQty('${esc(p.id)}')">Save Bulk Rule</button></div><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
 }
 function inventoryProductOptions(selected=''){
   const base='<option value="">Select inventory product…</option>';
@@ -5537,10 +5610,21 @@ async function saveExistingComposition(pid){
     rSettings();
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
+async function saveBulkMinQty(pid){
+  const prod=S.products.find(p=>p.id===pid); if(!prod) return;
+  const bulkMinQty=Math.max(0,parseInt(g(`bulk-min-${pid}`)?.value||0,10)||0);
+  try{
+    const updated=await api.put(`/api/products/${pid}`,{bulkMinQty});
+    const idx=S.products.findIndex(p=>p.id===pid); if(idx>=0) S.products[idx]=updated;
+    toast('Bulk rule saved','ok');
+    rSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
 function buildSizePanel(p,sz,isActive){
   const tk=variantIdToken(sz);
   const pr=(p.pricing&&p.pricing[sz])||{mrp:0,salePrices:{retail:0,website:0,whatsapp:0},expenses:[],expensesByChannel:{retail:[],website:[],whatsapp:[]}};
   const mrp=parseFloat(pr.mrp||0)||0;
+  const bulkPrice=parseFloat(pr.bulkPrice||0)||0;
   const sp=pr.salePrices||{retail:0,website:0,whatsapp:0};
   const expByChannel=pricingExpensesByChannel(pr);
   const expRows=buildExpenseMatrixRows(expByChannel);
@@ -5548,7 +5632,7 @@ function buildSizePanel(p,sz,isActive){
   const exRows=expRows.map((row,i)=>buildExpRow(p.id,sz,i,row)).join('');
   const tc={}; CHANNELS.forEach(c=>{ tc[c.id]=expRows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0); });
   const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${tk}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
-  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Pricing — ${VL[sz]||sz}</div><div class="fr2" style="margin-bottom:12px"><div class="fg"><label>MRP</label><div class="input-prefix"><span>₹</span><input type="number" id="mrp-${p.id}-${tk}" value="${mrp}" min="0" placeholder="0"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Original/list price for strike-through display on website.</div></div><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label" style="margin-bottom:10px">Sale Prices</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Expense</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}<div></div></div><div id="expenses-matrix-${p.id}-${tk}">${exRows}</div></div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
+  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Pricing — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:12px"><div class="fg"><label>MRP</label><div class="input-prefix"><span>₹</span><input type="number" id="mrp-${p.id}-${tk}" value="${mrp}" min="0" placeholder="0"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Original/list price for strike-through display on website.</div></div><div class="fg"><label>Bulk Price</label><div class="input-prefix"><span>₹</span><input type="number" id="bp-${p.id}-${tk}" value="${bulkPrice||''}" min="0" placeholder="Optional" oninput="calcMargin('${p.id}','${sz}')"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used when order quantity meets this product's bulk rule.</div></div><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label" style="margin-bottom:10px">Sale Prices</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Expense</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}<div></div></div><div id="expenses-matrix-${p.id}-${tk}">${exRows}</div></div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
 }
 function buildMarginHTML(pid,sz,tcMap,sp){
   const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0,cost=parseFloat(tcMap?.[c.id])||0;if(!price)return'';const margin=price-cost,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label} (Cost ₹${cost.toFixed(0)})</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
@@ -5580,7 +5664,7 @@ function getExpMatrixRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let
 function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const rows=getExpMatrixRows(pid,sz);const tcMap={};CHANNELS.forEach(c=>{tcMap[c.id]=rows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0);});const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tcMap,sp); }
 function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-matrix-${pid}-${tk}`);if(!c)return;const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,{name:'',costs:{retail:0,website:0,whatsapp:0}});c.appendChild(d.firstChild);calcMargin(pid,sz); }
 function removeExpRow(pid,sz,idx){ const tk=variantIdToken(sz);const el=g(`er-${pid}-${tk}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
-async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const mrp=parseFloat((g(`mrp-${pid}-${tk}`)||{}).value||0)||0;if(mrp<0){toast('MRP cannot be negative','err');return;}const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}const matrixRows=getExpMatrixRows(pid,sz);const expensesByChannel={retail:[],website:[],whatsapp:[]};matrixRows.forEach(row=>{const name=row.name||'';CHANNELS.forEach(c=>{const cost=parseFloat(row.costs?.[c.id]||0)||0;if(name||cost>0) expensesByChannel[c.id].push({name,cost});});});prod.pricing[sz]={mrp,salePrices,expensesByChannel,expenses:expensesByChannel.retail||[],reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
+async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const mrp=parseFloat((g(`mrp-${pid}-${tk}`)||{}).value||0)||0;if(mrp<0){toast('MRP cannot be negative','err');return;}const bulkPrice=parseFloat((g(`bp-${pid}-${tk}`)||{}).value||0)||0;if(bulkPrice<0){toast('Bulk price cannot be negative','err');return;}const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}const matrixRows=getExpMatrixRows(pid,sz);const expensesByChannel={retail:[],website:[],whatsapp:[]};matrixRows.forEach(row=>{const name=row.name||'';CHANNELS.forEach(c=>{const cost=parseFloat(row.costs?.[c.id]||0)||0;if(name||cost>0) expensesByChannel[c.id].push({name,cost});});});prod.pricing[sz]={mrp,bulkPrice,salePrices,expensesByChannel,expenses:expensesByChannel.retail||[],reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
 function getCompositionRows(){
   const rows=[];
   document.querySelectorAll('#np-comp-rows .comp-row').forEach((row)=>{

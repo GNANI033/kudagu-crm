@@ -585,6 +585,8 @@ DEFAULT_DATA: dict = {
         "aiModel": "",
         "aiApiKey": "",
         "brandName": "",
+        "companyAddress": "",
+        "invoiceAdditionalDetails": "",
         "systemPrompt": (
             "You are a concise marketing assistant for a premium coffee brand in India. "
             "Write a warm, personalized WhatsApp message in plain text. Keep it short, "
@@ -762,6 +764,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
                 "website": _safe_float((sale_prices or {}).get("website")),
                 "whatsapp": _safe_float((sale_prices or {}).get("whatsapp")),
             },
+            "bulkPrice": _safe_float(row.get("bulkPrice")),
             "expenses": [],
             "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
             "reorderCycleDays": _default_variant_cycle_days(key),
@@ -806,6 +809,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             {
                 "mrp": 0.0,
                 "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
+                "bulkPrice": 0.0,
                 "expenses": [],
                 "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
                 "reorderCycleDays": _default_variant_cycle_days(size),
@@ -1510,6 +1514,10 @@ def migrate(data: dict) -> dict:
         ms["aiApiKey"] = DEFAULT_DATA["marketingSettings"]["aiApiKey"]
     if "brandName" not in ms or not isinstance(ms.get("brandName"), str):
         ms["brandName"] = DEFAULT_DATA["marketingSettings"]["brandName"]
+    if "companyAddress" not in ms or not isinstance(ms.get("companyAddress"), str):
+        ms["companyAddress"] = DEFAULT_DATA["marketingSettings"]["companyAddress"]
+    if "invoiceAdditionalDetails" not in ms or not isinstance(ms.get("invoiceAdditionalDetails"), str):
+        ms["invoiceAdditionalDetails"] = DEFAULT_DATA["marketingSettings"]["invoiceAdditionalDetails"]
     if "systemPrompt" not in ms or not isinstance(ms.get("systemPrompt"), str):
         ms["systemPrompt"] = DEFAULT_DATA["marketingSettings"]["systemPrompt"]
     if "trackingTemplates" not in data["shippingProfile"] or not isinstance(data["shippingProfile"].get("trackingTemplates"), dict):
@@ -1567,6 +1575,12 @@ def migrate(data: dict) -> dict:
     for p in data["products"]:
         if "waTpl" not in p:
             p["waTpl"] = ""
+        try:
+            p["bulkMinQty"] = int(float(p.get("bulkMinQty") or 0))
+        except (TypeError, ValueError):
+            p["bulkMinQty"] = 0
+        if p["bulkMinQty"] < 0:
+            p["bulkMinQty"] = 0
         if "pricing" not in p:
             p["pricing"] = {}
         p["composition"] = _normalize_composition(p.get("composition", []))
@@ -1602,6 +1616,14 @@ def migrate(data: dict) -> dict:
             o["websiteOrderItemId"] = ""
         if "websiteUserId" not in o:
             o["websiteUserId"] = 0
+        if str(o.get("invoicePaymentStatus") or "").strip() not in {"prepaid", "due"}:
+            o["invoicePaymentStatus"] = "prepaid"
+        if "invoiceDueDate" not in o:
+            o["invoiceDueDate"] = ""
+        if "invoiceAdditionalDetails" not in o:
+            o["invoiceAdditionalDetails"] = ""
+        if "invoiceTerms" not in o:
+            o["invoiceTerms"] = ""
         if "subscriptionFrequency" not in o:
             o["subscriptionFrequency"] = ""
         if "subscriptionDuration" not in o:
@@ -2439,14 +2461,39 @@ def _coupon_invalid_payload() -> dict:
     return {"ok": False, "code": "coupon_invalid", "detail": "Coupon is not valid."}
 
 
-def _website_unit_price(product: dict, variant: str) -> float:
+def _product_bulk_min_qty(product: dict) -> float:
+    qty = _safe_float((product or {}).get("bulkMinQty"))
+    return qty if qty > 0 else 0.0
+
+
+def _normal_unit_price_for_product(product: dict, variant: str, channel: str = "retail") -> float:
     pricing = product.get("pricing") or {}
     row = pricing.get(variant) or {}
     sale_prices = row.get("salePrices") or {}
-    val = _safe_float(sale_prices.get("website"))
+    val = _safe_float(sale_prices.get(str(channel or "retail")))
     if val > 0:
         return val
     return _safe_float(sale_prices.get("retail"))
+
+
+def _effective_unit_price_for_product(product: dict, variant: str, qty: Any, channel: str = "retail") -> float:
+    pricing = product.get("pricing") or {}
+    row = pricing.get(variant) or {}
+    bulk_min_qty = _product_bulk_min_qty(product)
+    bulk_price = _safe_float(row.get("bulkPrice"))
+    if bulk_min_qty > 0 and bulk_price > 0 and _safe_float(qty) >= bulk_min_qty:
+        return bulk_price
+    return _normal_unit_price_for_product(product, variant, channel)
+
+
+def _order_uses_bulk_price(product: dict, order: dict) -> bool:
+    pricing = product.get("pricing") or {}
+    row = pricing.get(order.get("variant")) or {}
+    return (
+        _product_bulk_min_qty(product) > 0
+        and _safe_float(row.get("bulkPrice")) > 0
+        and _safe_float(order.get("qty")) >= _product_bulk_min_qty(product)
+    )
 
 
 def _website_cart_items_from_body(body: dict) -> list[dict]:
@@ -2500,7 +2547,7 @@ def _website_cart_lines(data: dict, items: list[dict]) -> list[dict]:
         product = next((p for p in data.get("products", []) if str(p.get("id") or "") == item["prodId"]), None)
         if not product:
             raise HTTPException(status_code=400, detail=f"prodId not found in CRM products: {item['prodId']}")
-        unit_price = _website_unit_price(product, item["variant"])
+        unit_price = _effective_unit_price_for_product(product, item["variant"], item["qty"], "website")
         if unit_price <= 0:
             raise HTTPException(status_code=400, detail=f"Website price is not configured for {item['prodId']} / {item['variant']}.")
         subtotal = round(unit_price * float(item["qty"]), 2)
@@ -2747,14 +2794,8 @@ def _payment_gateway_commission_pct(data: dict) -> float:
 
 def _sale_price_for_order(products_by_id: dict, order: dict) -> float:
     product = products_by_id.get(order.get("prodId")) or {}
-    pricing = product.get("pricing") or {}
-    row = pricing.get(order.get("variant")) or {}
-    sale_prices = row.get("salePrices") or {}
     channel = str(order.get("channel") or "retail")
-    val = _safe_float(sale_prices.get(channel))
-    if val > 0:
-        return val
-    return _safe_float(sale_prices.get("retail"))
+    return _effective_unit_price_for_product(product, order.get("variant"), order.get("qty"), channel)
 
 
 def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
@@ -3258,6 +3299,195 @@ def _build_shipping_label_pdf(order: dict, customer: dict, profile: dict, ship: 
         barcode = code128.Code128(awb or "NA", barHeight=52, barWidth=1.0, humanReadable=True)
         barcode.drawOn(c, left + 18, code_top - 108)
 
+    c.showPage()
+    c.save()
+    buf.seek(0)
+    return buf.read()
+
+
+def _money_text(value: Any) -> str:
+    return f"Rs. {_safe_float(value):,.2f}"
+
+
+def _invoice_date_text(value: Any) -> str:
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        try:
+            return time.strftime("%b %d, %Y", time.strptime(raw, "%Y-%m-%d"))
+        except Exception:
+            return raw
+    try:
+        at_ms = _normalized_order_time_ms(value)
+        if at_ms > 0:
+            return time.strftime("%b %d, %Y", time.localtime(at_ms / 1000))
+    except Exception:
+        pass
+    return raw
+
+
+def _build_invoice_pdf(order: dict, customer: dict, product: dict, profile: dict, marketing: dict | None = None) -> bytes:
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    w, h = A4
+    left = 40
+    right = w - 40
+    top = h - 40
+    buf = BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+
+    qty = _safe_float(order.get("qty")) or 1.0
+    channel = str(order.get("channel") or "retail")
+    normal_unit = _normal_unit_price_for_product(product, order.get("variant"), channel)
+    effective_unit = _effective_unit_price_for_product(product, order.get("variant"), qty, channel)
+    normal_subtotal = round(normal_unit * qty, 2)
+    subtotal = round(effective_unit * qty, 2)
+    discount = min(_safe_float(order.get("discount")), subtotal)
+    payable = round(max(0.0, subtotal - discount), 2)
+    bulk_savings = round(max(0.0, normal_subtotal - subtotal), 2)
+    total_discount = round(bulk_savings + discount, 2)
+    total_discount_pct = (total_discount / normal_subtotal * 100.0) if normal_subtotal > 0 else 0.0
+    marketing = marketing if isinstance(marketing, dict) else {}
+    brand_name = str(marketing.get("brandName") or profile.get("companyName") or "").strip() or "Invoice"
+    company_address = str(marketing.get("companyAddress") or profile.get("address") or "").strip()
+
+    logo_path = ASSETS_DIR / "logo.png"
+    title_x = left
+    if logo_path.exists():
+        try:
+            c.drawImage(str(logo_path), left, top - 44, width=42, height=42, preserveAspectRatio=True, mask="auto")
+            title_x = left + 52
+        except Exception:
+            title_x = left
+
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 19)
+    c.drawString(title_x, top - 6, brand_name)
+    c.setFont("Helvetica", 9.5)
+    c.setFillColor(colors.HexColor("#555555"))
+    seller_lines = [
+        company_address,
+        " | ".join([v for v in [str(profile.get("phone") or "").strip(), str(profile.get("email") or "").strip()] if v]),
+        f"GSTIN: {str(profile.get('gstin') or '').strip()}" if str(profile.get("gstin") or "").strip() else "",
+    ]
+    y = top - 22
+    for line in [line for line in seller_lines if line]:
+        c.drawString(title_x, y, line[:92])
+        y -= 12
+
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 22)
+    c.drawRightString(right, top - 6, "INVOICE")
+    c.setFont("Helvetica", 10)
+    c.setFillColor(colors.HexColor("#555555"))
+    c.drawRightString(right, top - 24, f"Order #{order.get('id')}")
+    c.drawRightString(right, top - 40, f"Date: {_safe_order_datetime_text(order.get('at'))}")
+
+    box_top = top - 88
+    gap = 14
+    box_w = (right - left - gap) / 2.0
+    box_h = 118
+    c.setStrokeColor(colors.HexColor("#DDDDDD"))
+    c.roundRect(left, box_top - box_h, box_w, box_h, 8, stroke=1, fill=0)
+    c.roundRect(left + box_w + gap, box_top - box_h, box_w, box_h, 8, stroke=1, fill=0)
+
+    cust_name = str(customer.get("name") or order.get("cname") or "-").strip()
+    cust_addr = str(customer.get("address") or "").strip() or "-"
+    cust_area = str(customer.get("area") or order.get("carea") or "").strip()
+    cust_phone = str(customer.get("phone") or order.get("cphone") or "").strip()
+
+    for label, x in (("BILL TO", left + 10), ("SHIP TO", left + box_w + gap + 10)):
+        c.setFont("Helvetica-Bold", 9.5)
+        c.setFillColor(colors.HexColor("#555555"))
+        c.drawString(x, box_top - 16, label)
+        c.setFillColor(colors.HexColor("#111111"))
+        c.setFont("Helvetica-Bold", 11.5)
+        c.drawString(x, box_top - 34, cust_name[:34])
+        c.setFont("Helvetica", 10)
+        yy = box_top - 50
+        yy = _draw_wrapped_text(c, cust_addr, x, yy, max_chars=40, line_height=12)
+        if cust_area:
+            yy = _draw_wrapped_text(c, cust_area, x, yy - 1, max_chars=40, line_height=12)
+        if cust_phone:
+            _draw_wrapped_text(c, cust_phone, x, yy - 3, max_chars=40, line_height=12)
+
+    table_top = box_top - box_h - 28
+    c.setFillColor(colors.HexColor("#111111"))
+    c.roundRect(left, table_top - 26, right - left, 26, 6, stroke=0, fill=1)
+    c.setFillColor(colors.white)
+    c.setFont("Helvetica-Bold", 9.5)
+    qty_x = left + 350
+    rate_x = left + 445
+    amount_x = right - 10
+    c.drawString(left + 10, table_top - 17, "Item")
+    c.drawRightString(qty_x, table_top - 17, "Qty")
+    c.drawRightString(rate_x, table_top - 17, "Rate")
+    c.drawRightString(amount_x, table_top - 17, "Amount")
+
+    row_y = table_top - 44
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica-Bold", 10)
+    item = f"{order.get('prod') or product.get('name') or ''} - {order.get('variant') or ''}"
+    c.drawString(left + 10, row_y, item[:48])
+    c.setFillColor(colors.HexColor("#111111"))
+    c.setFont("Helvetica", 10)
+    c.drawRightString(qty_x, row_y, f"{qty:g}")
+    c.drawRightString(rate_x, row_y, _money_text(effective_unit))
+    c.drawRightString(amount_x, row_y, _money_text(subtotal))
+    c.setStrokeColor(colors.HexColor("#E5E5E5"))
+    c.line(left, row_y - 22, right, row_y - 22)
+
+    summary_x = right - 225
+    summary_y = row_y - 48
+    discount_reasons = []
+    if bulk_savings > 0:
+        discount_reasons.append("Bulk discount")
+    coupon_code = _normalize_coupon_code(order.get("couponCode"))
+    if coupon_code:
+        discount_reasons.append(f"Coupon {coupon_code}")
+    discount_label = f"Discount ({' + '.join(discount_reasons)} - {total_discount_pct:.2f}%)" if discount_reasons else f"Discount ({total_discount_pct:.2f}%)"
+    rows = [
+        ("Subtotal", normal_subtotal),
+        (discount_label, -total_discount),
+    ]
+    c.setFont("Helvetica", 10)
+    for label, value in rows:
+        c.setFillColor(colors.HexColor("#555555"))
+        c.drawString(summary_x, summary_y, label)
+        c.setFillColor(colors.HexColor("#111111"))
+        if isinstance(value, str):
+            out = value
+        elif value < 0:
+            out = f"-{_money_text(abs(value))}"
+        else:
+            out = _money_text(value)
+        c.drawRightString(right - 10, summary_y, out)
+        summary_y -= 18
+
+    c.setStrokeColor(colors.HexColor("#111111"))
+    c.line(summary_x, summary_y + 6, right - 10, summary_y + 6)
+    c.setFont("Helvetica-Bold", 13)
+    c.setFillColor(colors.HexColor("#111111"))
+    c.drawString(summary_x, summary_y - 12, "Total")
+    c.drawRightString(right - 10, summary_y - 12, _money_text(payable))
+
+    global_details = str(marketing.get("invoiceAdditionalDetails") or "").strip()
+    order_details = str(order.get("invoiceAdditionalDetails") or "").strip()
+    detail_parts = [part for part in (global_details, order_details) if part]
+    if detail_parts:
+        detail_text = "\n".join(detail_parts)
+        detail_y = 118
+        c.setFont("Helvetica", 10)
+        c.setFillColor(colors.HexColor("#777777"))
+        c.drawString(left, detail_y, "Additional Details:")
+        c.setFillColor(colors.HexColor("#222222"))
+        _draw_wrapped_text(c, detail_text, left, detail_y - 18, max_chars=95, line_height=12)
+
+    c.setFont("Helvetica", 9)
+    c.setFillColor(colors.HexColor("#666666"))
+    c.drawString(left, 54, "Thank you for your order.")
+    c.drawRightString(right, 54, f"Channel: {channel}")
     c.showPage()
     c.save()
     buf.seek(0)
@@ -5230,6 +5460,10 @@ async def add_order(request: Request):
         "inventorySynced": False,
         "inventorySyncedAt": None,
         "shipping": body.get("shipping", {}),
+        "invoicePaymentStatus": "due" if str(body.get("invoicePaymentStatus") or "").strip() == "due" else "prepaid",
+        "invoiceDueDate": str(body.get("invoiceDueDate") or "").strip(),
+        "invoiceAdditionalDetails": str(body.get("invoiceAdditionalDetails") or "").strip(),
+        "invoiceTerms": str(body.get("invoiceTerms") or "").strip(),
         "subscriptionFrequency": subscription_frequency,
         "subscriptionDuration": subscription_duration,
         "subscriptionTag": subscription_tag,
@@ -5408,9 +5642,11 @@ async def update_order(order_id: int, request: Request):
         if next_customer_id > 0:
             _ensure_customer_scope(ctx.get("user"), data, next_customer_id)
     prev = copy.deepcopy(data["orders"][idx])
-    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal"):
+    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal", "invoiceDueDate", "invoiceAdditionalDetails", "invoiceTerms"):
         if key in body:
             data["orders"][idx][key] = body[key]
+    if "invoicePaymentStatus" in body:
+        data["orders"][idx]["invoicePaymentStatus"] = "due" if str(body.get("invoicePaymentStatus") or "").strip() == "due" else "prepaid"
     if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
         sub_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
         sub_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
@@ -5772,6 +6008,37 @@ async def shipping_label_pdf(order_id: int, request: Request):
     return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
 
 
+@app.get("/api/orders/{order_id}/invoice.pdf")
+async def order_invoice_pdf(order_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    order = next((o for o in data["orders"] if o.get("id") == order_id), None)
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+    try:
+        customer_id = int(order.get("cid") or 0)
+    except (TypeError, ValueError):
+        customer_id = 0
+    if customer_id > 0:
+        _ensure_customer_scope(ctx.get("user"), data, customer_id)
+
+    customer = next((c for c in data.get("customers", []) if c.get("id") == order.get("cid")), {})
+    product = next((p for p in data.get("products", []) if p.get("id") == order.get("prodId")), {})
+    if not product:
+        raise HTTPException(status_code=400, detail="Product not found for order")
+    profile = data.get("shippingProfile", {}) or {}
+    marketing = data.get("marketingSettings", {}) or {}
+    try:
+        pdf_bytes = _build_invoice_pdf(order, customer, product, profile, marketing)
+    except Exception as exc:  # pragma: no cover
+        raise HTTPException(status_code=500, detail=f"Could not generate invoice PDF: {exc}")
+
+    headers = {"Content-Disposition": f'attachment; filename="invoice-order-{order_id}.pdf"'}
+    return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
 @app.post("/api/inventory/sync-completed-orders")
 async def sync_completed_orders(request: Request):
     """
@@ -5848,6 +6115,7 @@ async def inventory_products_feed():
                 "id": str(product.get("id") or ""),
                 "name": str(product.get("name") or "").strip(),
                 "sizes": [str(size or "").strip() for size in (product.get("sizes") or []) if str(size or "").strip()],
+                "bulkMinQty": max(0, int(_safe_float(product.get("bulkMinQty")))),
                 "composition": _normalize_composition(product.get("composition", [])),
                 "pricing": _normalize_product_pricing(product.get("pricing", {}), product.get("sizes", [])),
                 "waTpl": str(product.get("waTpl") or ""),
@@ -5891,6 +6159,7 @@ async def add_product(request: Request):
         "name":    body["name"],
         "sizes":   body["sizes"],
         "waTpl":   body.get("waTpl", ""),
+        "bulkMinQty": max(0, int(_safe_float(body.get("bulkMinQty")))),
         "pricing": _normalize_product_pricing(body.get("pricing", {}), body.get("sizes", [])),
         "composition": _normalize_composition(body.get("composition", [])),
     }
@@ -5916,6 +6185,8 @@ async def update_product(product_id: str, request: Request):
     for key in ("name", "sizes", "waTpl"):
         if key in body:
             data["products"][idx][key] = body[key]
+    if "bulkMinQty" in body:
+        data["products"][idx]["bulkMinQty"] = max(0, int(_safe_float(body.get("bulkMinQty"))))
     if "pricing" in body or "sizes" in body:
         data["products"][idx]["pricing"] = _normalize_product_pricing(
             body.get("pricing", data["products"][idx].get("pricing", {})),
@@ -6080,6 +6351,10 @@ async def update_settings(request: Request):
             curr["aiModel"] = str(incoming.get("aiModel") or "").strip()
         if "brandName" in incoming:
             curr["brandName"] = str(incoming.get("brandName") or "").strip()
+        if "companyAddress" in incoming:
+            curr["companyAddress"] = str(incoming.get("companyAddress") or "").strip()
+        if "invoiceAdditionalDetails" in incoming:
+            curr["invoiceAdditionalDetails"] = str(incoming.get("invoiceAdditionalDetails") or "").strip()
         if "systemPrompt" in incoming:
             curr["systemPrompt"] = str(incoming.get("systemPrompt") or "").strip()
         if incoming.get("clearApiKey") is True:

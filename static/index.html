@@ -1030,6 +1030,27 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
           <input type="date" id="sale-date">
           <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Defaults to today — edit to backdate</div>
         </div>
+        <div class="fr">
+          <div class="fg">
+            <label>Invoice Payment</label>
+            <select id="sale-invoice-payment" onchange="toggleSaleDueDate()">
+              <option value="prepaid">Prepaid</option>
+              <option value="due">Payment Due</option>
+            </select>
+          </div>
+          <div class="fg" id="sale-due-date-row" style="display:none">
+            <label>Due Date <span class="req">*</span></label>
+            <input type="date" id="sale-due-date">
+          </div>
+        </div>
+        <div class="fg">
+          <label>Additional Details <span style="color:var(--text-3);font-weight:400">(invoice optional)</span></label>
+          <textarea id="sale-invoice-details" rows="3" placeholder="FSSAI, license, delivery note, or other invoice details"></textarea>
+        </div>
+        <div class="fg">
+          <label>Terms <span style="color:var(--text-3);font-weight:400">(invoice optional)</span></label>
+          <textarea id="sale-invoice-terms" rows="3" placeholder="Payment terms or delivery terms"></textarea>
+        </div>
         <div id="sale-sum" style="display:none">
           <div class="sl-label">Order Summary</div>
           <div class="sumbox" id="sum-body"></div>
@@ -1530,6 +1551,16 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
                 <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for <code>{{brand_name}}</code> token in templates.</div>
               </div>
               <div class="fg">
+                <label>Company Address</label>
+                <textarea id="mkt-ai-company-address" rows="3" placeholder="Full company address for invoices"></textarea>
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Shown below the brand name on invoices.</div>
+              </div>
+              <div class="fg">
+                <label>Invoice Additional Details</label>
+                <textarea id="mkt-ai-invoice-details" rows="3" placeholder="FSSAI license, registration, bank note, or other invoice footer details"></textarea>
+                <div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Shown at the bottom of every invoice.</div>
+              </div>
+              <div class="fg">
                 <label>API Key</label>
                 <input id="mkt-ai-api-key" type="password" placeholder="Leave blank to keep existing key">
                 <div id="mkt-ai-key-note" style="font-size:11.5px;color:var(--text-3);margin-top:4px"></div>
@@ -1779,6 +1810,6 @@ try {
   if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
 } catch (_) {}
 </script>
-<script src="/static/app.js?v=20260607-awb-server-01"></script>
+<script src="/static/app.js?v=20260617-invoice-details-05"></script>
 </body>
 </html>
