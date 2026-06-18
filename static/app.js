@@ -3570,6 +3570,8 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   ORDER_PAGES[bucket]=currPage;
   const start=(currPage-1)*ORDERS_PAGE_SIZE;
   const pageOrders=orders.slice(start,start+ORDERS_PAGE_SIZE);
+  const selectedSet=selectionMode==='unbill'?BILLED_ORDER_SELECTED:ORDER_SELECTED;
+  const allPageSelected=selectionMode&&pageOrders.length&&pageOrders.every(o=>selectedSet.has(Number(o.id)));
   const billedAction=selectionMode==='unbill'?`<button class="btn btn-s btn-sm" onclick="event.stopPropagation();unmarkSelectedBilled()" ${BILLED_ORDER_SELECTED.size?'':'disabled'}>Move Back to Normal (${BILLED_ORDER_SELECTED.size})</button>`:'';
   const header=`<div class="orders-section-header ${collapsible?'collapsible':''}" onclick="${collapsible?`toggleSection('${id}')`:''}" id="${id}-hdr">
     <span class="orders-section-title">${title}</span>
@@ -3579,7 +3581,7 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>${selectionMode?`<input type="checkbox" onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''} #</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
+    <thead><tr><th><span class="order-id-head">${selectionMode?`<input class="order-id-check" type="checkbox" ${allPageSelected?'checked':''} onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''}<span>#</span></span></th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
     <tbody>${pageOrders.map(o=>orderRow(o,selectionMode)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
@@ -3612,12 +3614,12 @@ function orderRow(o,selectionMode=''){
   </div>`;
   let selectBox='';
   if(selectionMode==='bill'){
-    selectBox=`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`;
+    selectBox=`<input class="order-id-check order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
   }else if(selectionMode==='unbill'){
-    selectBox=`<input class="order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`;
+    selectBox=`<input class="order-id-check order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
   }
   return`<tr>
-    <td>${selectBox}<span class="pill pn" style="font-size:10.5px;font-family:monospace">#${o.id}</span></td>
+    <td><span class="order-id-cell">${selectBox}<span class="pill pn order-id-pill">#${o.id}</span></span></td>
     <td>
       <div style="font-weight:600">${esc(customerTitle)}</div>
       <div style="font-size:11.5px;color:var(--text-3)">${esc(customerSub)}</div>
@@ -3663,14 +3665,14 @@ function orderMobileCard(o,selectionMode=''){
   const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
   let selectBox='';
   if(selectionMode==='bill'){
-    selectBox=`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
+    selectBox=`<input class="order-id-check order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
   }else if(selectionMode==='unbill'){
-    selectBox=`<input class="order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
+    selectBox=`<input class="order-id-check order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
   }
   return`<div class="order-card">
     <div class="order-card-top">
       <div>
-        <div class="order-card-name">${selectBox}<span class="pill pn" style="font-size:10.5px;font-family:monospace;margin-right:6px">#${o.id}</span>${esc(customerTitle)}</div>
+        <div class="order-card-name">${selectBox}<span class="pill pn order-id-pill">#${o.id}</span>${esc(customerTitle)}</div>
         <div class="order-card-prod">${customerSub}</div>
         ${isDist?`<div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>`:''}
       </div>
