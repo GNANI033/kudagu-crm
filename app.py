@@ -5757,6 +5757,60 @@ async def mark_orders_billed(request: Request):
     }
 
 
+@app.post("/api/orders/unmark-billed")
+async def unmark_orders_billed(request: Request):
+    body = await request.json()
+    raw_ids = body.get("orderIds")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="orderIds must be a non-empty array.")
+    order_ids: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            oid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if oid > 0:
+            order_ids.add(oid)
+    if not order_ids:
+        raise HTTPException(status_code=400, detail="No valid order IDs provided.")
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "edit")
+    updated_orders: list[dict] = []
+
+    for order in data.get("orders", []) or []:
+        try:
+            oid = int(order.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if oid not in order_ids:
+            continue
+        _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+        try:
+            customer_id = int(order.get("cid") or 0)
+        except (TypeError, ValueError):
+            customer_id = 0
+        if customer_id > 0:
+            _ensure_customer_scope(ctx.get("user"), data, customer_id)
+        if not order.get("billedAt"):
+            continue
+        order["billedAt"] = None
+        order["billingBatchId"] = ""
+        order["billingSnapshot"] = {}
+        updated_orders.append(order)
+
+    if not updated_orders:
+        raise HTTPException(status_code=400, detail="No billed matching orders found.")
+    write_data(data)
+    return {
+        "ok": True,
+        "updated": len(updated_orders),
+        "orders": [_filtered_order_response(data, ctx.get("user"), int(o.get("id") or 0)) for o in updated_orders],
+    }
+
+
 @app.put("/api/orders/{order_id}")
 async def update_order(order_id: int, request: Request):
     """Update mutable fields on an order: status, discount, commission."""

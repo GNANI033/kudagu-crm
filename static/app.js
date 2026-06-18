@@ -67,6 +67,7 @@ let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled
 let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
 let ORDER_PAGES = { active: 1, completed: 1, billed: 1 };
 let ORDER_SELECTED = new Set();
+let BILLED_ORDER_SELECTED = new Set();
 let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '' };
 let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
@@ -3462,13 +3463,15 @@ function rOrders(){
   const active=unbilledInRange.filter(o=>!isCompleted(o));
   const done=unbilledInRange.filter(isCompleted);
   const visibleIds=new Set(unbilledInRange.map(o=>Number(o.id)));
+  const billedIds=new Set(billed.map(o=>Number(o.id)));
   ORDER_SELECTED=new Set([...ORDER_SELECTED].filter(id=>visibleIds.has(Number(id))));
+  BILLED_ORDER_SELECTED=new Set([...BILLED_ORDER_SELECTED].filter(id=>billedIds.has(Number(id))));
   g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed · '+billed.length+' billed';
   const body=g('ob');
   if(!S.orders.length){body.innerHTML=`<div class="empty"><div class="ei">📋</div><div class="et">No orders yet</div><div class="es">Record your first sale</div></div>`;return;}
   body.innerHTML=`
     ${billingControlsHTML(unbilledInRange)}
-  `+buildOrderTable(active,'Active Orders',false,'active',true)+buildOrderTable(done,'Completed Orders',true,'completed',true)+buildOrderTable(billed,'Billed For',true,'billed',false);
+  `+buildOrderTable(active,'Active Orders',false,'active','bill')+buildOrderTable(done,'Completed Orders',true,'completed','bill')+buildOrderTable(billed,'Billed For',true,'billed','unbill');
 }
 
 function isBilledOrder(o){ return !!(o&&o.billedAt); }
@@ -3510,7 +3513,16 @@ function billingControlsHTML(orders){
 function setBillRange(range){ ORDER_BILL_FILTER.range=range; ORDER_SELECTED.clear(); rOrders(); }
 function setBillCustomDates(){ ORDER_BILL_FILTER.startDate=g('bill-start')?.value||''; ORDER_BILL_FILTER.endDate=g('bill-end')?.value||''; ORDER_SELECTED.clear(); rOrders(); }
 function toggleOrderSelection(oid,checked){ if(checked) ORDER_SELECTED.add(Number(oid)); else ORDER_SELECTED.delete(Number(oid)); rOrders(); }
-function toggleVisibleOrderSelection(checked){ document.querySelectorAll('.order-bill-check').forEach(cb=>{ const id=Number(cb.value); if(checked) ORDER_SELECTED.add(id); else ORDER_SELECTED.delete(id); }); rOrders(); }
+function toggleBilledOrderSelection(oid,checked){ if(checked) BILLED_ORDER_SELECTED.add(Number(oid)); else BILLED_ORDER_SELECTED.delete(Number(oid)); rOrders(); }
+function toggleVisibleOrderSelection(mode,checked){
+  const cls=mode==='unbill'?'.order-unbill-check':'.order-bill-check';
+  document.querySelectorAll(cls).forEach(cb=>{
+    const id=Number(cb.value);
+    const set=mode==='unbill'?BILLED_ORDER_SELECTED:ORDER_SELECTED;
+    if(checked) set.add(id); else set.delete(id);
+  });
+  rOrders();
+}
 async function markOrdersBilled(orderIds){
   if(!orderIds.length){ toast('No orders selected','err'); return; }
   try{
@@ -3533,8 +3545,24 @@ function markSelectedBilled(){
   if(!confirm(`Save ${ids.length} selected order${ids.length!==1?'s':''} as billed/accounted for?`)) return;
   markOrdersBilled(ids);
 }
+async function unmarkOrdersBilled(orderIds){
+  if(!orderIds.length){ toast('No billed orders selected','err'); return; }
+  try{
+    const res=await api.post('/api/orders/unmark-billed',{orderIds});
+    (res.orders||[]).forEach(syncOrder);
+    BILLED_ORDER_SELECTED.clear();
+    rOrders(); rDash(); updBadge();
+    toast(`Moved ${res.updated||orderIds.length} order${(res.updated||orderIds.length)!==1?'s':''} back to normal`,'ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function unmarkSelectedBilled(){
+  const ids=[...BILLED_ORDER_SELECTED];
+  if(!ids.length){ toast('No billed orders selected','err'); return; }
+  if(!confirm(`Move ${ids.length} billed order${ids.length!==1?'s':''} back to normal orders?`)) return;
+  unmarkOrdersBilled(ids);
+}
 
-function buildOrderTable(orders,title,collapsible,bucket,selectable=false){
+function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   if(!orders.length) return collapsible?'':`<div style="padding:18px 16px;color:var(--text-3);font-size:13px">No ${title.toLowerCase()} yet</div>`;
   const id='ot-'+title.replace(/\s/g,'-').toLowerCase();
   const totalPages=Math.max(1,Math.ceil(orders.length/ORDERS_PAGE_SIZE));
@@ -3542,18 +3570,20 @@ function buildOrderTable(orders,title,collapsible,bucket,selectable=false){
   ORDER_PAGES[bucket]=currPage;
   const start=(currPage-1)*ORDERS_PAGE_SIZE;
   const pageOrders=orders.slice(start,start+ORDERS_PAGE_SIZE);
+  const billedAction=selectionMode==='unbill'?`<button class="btn btn-s btn-sm" onclick="event.stopPropagation();unmarkSelectedBilled()" ${BILLED_ORDER_SELECTED.size?'':'disabled'}>Move Back to Normal (${BILLED_ORDER_SELECTED.size})</button>`:'';
   const header=`<div class="orders-section-header ${collapsible?'collapsible':''}" onclick="${collapsible?`toggleSection('${id}')`:''}" id="${id}-hdr">
     <span class="orders-section-title">${title}</span>
     <span class="orders-section-count">${orders.length}</span>
+    ${billedAction}
     ${collapsible?`<span class="section-chevron" id="${id}-chev">▼</span>`:''}
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>${selectable?`<input type="checkbox" onchange="toggleVisibleOrderSelection(this.checked)">`:''} #</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
-    <tbody>${pageOrders.map(o=>orderRow(o,selectable)).join('')}</tbody>
+    <thead><tr><th>${selectionMode?`<input type="checkbox" onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''} #</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
+    <tbody>${pageOrders.map(o=>orderRow(o,selectionMode)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
-  const mobileCards=`<div class="order-card-list">${pageOrders.map(o=>orderMobileCard(o)).join('')}</div>`;
+  const mobileCards=`<div class="order-card-list">${pageOrders.map(o=>orderMobileCard(o,selectionMode)).join('')}</div>`;
   const pager=totalPages>1?pagerMarkup(currPage,totalPages,`setOrderPage.bind(null,'${bucket}')`):'';
   return `${header}<div id="${id}">${desktopTable}${mobileCards}${pager}</div>`;
 }
@@ -3563,7 +3593,7 @@ function setOrderPage(bucket,page){
   rOrders();
 }
 
-function orderRow(o,selectable=false){
+function orderRow(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
   const disc=parseFloat(o.discount||0);
   const comm=orderCommissionBreakup(o);
@@ -3580,7 +3610,12 @@ function orderRow(o,selectable=false){
       ${opts.map(s=>`<button class="sdrop-item ${s.id===o.status?'active':''}" onclick="quickStatus(${o.id},'${s.id}',this)">${s.label}</button>`).join('')}
     </div>
   </div>`;
-  const selectBox=selectable?`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`:'';
+  let selectBox='';
+  if(selectionMode==='bill'){
+    selectBox=`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`;
+  }else if(selectionMode==='unbill'){
+    selectBox=`<input class="order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`;
+  }
   return`<tr>
     <td>${selectBox}<span class="pill pn" style="font-size:10.5px;font-family:monospace">#${o.id}</span></td>
     <td>
@@ -3614,7 +3649,7 @@ function toggleSection(id){
 }
 
 // Mobile order card — compact single-card layout for small screens
-function orderMobileCard(o){
+function orderMobileCard(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
   const disc=parseFloat(o.discount||0),comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
@@ -3626,10 +3661,16 @@ function orderMobileCard(o){
   const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
   const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
+  let selectBox='';
+  if(selectionMode==='bill'){
+    selectBox=`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
+  }else if(selectionMode==='unbill'){
+    selectBox=`<input class="order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
+  }
   return`<div class="order-card">
     <div class="order-card-top">
       <div>
-        <div class="order-card-name">${esc(customerTitle)}</div>
+        <div class="order-card-name">${selectBox}<span class="pill pn" style="font-size:10.5px;font-family:monospace;margin-right:6px">#${o.id}</span>${esc(customerTitle)}</div>
         <div class="order-card-prod">${customerSub}</div>
         ${isDist?`<div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>`:''}
       </div>
