@@ -1792,6 +1792,39 @@ async function downloadInvoice(oid){
     toast('Could not download invoice: '+e.message,'err');
   }
 }
+async function downloadSelectedInvoices(orderIds){
+  const ids=[...new Set((orderIds||[]).map(id=>Number(id)).filter(id=>id>0))];
+  if(!ids.length){ toast('No orders selected','err'); return; }
+  try{
+    const r=await fetch('/api/orders/invoices.zip',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({orderIds:ids}),
+      credentials:'same-origin',
+    });
+    if(!r.ok){
+      const raw=await r.text();
+      let message=raw||`Invoice download failed (${r.status})`;
+      try{
+        const parsed=JSON.parse(raw);
+        if(parsed?.detail) message=String(parsed.detail);
+      }catch(_){}
+      throw new Error(message);
+    }
+    const blob=await r.blob();
+    const disposition=r.headers.get('Content-Disposition')||'';
+    const match=/filename=\"?([^\";]+)\"?/i.exec(disposition);
+    const fileName=match?.[1]||'selected-invoices.zip';
+    const url=URL.createObjectURL(blob);
+    const a=document.createElement('a');
+    a.href=url; a.download=fileName;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),5000);
+    toast(`Downloaded ${ids.length} invoice${ids.length!==1?'s':''}`,'ok');
+  }catch(e){
+    toast('Could not download invoices: '+e.message,'err');
+  }
+}
 
 // ─── MOBILE HELPERS ──────────────────────────────────────────────────────────
 function isMobile(){ return window.innerWidth < 600; }
@@ -3504,6 +3537,7 @@ function billingControlsHTML(orders){
       <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-end" value="${esc(ORDER_BILL_FILTER.endDate||'')}" onchange="setBillCustomDates()" aria-label="Billing end date">
       <button class="btn btn-p" onclick="markRangeBilled()" ${orders.length?'':'disabled'}>Save Range as Billed</button>
       <button class="btn btn-s" onclick="markSelectedBilled()" ${selectedCount?'':'disabled'}>Save Selected (${selectedCount})</button>
+      <button class="btn btn-s" onclick="downloadSelectedInvoices([...ORDER_SELECTED])" ${selectedCount?'':'disabled'}>Download Invoices (${selectedCount})</button>
       <div class="orders-toolbar-spacer"></div>
       <button class="btn btn-s" onclick="openOrdersExportModal()">Export</button>
     </div>
@@ -3572,7 +3606,7 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   const pageOrders=orders.slice(start,start+ORDERS_PAGE_SIZE);
   const selectedSet=selectionMode==='unbill'?BILLED_ORDER_SELECTED:ORDER_SELECTED;
   const allPageSelected=selectionMode&&pageOrders.length&&pageOrders.every(o=>selectedSet.has(Number(o.id)));
-  const billedAction=selectionMode==='unbill'?`<button class="btn btn-s btn-sm" onclick="event.stopPropagation();unmarkSelectedBilled()" ${BILLED_ORDER_SELECTED.size?'':'disabled'}>Move Back to Normal (${BILLED_ORDER_SELECTED.size})</button>`:'';
+  const billedAction=selectionMode==='unbill'?`<button class="btn btn-s btn-sm" onclick="event.stopPropagation();downloadSelectedInvoices([...BILLED_ORDER_SELECTED])" ${BILLED_ORDER_SELECTED.size?'':'disabled'}>Download Invoices (${BILLED_ORDER_SELECTED.size})</button><button class="btn btn-s btn-sm" onclick="event.stopPropagation();unmarkSelectedBilled()" ${BILLED_ORDER_SELECTED.size?'':'disabled'}>Move Back to Normal (${BILLED_ORDER_SELECTED.size})</button>`:'';
   const header=`<div class="orders-section-header ${collapsible?'collapsible':''}" onclick="${collapsible?`toggleSection('${id}')`:''}" id="${id}-hdr">
     <span class="orders-section-title">${title}</span>
     <span class="orders-section-count">${orders.length}</span>

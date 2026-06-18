@@ -37,6 +37,7 @@ import hmac
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from contextlib import asynccontextmanager
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -6228,6 +6229,72 @@ async def order_invoice_pdf(order_id: int, request: Request):
 
     headers = {"Content-Disposition": f'attachment; filename="invoice-order-{order_id}.pdf"'}
     return StreamingResponse(BytesIO(pdf_bytes), media_type="application/pdf", headers=headers)
+
+
+@app.post("/api/orders/invoices.zip")
+async def selected_order_invoices_zip(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_ids = body.get("orderIds")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="orderIds must be a non-empty array.")
+
+    order_ids: list[int] = []
+    seen_ids: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            oid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if oid > 0 and oid not in seen_ids:
+            order_ids.append(oid)
+            seen_ids.add(oid)
+    if not order_ids:
+        raise HTTPException(status_code=400, detail="No valid order IDs provided.")
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    orders_by_id = {int(o.get("id") or 0): o for o in data.get("orders", []) or [] if isinstance(o, dict)}
+    customers_by_id = {c.get("id"): c for c in data.get("customers", []) or [] if isinstance(c, dict)}
+    products_by_id = {p.get("id"): p for p in data.get("products", []) or [] if isinstance(p, dict)}
+    profile = data.get("shippingProfile", {}) or {}
+    marketing = data.get("marketingSettings", {}) or {}
+
+    zip_buf = BytesIO()
+    added = 0
+    with zipfile.ZipFile(zip_buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for order_id in order_ids:
+            order = orders_by_id.get(order_id)
+            if not order:
+                continue
+            _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+            try:
+                customer_id = int(order.get("cid") or 0)
+            except (TypeError, ValueError):
+                customer_id = 0
+            if customer_id > 0:
+                _ensure_customer_scope(ctx.get("user"), data, customer_id)
+
+            product = products_by_id.get(order.get("prodId")) or {}
+            if not product:
+                continue
+            customer = customers_by_id.get(order.get("cid")) or {}
+            try:
+                pdf_bytes = _build_invoice_pdf(order, customer, product, profile, marketing)
+            except Exception as exc:  # pragma: no cover
+                raise HTTPException(status_code=500, detail=f"Could not generate invoice PDF for order #{order_id}: {exc}")
+            zf.writestr(f"invoice-order-{order_id}.pdf", pdf_bytes)
+            added += 1
+
+    if added <= 0:
+        raise HTTPException(status_code=400, detail="No invoices could be generated for the selected orders.")
+    zip_buf.seek(0)
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    headers = {"Content-Disposition": f'attachment; filename="selected-invoices-{ts}.zip"'}
+    return StreamingResponse(zip_buf, media_type="application/zip", headers=headers)
 
 
 @app.post("/api/inventory/sync-completed-orders")
