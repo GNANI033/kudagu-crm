@@ -65,7 +65,9 @@ let FULL_DATA_PROMISE = null;
 let DASH_BOOTSTRAP_METRICS = null;
 let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false, serverAwbBarcodeDecodeEnabled:false };
 let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
-let ORDER_PAGES = { active: 1, completed: 1 };
+let ORDER_PAGES = { active: 1, completed: 1, billed: 1 };
+let ORDER_SELECTED = new Set();
+let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '' };
 let CUSTOMER_PAGE = 1;
 const ORDERS_PAGE_SIZE = 40;
 const CUSTOMERS_PAGE_SIZE = 24;
@@ -339,6 +341,9 @@ function getTotalCost(pid,sz,ch='retail'){
   return expenses.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
 }
 function orderRevenue(o){
+  const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
+  const snapSubtotal=parseFloat(snap?.subtotal);
+  if(Number.isFinite(snapSubtotal)&&snapSubtotal>0) return snapSubtotal;
   const rr=parseFloat(o.realizedRevenue);
   if(Number.isFinite(rr)&&rr>=0) return rr;
   return getSalePrice(o.prodId,o.variant,o.channel||'retail',o.qty||1)*(o.qty||1);
@@ -361,7 +366,9 @@ function orderCommissionBreakup(o){
 }
 function orderProfit(o){
   const rev=orderRevenue(o);
-  const cost=getTotalCost(o.prodId,o.variant,o.channel||'retail')*(o.qty||1);
+  const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
+  const snapCost=parseFloat(snap?.unitCost);
+  const cost=(Number.isFinite(snapCost)&&snapCost>0?snapCost:getTotalCost(o.prodId,o.variant,o.channel||'retail'))*(o.qty||1);
   if(!(rev>0) && !(cost>0)) return null;
   const comm=orderCommissionBreakup(o).total;
   return rev-cost-(parseFloat(o.discount||0))-comm;
@@ -2821,27 +2828,33 @@ async function downloadSelectedCustomersExcel(){
     toast('Error: '+e.message,'err');
   }
 }
-function completedOrdersForExport(){
-  return (S.orders||[]).filter((o)=>isCompleted(o));
-}
 function daysAgoISO(days){
   const d=new Date();
   d.setDate(d.getDate()-Math.max(0,parseInt(days||0,10)||0));
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }
-function openCompletedOrdersExportModal(){
-  const done=completedOrdersForExport();
-  if(!done.length){ toast('No completed orders to export','err'); return; }
+function openCompletedOrdersExportModal(){ openOrdersExportModal(); }
+function openOrdersExportModal(){
+  if(!(S.orders||[]).length){ toast('No orders to export','err'); return; }
   openModal(`
-    <div class="modal-title">Export Completed Orders</div>
+    <div class="modal-title">Export Orders</div>
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
+      <div class="fg">
+        <label>Order Group</label>
+        <select id="orders-export-group">
+          <option value="completed">Completed orders</option>
+          <option value="bulk">Bulk orders</option>
+          <option value="billed">Billed for orders</option>
+          <option value="open">Yet to complete orders</option>
+        </select>
+      </div>
       <div class="fg">
         <label>Date Range</label>
         <select id="orders-export-range" onchange="onCompletedOrdersExportRangeChange()">
           <option value="last_7_days">Last 7 days</option>
           <option value="last_1_month">Last 1 month</option>
           <option value="custom">Custom date range</option>
-          <option value="all">All completed orders</option>
+          <option value="all">All matching orders</option>
         </select>
       </div>
       <div id="orders-export-custom-row" style="display:none;gap:10px">
@@ -2854,9 +2867,9 @@ function openCompletedOrdersExportModal(){
           <input id="orders-export-end" type="date" value="${todayISO()}" onclick="openNativePicker('orders-export-end')">
         </div>
       </div>
-      <div style="font-size:12px;color:var(--text-3)">Only orders marked as <strong>Completed</strong> will be exported.</div>
+      <div style="font-size:12px;color:var(--text-3)">Exports the selected group within the chosen date range.</div>
       <div style="display:flex;gap:8px;margin-top:4px">
-        <button class="btn btn-p" style="flex:1" onclick="downloadCompletedOrdersExport()">Download CSV</button>
+        <button class="btn btn-p" style="flex:1" onclick="downloadOrdersExport()">Download CSV</button>
         <button class="btn btn-s" onclick="closeModal()">Cancel</button>
       </div>
     </div>
@@ -2868,9 +2881,11 @@ function onCompletedOrdersExportRangeChange(){
   if(!row) return;
   row.style.display=range==='custom'?'flex':'none';
 }
-async function downloadCompletedOrdersExport(){
+async function downloadCompletedOrdersExport(){ return downloadOrdersExport(); }
+async function downloadOrdersExport(){
+  const group=(g('orders-export-group')?.value||'completed');
   const range=(g('orders-export-range')?.value||'last_7_days');
-  const payload={range};
+  const payload={range,group};
   if(range==='custom'){
     const startDate=(g('orders-export-start')?.value||'').trim();
     const endDate=(g('orders-export-end')?.value||'').trim();
@@ -2898,7 +2913,7 @@ async function downloadCompletedOrdersExport(){
     const blob=await res.blob();
     const disposition=res.headers.get('Content-Disposition')||'';
     const match=/filename=\"?([^\";]+)\"?/i.exec(disposition);
-    const fileName=match?.[1]||'completed-orders-export.csv';
+    const fileName=match?.[1]||'orders-export.csv';
     const url=URL.createObjectURL(blob);
     const a=document.createElement('a');
     a.href=url;
@@ -2908,7 +2923,7 @@ async function downloadCompletedOrdersExport(){
     a.remove();
     URL.revokeObjectURL(url);
     closeModal();
-    toast('Completed orders export downloaded','ok');
+    toast('Orders export downloaded','ok');
   }catch(e){
     toast('Error: '+e.message,'err');
   }
@@ -3442,19 +3457,84 @@ async function recSale(){
 
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
 function rOrders(){
-  const active=S.orders.filter(o=>!isCompleted(o));
-  const done  =S.orders.filter(isCompleted);
-  g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed';
+  const billed=S.orders.filter(isBilledOrder);
+  const unbilledInRange=S.orders.filter(o=>!isBilledOrder(o)&&orderInBillRange(o));
+  const active=unbilledInRange.filter(o=>!isCompleted(o));
+  const done=unbilledInRange.filter(isCompleted);
+  const visibleIds=new Set(unbilledInRange.map(o=>Number(o.id)));
+  ORDER_SELECTED=new Set([...ORDER_SELECTED].filter(id=>visibleIds.has(Number(id))));
+  g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed · '+billed.length+' billed';
   const body=g('ob');
   if(!S.orders.length){body.innerHTML=`<div class="empty"><div class="ei">📋</div><div class="et">No orders yet</div><div class="es">Record your first sale</div></div>`;return;}
   body.innerHTML=`
-    <div style="display:flex;justify-content:flex-end;padding:12px 12px 0 12px">
-      <button class="btn btn-s btn-sm" onclick="openCompletedOrdersExportModal()" ${done.length?'':'disabled'}>Export Completed Orders</button>
-    </div>
-  `+buildOrderTable(active,'Active Orders',false,'active')+buildOrderTable(done,'Completed Orders',true,'completed');
+    ${billingControlsHTML(unbilledInRange)}
+  `+buildOrderTable(active,'Active Orders',false,'active',true)+buildOrderTable(done,'Completed Orders',true,'completed',true)+buildOrderTable(billed,'Billed For',true,'billed',false);
 }
 
-function buildOrderTable(orders,title,collapsible,bucket){
+function isBilledOrder(o){ return !!(o&&o.billedAt); }
+function billRangeBounds(){
+  const now=new Date();
+  const end=new Date(now.getFullYear(),now.getMonth(),now.getDate()+1).getTime();
+  if(ORDER_BILL_FILTER.range==='custom'){
+    const s=ORDER_BILL_FILTER.startDate?new Date(`${ORDER_BILL_FILTER.startDate}T00:00:00`).getTime():0;
+    const e=ORDER_BILL_FILTER.endDate?new Date(`${ORDER_BILL_FILTER.endDate}T00:00:00`).getTime()+86400000:end;
+    return {start:s||0,end:e||end};
+  }
+  const months={m1:1,m3:3,m6:6,y1:12}[ORDER_BILL_FILTER.range]||0;
+  if(!months) return {start:0,end};
+  const startDate=new Date(now.getFullYear(),now.getMonth()-months,now.getDate());
+  return {start:startDate.getTime(),end};
+}
+function orderInBillRange(o){
+  const b=billRangeBounds();
+  const t=Number(o?.at||0);
+  return (!b.start||t>=b.start)&&t<b.end;
+}
+function billingControlsHTML(orders){
+  const selectedCount=ORDER_SELECTED.size;
+  const custom=ORDER_BILL_FILTER.range==='custom';
+  return `<div class="orders-toolbar">
+    <div class="orders-toolbar-row">
+      <div class="orders-toolbar-title">Billing Range</div>
+      <select class="range-select" id="bill-range" onchange="setBillRange(this.value)" aria-label="Billing range"><option value="all" ${ORDER_BILL_FILTER.range==='all'?'selected':''}>All unbilled</option><option value="m1" ${ORDER_BILL_FILTER.range==='m1'?'selected':''}>Last 1 month</option><option value="m3" ${ORDER_BILL_FILTER.range==='m3'?'selected':''}>Last 3 months</option><option value="m6" ${ORDER_BILL_FILTER.range==='m6'?'selected':''}>Last 6 months</option><option value="y1" ${ORDER_BILL_FILTER.range==='y1'?'selected':''}>Last 1 year</option><option value="custom" ${custom?'selected':''}>Custom</option></select>
+      <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-start" value="${esc(ORDER_BILL_FILTER.startDate||'')}" onchange="setBillCustomDates()" aria-label="Billing start date">
+      <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-end" value="${esc(ORDER_BILL_FILTER.endDate||'')}" onchange="setBillCustomDates()" aria-label="Billing end date">
+      <button class="btn btn-p" onclick="markRangeBilled()" ${orders.length?'':'disabled'}>Save Range as Billed</button>
+      <button class="btn btn-s" onclick="markSelectedBilled()" ${selectedCount?'':'disabled'}>Save Selected (${selectedCount})</button>
+      <div class="orders-toolbar-spacer"></div>
+      <button class="btn btn-s" onclick="openOrdersExportModal()">Export</button>
+    </div>
+    <div class="orders-toolbar-note">${orders.length} unbilled order${orders.length!==1?'s':''} in current range. Billed orders are excluded from date-range results.</div>
+  </div>`;
+}
+function setBillRange(range){ ORDER_BILL_FILTER.range=range; ORDER_SELECTED.clear(); rOrders(); }
+function setBillCustomDates(){ ORDER_BILL_FILTER.startDate=g('bill-start')?.value||''; ORDER_BILL_FILTER.endDate=g('bill-end')?.value||''; ORDER_SELECTED.clear(); rOrders(); }
+function toggleOrderSelection(oid,checked){ if(checked) ORDER_SELECTED.add(Number(oid)); else ORDER_SELECTED.delete(Number(oid)); rOrders(); }
+function toggleVisibleOrderSelection(checked){ document.querySelectorAll('.order-bill-check').forEach(cb=>{ const id=Number(cb.value); if(checked) ORDER_SELECTED.add(id); else ORDER_SELECTED.delete(id); }); rOrders(); }
+async function markOrdersBilled(orderIds){
+  if(!orderIds.length){ toast('No orders selected','err'); return; }
+  try{
+    const res=await api.post('/api/orders/mark-billed',{orderIds});
+    (res.orders||[]).forEach(syncOrder);
+    ORDER_SELECTED.clear();
+    rOrders(); rDash(); updBadge();
+    toast(`Saved ${res.updated||orderIds.length} order${(res.updated||orderIds.length)!==1?'s':''} as billed`,'ok');
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+function markRangeBilled(){
+  const ids=S.orders.filter(o=>!isBilledOrder(o)&&orderInBillRange(o)).map(o=>o.id);
+  if(!ids.length){ toast('No unbilled orders in range','err'); return; }
+  if(!confirm(`Save ${ids.length} order${ids.length!==1?'s':''} as billed/accounted for?`)) return;
+  markOrdersBilled(ids);
+}
+function markSelectedBilled(){
+  const ids=[...ORDER_SELECTED];
+  if(!ids.length){ toast('No orders selected','err'); return; }
+  if(!confirm(`Save ${ids.length} selected order${ids.length!==1?'s':''} as billed/accounted for?`)) return;
+  markOrdersBilled(ids);
+}
+
+function buildOrderTable(orders,title,collapsible,bucket,selectable=false){
   if(!orders.length) return collapsible?'':`<div style="padding:18px 16px;color:var(--text-3);font-size:13px">No ${title.toLowerCase()} yet</div>`;
   const id='ot-'+title.replace(/\s/g,'-').toLowerCase();
   const totalPages=Math.max(1,Math.ceil(orders.length/ORDERS_PAGE_SIZE));
@@ -3469,8 +3549,8 @@ function buildOrderTable(orders,title,collapsible,bucket){
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th>#</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
-    <tbody>${pageOrders.map(o=>orderRow(o)).join('')}</tbody>
+    <thead><tr><th>${selectable?`<input type="checkbox" onchange="toggleVisibleOrderSelection(this.checked)">`:''} #</th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
+    <tbody>${pageOrders.map(o=>orderRow(o,selectable)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
   const mobileCards=`<div class="order-card-list">${pageOrders.map(o=>orderMobileCard(o)).join('')}</div>`;
@@ -3483,7 +3563,7 @@ function setOrderPage(bucket,page){
   rOrders();
 }
 
-function orderRow(o){
+function orderRow(o,selectable=false){
   const rev=orderRevenue(o),prof=orderProfit(o);
   const disc=parseFloat(o.discount||0);
   const comm=orderCommissionBreakup(o);
@@ -3500,8 +3580,9 @@ function orderRow(o){
       ${opts.map(s=>`<button class="sdrop-item ${s.id===o.status?'active':''}" onclick="quickStatus(${o.id},'${s.id}',this)">${s.label}</button>`).join('')}
     </div>
   </div>`;
+  const selectBox=selectable?`<input class="order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)" style="margin-right:6px;vertical-align:middle">`:'';
   return`<tr>
-    <td><span class="pill pn" style="font-size:10.5px;font-family:monospace">#${o.id}</span></td>
+    <td>${selectBox}<span class="pill pn" style="font-size:10.5px;font-family:monospace">#${o.id}</span></td>
     <td>
       <div style="font-weight:600">${esc(customerTitle)}</div>
       <div style="font-size:11.5px;color:var(--text-3)">${esc(customerSub)}</div>

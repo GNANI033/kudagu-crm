@@ -1624,6 +1624,12 @@ def migrate(data: dict) -> dict:
             o["invoiceAdditionalDetails"] = ""
         if "invoiceTerms" not in o:
             o["invoiceTerms"] = ""
+        if "billedAt" not in o:
+            o["billedAt"] = None
+        if "billingBatchId" not in o:
+            o["billingBatchId"] = ""
+        if "billingSnapshot" not in o or not isinstance(o.get("billingSnapshot"), dict):
+            o["billingSnapshot"] = {}
         if "subscriptionFrequency" not in o:
             o["subscriptionFrequency"] = ""
         if "subscriptionDuration" not in o:
@@ -2793,12 +2799,20 @@ def _payment_gateway_commission_pct(data: dict) -> float:
 
 
 def _sale_price_for_order(products_by_id: dict, order: dict) -> float:
+    snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+    snap_unit = _safe_float(snapshot.get("unitPrice"))
+    if snap_unit > 0:
+        return snap_unit
     product = products_by_id.get(order.get("prodId")) or {}
     channel = str(order.get("channel") or "retail")
     return _effective_unit_price_for_product(product, order.get("variant"), order.get("qty"), channel)
 
 
 def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
+    snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+    snap_cost = _safe_float(snapshot.get("unitCost"))
+    if snap_cost > 0:
+        return snap_cost
     product = products_by_id.get(order.get("prodId")) or {}
     pricing = product.get("pricing") or {}
     row = pricing.get(order.get("variant")) or {}
@@ -2807,6 +2821,10 @@ def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
 
 
 def _order_revenue(products_by_id: dict, order: dict) -> float:
+    snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+    snap_subtotal = _safe_float(snapshot.get("subtotal"))
+    if snap_subtotal > 0:
+        return snap_subtotal
     raw_realized = order.get("realizedRevenue")
     if raw_realized is not None and str(raw_realized).strip() != "":
         realized = _safe_float(raw_realized)
@@ -2831,6 +2849,34 @@ def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> floa
         gateway_base = max(0.0, revenue - discount)
         gateway_comm = gateway_base * (gateway_pct / 100.0)
     return gross - discount - manual_comm - gateway_comm
+
+
+def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
+    qty = _safe_float(order.get("qty")) or 1.0
+    product = products_by_id.get(order.get("prodId")) or {}
+    channel = str(order.get("channel") or "retail")
+    variant = order.get("variant")
+    normal_unit = _normal_unit_price_for_product(product, variant, channel)
+    unit_price = _effective_unit_price_for_product(product, variant, qty, channel)
+    unit_cost = _total_cost_for_order(products_by_id, order)
+    subtotal = round(unit_price * qty, 2)
+    normal_subtotal = round(normal_unit * qty, 2)
+    discount = round(_safe_float(order.get("discount")), 2)
+    payable = round(max(0.0, subtotal - discount), 2)
+    return {
+        "qty": qty,
+        "unitPrice": round(unit_price, 2),
+        "normalUnitPrice": round(normal_unit, 2),
+        "unitCost": round(unit_cost, 2),
+        "subtotal": subtotal,
+        "normalSubtotal": normal_subtotal,
+        "discount": discount,
+        "payable": payable,
+        "couponCode": _normalize_coupon_code(order.get("couponCode")),
+        "couponDiscountType": str(order.get("couponDiscountType") or "").strip(),
+        "couponDiscountValue": _safe_float(order.get("couponDiscountValue")),
+        "createdAt": int(time.time() * 1000),
+    }
 
 
 def _month_range(now_ts: float, month_offset: int = 0) -> tuple[float, float]:
@@ -3339,11 +3385,12 @@ def _build_invoice_pdf(order: dict, customer: dict, product: dict, profile: dict
 
     qty = _safe_float(order.get("qty")) or 1.0
     channel = str(order.get("channel") or "retail")
-    normal_unit = _normal_unit_price_for_product(product, order.get("variant"), channel)
-    effective_unit = _effective_unit_price_for_product(product, order.get("variant"), qty, channel)
-    normal_subtotal = round(normal_unit * qty, 2)
-    subtotal = round(effective_unit * qty, 2)
-    discount = min(_safe_float(order.get("discount")), subtotal)
+    snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+    normal_unit = _safe_float(snapshot.get("normalUnitPrice")) or _normal_unit_price_for_product(product, order.get("variant"), channel)
+    effective_unit = _safe_float(snapshot.get("unitPrice")) or _effective_unit_price_for_product(product, order.get("variant"), qty, channel)
+    normal_subtotal = _safe_float(snapshot.get("normalSubtotal")) or round(normal_unit * qty, 2)
+    subtotal = _safe_float(snapshot.get("subtotal")) or round(effective_unit * qty, 2)
+    discount = min(_safe_float(snapshot.get("discount")) if snapshot else _safe_float(order.get("discount")), subtotal)
     payable = round(max(0.0, subtotal - discount), 2)
     bulk_savings = round(max(0.0, normal_subtotal - subtotal), 2)
     total_discount = round(bulk_savings + discount, 2)
@@ -5523,7 +5570,37 @@ async def export_completed_orders(request: Request):
 
     scoped_data = _filtered_data_for_user(data, ctx.get("user"))
     all_orders = scoped_data.get("orders", []) or []
-    completed_orders = [o for o in all_orders if _order_is_completed(o)]
+    products_by_id = {p.get("id"): p for p in (scoped_data.get("products", []) or []) if isinstance(p, dict)}
+
+    group_key = str((body or {}).get("group") or "completed").strip().lower()
+    group_aliases = {
+        "completed orders": "completed",
+        "bulk orders": "bulk",
+        "billed for orders": "billed",
+        "billed orders": "billed",
+        "yet to complete orders": "open",
+        "open orders": "open",
+        "active orders": "open",
+    }
+    group_key = group_aliases.get(group_key, group_key)
+    if group_key not in {"completed", "bulk", "billed", "open"}:
+        raise HTTPException(status_code=400, detail="Invalid group. Use completed, bulk, billed, or open.")
+
+    def order_has_bulk_rate(order: dict) -> bool:
+        snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+        if _safe_float(snapshot.get("normalSubtotal")) > _safe_float(snapshot.get("subtotal")) > 0:
+            return True
+        product = products_by_id.get(order.get("prodId")) or {}
+        return _order_uses_bulk_price(product, order)
+
+    if group_key == "completed":
+        matching_orders = [o for o in all_orders if _order_is_completed(o)]
+    elif group_key == "bulk":
+        matching_orders = [o for o in all_orders if order_has_bulk_rate(o)]
+    elif group_key == "billed":
+        matching_orders = [o for o in all_orders if bool(o.get("billedAt"))]
+    else:
+        matching_orders = [o for o in all_orders if not _order_is_completed(o)]
 
     range_key = str((body or {}).get("range") or "last_7_days").strip().lower()
     aliases = {
@@ -5535,17 +5612,16 @@ async def export_completed_orders(request: Request):
     if range_key not in {"last_7_days", "last_1_month", "custom", "all"}:
         raise HTTPException(status_code=400, detail="Invalid range. Use last_7_days, last_1_month, custom, or all.")
 
-    now_ms = int(time.time() * 1000)
     day_ms = 24 * 60 * 60 * 1000
     today_start_ms = int(time.mktime(time.localtime()[:3] + (0, 0, 0, 0, 0, -1)) * 1000)
     tomorrow_start_ms = today_start_ms + day_ms
-    filtered_orders = completed_orders
+    filtered_orders = matching_orders
     if range_key == "last_7_days":
         start_ms = today_start_ms - (6 * day_ms)
-        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
+        filtered_orders = [o for o in matching_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
     elif range_key == "last_1_month":
         start_ms = today_start_ms - (29 * day_ms)
-        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
+        filtered_orders = [o for o in matching_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < tomorrow_start_ms]
     elif range_key == "custom":
         start_date = str((body or {}).get("startDate") or "").strip()
         end_date = str((body or {}).get("endDate") or "").strip()
@@ -5559,9 +5635,8 @@ async def export_completed_orders(request: Request):
         end_exclusive_ms = end_bounds[1]
         if end_exclusive_ms <= start_ms:
             raise HTTPException(status_code=400, detail="endDate must be same day or after startDate.")
-        filtered_orders = [o for o in completed_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < end_exclusive_ms]
+        filtered_orders = [o for o in matching_orders if start_ms <= _normalized_order_time_ms(o.get("at")) < end_exclusive_ms]
 
-    products_by_id = {p.get("id"): p for p in (scoped_data.get("products", []) or []) if isinstance(p, dict)}
     gateway_pct = _payment_gateway_commission_pct(scoped_data)
     rows = sorted(filtered_orders, key=lambda o: _normalized_order_time_ms(o.get("at")), reverse=True)
 
@@ -5608,7 +5683,7 @@ async def export_completed_orders(request: Request):
                 str(order.get("paymentMethod") or "").strip(),
                 round(revenue, 2),
                 "" if profit is None else round(profit, 2),
-                "completed",
+                str(order.get("status") or "").strip(),
             ]
         )
 
@@ -5616,8 +5691,70 @@ async def export_completed_orders(request: Request):
     stream = BytesIO(payload)
     stream.seek(0)
     ts = time.strftime("%Y%m%d-%H%M%S")
-    headers = {"Content-Disposition": f'attachment; filename="completed-orders-export-{ts}.csv"'}
+    headers = {"Content-Disposition": f'attachment; filename="orders-export-{group_key}-{ts}.csv"'}
     return StreamingResponse(stream, media_type="text/csv; charset=utf-8", headers=headers)
+
+
+@app.post("/api/orders/mark-billed")
+async def mark_orders_billed(request: Request):
+    body = await request.json()
+    raw_ids = body.get("orderIds")
+    if not isinstance(raw_ids, list) or not raw_ids:
+        raise HTTPException(status_code=400, detail="orderIds must be a non-empty array.")
+    order_ids: set[int] = set()
+    for raw_id in raw_ids:
+        try:
+            oid = int(raw_id)
+        except (TypeError, ValueError):
+            continue
+        if oid > 0:
+            order_ids.add(oid)
+    if not order_ids:
+        raise HTTPException(status_code=400, detail="No valid order IDs provided.")
+
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "orders")
+    _ensure_action_access(ctx.get("user"), "orders", "edit")
+    products_by_id = {p.get("id"): p for p in (data.get("products", []) or []) if isinstance(p, dict)}
+    now_ms = int(time.time() * 1000)
+    batch_id = f"bill-{now_ms}"
+    updated_orders: list[dict] = []
+    skipped: list[int] = []
+
+    for order in data.get("orders", []) or []:
+        try:
+            oid = int(order.get("id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if oid not in order_ids:
+            continue
+        _ensure_product_scope(ctx.get("user"), data, order.get("prodId"))
+        try:
+            customer_id = int(order.get("cid") or 0)
+        except (TypeError, ValueError):
+            customer_id = 0
+        if customer_id > 0:
+            _ensure_customer_scope(ctx.get("user"), data, customer_id)
+        if order.get("billedAt"):
+            skipped.append(oid)
+            continue
+        order["billingSnapshot"] = _billing_snapshot_for_order(products_by_id, order)
+        order["billedAt"] = now_ms
+        order["billingBatchId"] = batch_id
+        updated_orders.append(order)
+
+    if not updated_orders:
+        raise HTTPException(status_code=400, detail="No unbilled matching orders found.")
+    write_data(data)
+    return {
+        "ok": True,
+        "billingBatchId": batch_id,
+        "billedAt": now_ms,
+        "updated": len(updated_orders),
+        "skippedAlreadyBilled": skipped,
+        "orders": [_filtered_order_response(data, ctx.get("user"), int(o.get("id") or 0)) for o in updated_orders],
+    }
 
 
 @app.put("/api/orders/{order_id}")

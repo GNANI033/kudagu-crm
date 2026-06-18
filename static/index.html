@@ -221,6 +221,16 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--sh-sm); overflow: hidden; }
 .orders-card { overflow: visible; }
 .orders-card .tbl-wrap { overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; }
+.orders-toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:7px}
+.orders-toolbar-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.orders-toolbar-title{font-size:13px;font-weight:800;color:var(--text-2);margin-right:4px;white-space:nowrap}
+.orders-toolbar .fg{margin:0}
+.orders-toolbar select,.orders-toolbar input,.orders-toolbar .btn{height:38px;min-height:38px}
+.orders-toolbar .btn{padding:8px 14px;font-size:13px}
+.orders-toolbar .range-select{width:180px}
+.orders-toolbar .date-input{width:138px}
+.orders-toolbar-spacer{flex:1 1 auto}
+.orders-toolbar-note{font-size:12px;color:var(--text-3)}
 .retention-coupon-list { max-height: 492px; overflow-y: auto; }
 .coupon-complete-btn {
   width: 34px;
@@ -1810,6 +1820,6 @@ try {
   if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
 } catch (_) {}
 </script>
-<script src="/static/app.js?v=20260617-invoice-details-05"></script>
+<script src="/static/app.js?v=20260617-orders-toolbar-export-07"></script>
 </body>
 </html>
