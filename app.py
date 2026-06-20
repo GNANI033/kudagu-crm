@@ -383,6 +383,8 @@ def _authz_decision_for_website_scope(method: str, path: str) -> tuple[bool, str
         "/api/website/auth/google/signup": {"POST"},
         "/api/website/auth/microsoft/check": {"POST"},
         "/api/website/auth/microsoft/signup": {"POST"},
+        "/api/website/auth/whatsapp/check": {"POST"},
+        "/api/website/auth/whatsapp/signup": {"POST"},
         "/api/website/coupons/validate": {"POST"},
         "/api/website/orders": {"GET"},
     }
@@ -1278,6 +1280,13 @@ def _normalize_email(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _is_valid_email(value: str) -> bool:
+    email = _normalize_email(value)
+    if not email or len(email) > 254:
+        return False
+    return bool(re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email))
+
+
 def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "") -> dict:
     email = _normalize_email(raw.get("email"))
     phone = _normalize_customer_phone(raw.get("phone"))
@@ -1287,7 +1296,7 @@ def _normalize_website_user_record(raw: dict, *, preserve_password_hash: str = "
     auth_provider = str(raw.get("authProvider") or raw.get("auth_provider") or "").strip().lower()
     google_sub = str(raw.get("googleSub") or raw.get("google_sub") or "").strip()
     microsoft_sub = str(raw.get("microsoftSub") or raw.get("microsoft_sub") or "").strip()
-    if auth_provider not in {"password", "google", "microsoft"}:
+    if auth_provider not in {"password", "google", "microsoft", "whatsapp"}:
         if google_sub and not preserve_password_hash:
             auth_provider = "google"
         elif microsoft_sub and not preserve_password_hash:
@@ -1972,6 +1981,15 @@ def _normalize_customer_phone(phone: Any) -> str:
     digits = re.sub(r"\D+", "", str(phone or ""))
     if digits.startswith("91") and len(digits) == 12:
         digits = digits[2:]
+    return digits
+
+
+def _normalize_indian_mobile_phone(phone: Any) -> str:
+    digits = re.sub(r"\D+", "", str(phone or ""))
+    if digits.startswith("91") and len(digits) == 12:
+        digits = digits[2:]
+    if not re.fullmatch(r"[6-9]\d{9}", digits):
+        raise HTTPException(status_code=400, detail="Valid 10-digit Indian mobile number is required.")
     return digits
 
 
@@ -3966,6 +3984,15 @@ def _require_api_key_context(request: Request) -> None:
                 )
 
 
+def _require_website_scope_api_key(request: Request) -> None:
+    _require_api_key_context(request)
+    if str(getattr(request.state, "auth_key_scope", "") or "").strip() != "website":
+        raise HTTPException(
+            status_code=403,
+            detail={"code": "auth_scope_denied", "message": "Website-scoped API key is required."},
+        )
+
+
 @app.post("/api/website/auth/signup")
 async def website_signup(request: Request):
     _require_api_key_context(request)
@@ -4038,6 +4065,98 @@ async def website_login(request: Request):
     user["customerId"] = customer_id
     write_data(data)
     return {"ok": True, "user": _website_user_public_payload(user)}
+
+
+@app.post("/api/website/auth/whatsapp/check")
+async def website_whatsapp_check(request: Request):
+    _require_website_scope_api_key(request)
+    body = await request.json()
+    if body.get("phoneVerified") is not True:
+        raise HTTPException(status_code=400, detail="Verified phone is required.")
+    phone = _normalize_indian_mobile_phone(body.get("phone"))
+
+    data = read_data()
+    user = _find_website_user(data, phone=phone)
+    if not user:
+        return {"ok": True, "requiresSignup": True}
+    if not bool(user.get("isActive", True)):
+        raise HTTPException(status_code=403, detail="Website user is inactive.")
+
+    now_ms = int(time.time() * 1000)
+    user["lastLoginAt"] = now_ms
+    user["updatedAt"] = now_ms
+    customer_id = _upsert_customer_for_website_user(data, user)
+    user["customerId"] = customer_id
+    write_data(data)
+    website_user_id = int(user.get("id") or 0)
+    return {
+        "ok": True,
+        "websiteUserId": website_user_id,
+        "user": _website_user_public_payload(user),
+    }
+
+
+@app.post("/api/website/auth/whatsapp/signup")
+async def website_whatsapp_signup(request: Request):
+    _require_website_scope_api_key(request)
+    body = await request.json()
+    if body.get("phoneVerified") is not True:
+        raise HTTPException(status_code=400, detail="Verified phone is required.")
+    phone = _normalize_indian_mobile_phone(body.get("phone"))
+    name = str(body.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required.")
+    email = _normalize_email(body.get("email"))
+    if email and not _is_valid_email(email):
+        raise HTTPException(status_code=400, detail="Valid email is required.")
+
+    data = read_data()
+    existing_by_phone = _find_website_user(data, phone=phone)
+    if existing_by_phone:
+        raise HTTPException(status_code=409, detail="Phone already exists.")
+    if email:
+        existing_by_email = _find_website_user(data, email=email)
+        if existing_by_email:
+            raise HTTPException(status_code=409, detail="Email already exists.")
+
+    now_ms = int(time.time() * 1000)
+    website_user = _normalize_website_user_record(
+        {
+            "id": int(data.get("wuid") or 1),
+            "email": email,
+            "phone": phone,
+            "name": name,
+            "area": body.get("area") or "",
+            "address": body.get("address") or "",
+            "notes": body.get("notes") or "",
+            "customerId": 0,
+            "authProvider": "whatsapp",
+            "isActive": True,
+            "createdAt": now_ms,
+            "lastLoginAt": now_ms,
+        },
+        preserve_password_hash="",
+    )
+    customer_id = _upsert_customer_for_website_user(data, website_user)
+    website_user["customerId"] = customer_id
+    data.setdefault("websiteUsers", []).append(website_user)
+    data["wuid"] = int(data.get("wuid") or 1) + 1
+    write_data(data)
+    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+    website_user_id = int(website_user.get("id") or 0)
+    return {
+        "ok": True,
+        "websiteUserId": website_user_id,
+        "user": _website_user_public_payload(website_user),
+        "customer": {
+            "id": customer_id,
+            "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
+            "phone": str((customer or {}).get("phone") or website_user.get("phone") or "").strip(),
+            "email": str((customer or {}).get("email") or website_user.get("email") or "").strip(),
+            "area": str((customer or {}).get("area") or website_user.get("area") or "").strip(),
+            "address": str((customer or {}).get("address") or website_user.get("address") or "").strip(),
+        },
+    }
 
 
 @app.post("/api/website/auth/google/check")

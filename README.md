@@ -361,6 +361,8 @@ Main routes:
 - `POST /api/website/auth/login` (verify website credentials via CRM)
 - `POST /api/website/auth/google/check` (find/link existing website account by verified Google email)
 - `POST /api/website/auth/google/signup` (create Google-authenticated website customer account + sync CRM customer)
+- `POST /api/website/auth/whatsapp/check` (find existing website account by website-verified WhatsApp phone)
+- `POST /api/website/auth/whatsapp/signup` (create WhatsApp-authenticated website customer account + sync CRM customer)
 - `POST /api/website/coupons/validate` (validate CRM-owned coupon rules for a website cart)
 - `GET /api/website/users/{id}`, `PUT /api/website/users/{id}` (profile sync)
 - `POST /api/website/orders/sync` (upsert website order into CRM orders)
@@ -389,6 +391,7 @@ Main routes:
 - UI helper blocks `/api/website/*` by default so public CRM UI domains cannot be used as an unauthenticated ecommerce API proxy.
 - Cross-origin callers and server-to-server callers must send API key.
 - Website customer credentials stored in CRM are hashed using PBKDF2-HMAC-SHA256 (never returned in API responses).
+- WhatsApp OTP generation and verification are owned by the website backend; CRM only trusts `phoneVerified: true` on WhatsApp auth calls made with a website-scoped API key.
 - Keep services behind TLS/reverse proxy; API keys must never be sent over plain HTTP.
 
 Website-key caller context rule:
