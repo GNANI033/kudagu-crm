@@ -4075,24 +4075,26 @@ async def website_whatsapp_check(request: Request):
         raise HTTPException(status_code=400, detail="Verified phone is required.")
     phone = _normalize_indian_mobile_phone(body.get("phone"))
 
-    data = read_data()
-    user = _find_website_user(data, phone=phone)
-    if not user:
-        return {"ok": True, "requiresSignup": True}
-    if not bool(user.get("isActive", True)):
-        raise HTTPException(status_code=403, detail="Website user is inactive.")
+    with DATA_LOCK:
+        data = read_data()
+        user = _find_website_user(data, phone=phone)
+        if not user:
+            return {"ok": True, "requiresSignup": True}
+        if not bool(user.get("isActive", True)):
+            raise HTTPException(status_code=403, detail="Website user is inactive.")
 
-    now_ms = int(time.time() * 1000)
-    user["lastLoginAt"] = now_ms
-    user["updatedAt"] = now_ms
-    customer_id = _upsert_customer_for_website_user(data, user)
-    user["customerId"] = customer_id
-    write_data(data)
-    website_user_id = int(user.get("id") or 0)
+        now_ms = int(time.time() * 1000)
+        user["lastLoginAt"] = now_ms
+        user["updatedAt"] = now_ms
+        customer_id = _upsert_customer_for_website_user(data, user)
+        user["customerId"] = customer_id
+        write_data(data)
+        website_user_id = int(user.get("id") or 0)
+        public_user = _website_user_public_payload(user)
     return {
         "ok": True,
         "websiteUserId": website_user_id,
-        "user": _website_user_public_payload(user),
+        "user": public_user,
     }
 
 
@@ -4110,44 +4112,46 @@ async def website_whatsapp_signup(request: Request):
     if email and not _is_valid_email(email):
         raise HTTPException(status_code=400, detail="Valid email is required.")
 
-    data = read_data()
-    existing_by_phone = _find_website_user(data, phone=phone)
-    if existing_by_phone:
-        raise HTTPException(status_code=409, detail="Phone already exists.")
-    if email:
-        existing_by_email = _find_website_user(data, email=email)
-        if existing_by_email:
-            raise HTTPException(status_code=409, detail="Email already exists.")
+    with DATA_LOCK:
+        data = read_data()
+        existing_by_phone = _find_website_user(data, phone=phone)
+        if existing_by_phone:
+            raise HTTPException(status_code=409, detail="Phone already exists.")
+        if email:
+            existing_by_email = _find_website_user(data, email=email)
+            if existing_by_email:
+                raise HTTPException(status_code=409, detail="Email already exists.")
 
-    now_ms = int(time.time() * 1000)
-    website_user = _normalize_website_user_record(
-        {
-            "id": int(data.get("wuid") or 1),
-            "email": email,
-            "phone": phone,
-            "name": name,
-            "area": body.get("area") or "",
-            "address": body.get("address") or "",
-            "notes": body.get("notes") or "",
-            "customerId": 0,
-            "authProvider": "whatsapp",
-            "isActive": True,
-            "createdAt": now_ms,
-            "lastLoginAt": now_ms,
-        },
-        preserve_password_hash="",
-    )
-    customer_id = _upsert_customer_for_website_user(data, website_user)
-    website_user["customerId"] = customer_id
-    data.setdefault("websiteUsers", []).append(website_user)
-    data["wuid"] = int(data.get("wuid") or 1) + 1
-    write_data(data)
-    customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
-    website_user_id = int(website_user.get("id") or 0)
+        now_ms = int(time.time() * 1000)
+        website_user = _normalize_website_user_record(
+            {
+                "id": int(data.get("wuid") or 1),
+                "email": email,
+                "phone": phone,
+                "name": name,
+                "area": body.get("area") or "",
+                "address": body.get("address") or "",
+                "notes": body.get("notes") or "",
+                "customerId": 0,
+                "authProvider": "whatsapp",
+                "isActive": True,
+                "createdAt": now_ms,
+                "lastLoginAt": now_ms,
+            },
+            preserve_password_hash="",
+        )
+        customer_id = _upsert_customer_for_website_user(data, website_user)
+        website_user["customerId"] = customer_id
+        data.setdefault("websiteUsers", []).append(website_user)
+        data["wuid"] = int(data.get("wuid") or 1) + 1
+        write_data(data)
+        customer = next((c for c in data.get("customers", []) if int(c.get("id") or 0) == customer_id), None)
+        website_user_id = int(website_user.get("id") or 0)
+        public_user = _website_user_public_payload(website_user)
     return {
         "ok": True,
         "websiteUserId": website_user_id,
-        "user": _website_user_public_payload(website_user),
+        "user": public_user,
         "customer": {
             "id": customer_id,
             "name": str((customer or {}).get("name") or website_user.get("name") or "").strip(),
