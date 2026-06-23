@@ -527,6 +527,7 @@ def _empty_website_metrics_snapshot(*, available: bool = False, error: str = "")
             "last365Days": 0,
         },
         "visitSeries": _empty_website_visit_series(),
+        "visitComparison": _empty_website_visit_comparison(),
         "carts": {
             "loggedIn": {"count": 0, "avgCartValue": 0.0},
             "loggedOut": {"count": 0, "avgCartValue": 0.0},
@@ -571,6 +572,34 @@ def _empty_website_visit_series() -> dict[str, list[dict[str, Any]]]:
         "month": _empty_website_visit_buckets(30),
         "year": _empty_website_visit_month_buckets(12),
     }
+
+
+def _empty_website_visit_comparison() -> dict[str, dict[str, Any]]:
+    return {
+        "week": {"current": 0, "previous": None, "percent": None},
+        "month": {"current": 0, "previous": None, "percent": None},
+        "year": {"current": 0, "previous": None, "percent": None},
+    }
+
+
+def _first_number(*values: Any) -> float | None:
+    for value in values:
+        if value is None or value == "":
+            continue
+        n = _safe_float(value)
+        if n or str(value).strip() in {"0", "0.0"}:
+            return float(n)
+    return None
+
+
+def _comparison_percent(current: float, previous: float | None) -> float | None:
+    if previous is None:
+        return None
+    previous = float(previous)
+    current = float(current)
+    if previous <= 0:
+        return 0.0 if current <= 0 else None
+    return round(((current - previous) / previous) * 100.0, 1)
 
 
 def _parse_visit_bucket_at(value: Any) -> int | None:
@@ -659,6 +688,55 @@ def _normalize_website_visit_series(raw: dict, visits: dict) -> dict[str, list[d
     }
 
 
+def _normalize_website_visit_comparison(raw: dict, visits: dict, series: dict[str, list[dict[str, Any]]]) -> dict[str, dict[str, Any]]:
+    source = raw.get("visitComparison") if isinstance(raw.get("visitComparison"), dict) else {}
+    visits_comparison = visits.get("comparison") if isinstance(visits.get("comparison"), dict) else {}
+    daily = raw.get("dailyVisits") if isinstance(raw.get("dailyVisits"), list) else None
+    daily = daily if daily is not None else (visits.get("daily") if isinstance(visits.get("daily"), list) else None)
+    monthly = raw.get("monthlyVisits") if isinstance(raw.get("monthlyVisits"), list) else None
+
+    def previous_from_rows(rows: Any, points: int) -> float | None:
+        if not isinstance(rows, list) or len(rows) < points * 2:
+            return None
+        prev_rows = rows[-(points * 2):-points]
+        return float(sum(_visit_bucket_count(row) for row in prev_rows))
+
+    def row_for(key: str, current_key: str, previous_keys: tuple[str, ...], inferred_previous: float | None = None) -> dict[str, Any]:
+        nested = source.get(key) if isinstance(source.get(key), dict) else {}
+        nested_visits = visits_comparison.get(key) if isinstance(visits_comparison.get(key), dict) else {}
+        current = _first_number(
+            nested.get("current"),
+            nested.get("currentTotal"),
+            nested_visits.get("current"),
+            nested_visits.get("currentTotal"),
+            visits.get(current_key),
+            sum(_safe_float(item.get("count")) for item in series.get(key, []) if isinstance(item, dict)),
+        ) or 0.0
+        previous = _first_number(
+            nested.get("previous"),
+            nested.get("previousTotal"),
+            nested_visits.get("previous"),
+            nested_visits.get("previousTotal"),
+            *(visits.get(name) for name in previous_keys),
+            raw.get(f"previous{key.title()}Visits"),
+            inferred_previous,
+        )
+        percent = _first_number(nested.get("percent"), nested.get("pct"), nested_visits.get("percent"), nested_visits.get("pct"))
+        if percent is None:
+            percent = _comparison_percent(current, previous)
+        return {
+            "current": int(round(current)),
+            "previous": None if previous is None else int(round(previous)),
+            "percent": percent,
+        }
+
+    return {
+        "week": row_for("week", "last7Days", ("previous7Days", "prev7Days", "lastPrevious7Days"), previous_from_rows(daily, 7)),
+        "month": row_for("month", "last30Days", ("previous30Days", "prev30Days", "lastPrevious30Days"), previous_from_rows(daily, 30)),
+        "year": row_for("year", "last365Days", ("previous365Days", "prev365Days", "lastPrevious365Days"), previous_from_rows(monthly, 12)),
+    }
+
+
 def _normalize_website_metrics_snapshot(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return _empty_website_metrics_snapshot(error="invalid_response")
@@ -668,6 +746,7 @@ def _normalize_website_metrics_snapshot(raw: Any) -> dict[str, Any]:
     for key in base["visits"]:
         base["visits"][key] = int(_safe_float(visits.get(key)))
     base["visitSeries"] = _normalize_website_visit_series(raw, visits)
+    base["visitComparison"] = _normalize_website_visit_comparison(raw, visits, base["visitSeries"])
     for bucket in ("loggedIn", "loggedOut"):
         source = carts.get(bucket) if isinstance(carts.get(bucket), dict) else {}
         base["carts"][bucket] = {

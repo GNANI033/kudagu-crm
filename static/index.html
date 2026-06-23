@@ -16,18 +16,20 @@ try {
 } catch (_) {}
 </script>
 <link rel="preload" href="/static/fonts/instrument-sans-400.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/static/fonts/instrument-sans-500.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="/static/fonts/instrument-sans-600.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/static/fonts/syne-600.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="/static/fonts/syne-700.ttf" as="font" type="font/ttf" crossorigin>
 <link rel="preload" href="/static/fonts/syne-800.ttf" as="font" type="font/ttf" crossorigin>
 <style>
-@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 400; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-400.ttf') format('truetype'); }
-@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 500; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-500.ttf') format('truetype'); }
-@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 600; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-600.ttf') format('truetype'); }
-@font-face { font-family: 'Syne'; font-style: normal; font-weight: 400; font-display: swap; src: url('/static/fonts/syne-400.ttf') format('truetype'); }
-@font-face { font-family: 'Syne'; font-style: normal; font-weight: 500; font-display: swap; src: url('/static/fonts/syne-500.ttf') format('truetype'); }
-@font-face { font-family: 'Syne'; font-style: normal; font-weight: 600; font-display: swap; src: url('/static/fonts/syne-600.ttf') format('truetype'); }
-@font-face { font-family: 'Syne'; font-style: normal; font-weight: 700; font-display: swap; src: url('/static/fonts/syne-700.ttf') format('truetype'); }
-@font-face { font-family: 'Syne'; font-style: normal; font-weight: 800; font-display: swap; src: url('/static/fonts/syne-800.ttf') format('truetype'); }
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 400; font-stretch: normal; font-display: block; src: url('/static/fonts/instrument-sans-400.ttf') format('truetype'); }
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 500; font-stretch: normal; font-display: block; src: url('/static/fonts/instrument-sans-500.ttf') format('truetype'); }
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 600; font-stretch: normal; font-display: block; src: url('/static/fonts/instrument-sans-600.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 400; font-display: block; src: url('/static/fonts/syne-400.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 500; font-display: block; src: url('/static/fonts/syne-500.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 600; font-display: block; src: url('/static/fonts/syne-600.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 700; font-display: block; src: url('/static/fonts/syne-700.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 800; font-display: block; src: url('/static/fonts/syne-800.ttf') format('truetype'); }
 /* ─── DESIGN TOKENS ─────────────────────────────────────────────────────── */
 :root {
   --font-ui: 'Instrument Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -219,13 +221,16 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 
 /* ─── STAT CARDS ────────────────────────────────────────────────────────── */
 .stats-merged { display: grid; grid-template-columns: repeat(2,1fr); gap: 12px; margin-bottom: 12px; width: 100%; }
+.stats-merged.dash-row-top { grid-template-columns: minmax(0,0.92fr) minmax(0,1.08fr); }
 .sbox { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); padding: 0; box-shadow: var(--sh-sm); overflow: hidden; }
 .sbox.accent-top { border-top: 2px solid var(--accent); }
 .sbox.green-top  { border-top: 2px solid var(--green); }
 .sbox.red-top    { border-top: 2px solid var(--red); }
 .sbox.amber-top  { border-top: 2px solid var(--amber); }
 .sbox-inner { display: flex; min-width: 0; min-height: 122px; }
+.dash-row-top .sbox-inner { min-height: 100px; }
 .sbox-half { flex: 1; min-width: 0; padding: 18px 20px; }
+.dash-row-top .sbox-half { padding-top: 15px; padding-bottom: 14px; }
 .sbox-half + .sbox-half { border-left: 1px solid var(--border); }
 .website-users-split { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .website-users-stat { min-width: 0; padding: 10px 6px; text-align: center; }
@@ -248,9 +253,14 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .website-activity-chart-grid { stroke: var(--border); stroke-width: 1; }
 .website-activity-chart-line { fill: none; stroke: var(--text); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
 .website-activity-chart-fill { fill: color-mix(in srgb, var(--text) 9%, transparent); }
+.website-activity-chart-fill.is-up { fill: color-mix(in srgb, var(--green) 22%, transparent); }
+.website-activity-chart-fill.is-down { fill: color-mix(in srgb, var(--red) 18%, transparent); }
 .website-activity-chart-dot { fill: var(--surface); stroke: var(--text); stroke-width: 2; }
 .website-activity-chart-axis { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 10.5px; font-weight: 700; color: var(--text-3); }
 .website-activity-chart-total { font-size: 18px; font-weight: 850; line-height: 1; color: var(--text); }
+.website-activity-delta { margin-top: 3px; font-size: 12px; font-weight: 750; color: var(--text-3); }
+.website-activity-delta.is-up { color: var(--green); }
+.website-activity-delta.is-down { color: var(--red); }
 .sl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; }
 .sv { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin-top: 5px; line-height: 1; }
 .sv.red { color: var(--red); } .sv.green { color: var(--green); }
@@ -893,6 +903,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 
   /* Stat cards: single column */
   .stats-merged { grid-template-columns: 1fr; }
+  .stats-merged.dash-row-top { grid-template-columns: 1fr; }
   .sbox-inner { flex-direction: row; }
   .sbox-half { padding: 14px 12px; flex: 1 1 0; min-width: 0; }
   .sbox-half + .sbox-half { border-left: 1px solid var(--border); border-top: none; }
@@ -1020,7 +1031,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
       <div><div class="ph-title">Overview</div><div class="ph-sub" id="dd"></div></div>
       <button class="btn btn-p btn-sm dash-sale-btn" onclick="nav('sales')">＋ Record Sale</button>
     </div>
-    <div class="stats-merged" id="sg"></div>
+    <div class="stats-merged dash-row-top" id="sg"></div>
     <div class="stats-merged" id="sg2"></div>
     <div class="two">
       <div class="card">
@@ -1876,6 +1887,6 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260623-activity-chart-1"></script>
+<script src="/static/app.js?v=20260623-activity-chart-2"></script>
 </body>
 </html>

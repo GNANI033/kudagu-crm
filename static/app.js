@@ -5250,16 +5250,45 @@ function normalizeVisitSeries(metrics, range){
   });
   return fallback.map((row)=>({at:row.at,count:raw.length?Number(byAt[row.at]||0):row.count}));
 }
+function websiteVisitTotal(metrics, range){
+  return normalizeVisitSeries(metrics,range).reduce((sum,row)=>sum+(Number(row.count)||0),0);
+}
 function websiteChartDateLabel(ms, range){
   const d=new Date(ms);
   if(range==='year') return d.toLocaleDateString('en-IN',{month:'short'});
   return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'});
+}
+function websiteRangePreviousLabel(range){
+  if(range==='year') return 'last year';
+  if(range==='month') return 'last month';
+  return 'last week';
+}
+function websiteVisitComparison(metrics, range, currentTotal){
+  const key=range==='year'?'year':range==='month'?'month':'week';
+  const raw=metrics?.visitComparison?.[key]||{};
+  const current=Number(raw.current??currentTotal??0)||0;
+  const previousRaw=raw.previous;
+  const previous=(previousRaw===null||previousRaw===undefined||previousRaw==='')?null:(Number(previousRaw)||0);
+  let percent=(raw.percent===null||raw.percent===undefined||raw.percent==='')?null:Number(raw.percent);
+  if(percent==null && previous!=null && previous>0) percent=((current-previous)/previous)*100;
+  const cls=percent==null || Math.abs(percent)<0.05 ? 'neutral' : percent>0 ? 'up' : 'down';
+  return {current,previous,percent,cls};
+}
+function renderWebsiteVisitDelta(metrics, range, currentTotal, available=true){
+  if(!available) return '<span class="website-activity-delta">Website metrics unavailable</span>';
+  const cmp=websiteVisitComparison(metrics,range,currentTotal);
+  if(cmp.percent==null) return `<span class="website-activity-delta">No ${websiteRangePreviousLabel(range)} comparison</span>`;
+  const sign=cmp.percent>0?'+':'';
+  const label=websiteRangePreviousLabel(range);
+  return `<span class="website-activity-delta is-${cmp.cls}">${sign}${cmp.percent.toFixed(1)}% vs ${label}</span>`;
 }
 function renderWebsiteVisitChart(metrics, range, available=true){
   if(!available) return `<div class="website-activity-chart-wrap" style="display:flex;align-items:center;color:var(--text-3);font-size:12px">Website metrics unavailable</div>`;
   const rows=normalizeVisitSeries(metrics,range);
   const values=rows.map(row=>Math.max(0,Number(row.count)||0));
   const total=values.reduce((sum,n)=>sum+n,0);
+  const cmp=websiteVisitComparison(metrics,range,total);
+  const fillClass=cmp.cls==='up'?'is-up':cmp.cls==='down'?'is-down':'';
   const max=Math.max(1,...values);
   const w=320,h=86,padX=8,padY=10;
   const step=rows.length>1?(w-(padX*2))/(rows.length-1):0;
@@ -5279,7 +5308,7 @@ function renderWebsiteVisitChart(metrics, range, available=true){
       <svg class="website-activity-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
         <line class="website-activity-chart-grid" x1="${padX}" y1="${h-padY}" x2="${w-padX}" y2="${h-padY}"></line>
         <line class="website-activity-chart-grid" x1="${padX}" y1="${padY}" x2="${w-padX}" y2="${padY}"></line>
-        <path class="website-activity-chart-fill" d="${fillPath}"></path>
+        <path class="website-activity-chart-fill ${fillClass}" d="${fillPath}"></path>
         <path class="website-activity-chart-line" d="${path}"></path>
         ${dots}
       </svg>
@@ -5468,7 +5497,7 @@ function rDash(){
           <div class="website-activity-chart-head">
             <div>
               <div class="website-activity-label">Visits</div>
-              <div class="website-activity-sub" style="margin-top:3px">Buckets reset at 12:00 AM</div>
+              ${renderWebsiteVisitDelta(websiteMetrics,range,websiteVisitTotal(websiteMetrics,range),websiteMetricsAvailable)}
             </div>
             <select class="website-activity-range" onchange="setWebsiteActivityRange(this.value)" aria-label="Website visit chart range">
               <option value="week" ${range==='week'?'selected':''}>1w</option>
