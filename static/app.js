@@ -5444,12 +5444,12 @@ function rDash(){
     </div>
     <div class="sbox ${f.mom==null?'accent-top':(f.mom<0)?'red-top':'green-top'}">
       <div class="sbox-inner">
-        <div class="sbox-half" style="flex:0.7">
+        <div class="sbox-half" style="flex:0.95">
           <div class="sl">MoM Change</div>
-          <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
+          <div class="sv ${f.mom==null?'':f.mom>=0?'green':'red'}" style="white-space:nowrap">${f.mom==null?'—':fPct(f.mom)+pArr(f.mom)}</div>
           <div class="sn ${pCls(f.mom)}">${f.mom==null?'Not enough data':'This month: '+fC(f.revM)}</div>
         </div>
-        <div class="sbox-half" style="flex:1.3">
+        <div class="sbox-half" style="flex:1.05">
           <div style="display:flex;align-items:center;justify-content:space-between;gap:8px">
             <div style="display:flex;align-items:center;gap:6px;min-width:0;white-space:nowrap;flex:1 1 auto">
               <div class="sl">Analytics</div>
