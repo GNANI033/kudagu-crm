@@ -65,11 +65,13 @@ let FULL_DATA_PROMISE = null;
 let DASH_BOOTSTRAP_METRICS = null;
 let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false, serverAwbBarcodeDecodeEnabled:false };
 let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
+let WEBSITE_ACTIVITY_RANGE = 'week';
 let ORDER_PAGES = { active: 1, completed: 1, billed: 1 };
 let ORDER_SELECTED = new Set();
 let BILLED_ORDER_SELECTED = new Set();
 let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '' };
 let CUSTOMER_PAGE = 1;
+let CUSTOMER_SEARCH_TIMER = 0;
 const ORDERS_PAGE_SIZE = 40;
 const CUSTOMERS_PAGE_SIZE = 24;
 let MARKETING_TAG_FILTERS = [];
@@ -387,23 +389,34 @@ function calcFin(){
     return DASH_BOOTSTRAP_METRICS;
   }
   const cm=mRange(0),pm=mRange(-1),cy=yRange(0),py=yRange(-1);
-  const oM=S.orders.filter(o=>o.at>=cm.s&&o.at<cm.e);
-  const oPM=S.orders.filter(o=>o.at>=pm.s&&o.at<pm.e);
-  const oY=S.orders.filter(o=>o.at>=cy.s&&o.at<cy.e);
-  const oPY=S.orders.filter(o=>o.at>=py.s&&o.at<py.e);
-  const rM=sumRev(oM),rPM=sumRev(oPM),rY=sumRev(oY),rPY=sumRev(oPY);
-  const allComp=S.orders.filter(isCompleted);
+  const todayStart=new Date().setHours(0,0,0,0);
+  let revAll=0,profAll=0,revM=0,profM=0,revPM=0,revY=0,revPY=0,activeCount=0,completedToday=0;
+  (S.orders||[]).forEach((o)=>{
+    const completed=isCompleted(o);
+    if(!completed && o.status!=='cancelled' && o.status!=='returned') activeCount+=1;
+    if(!completed) return;
+    const rev=orderRevenue(o);
+    const prof=orderProfit(o)??0;
+    revAll+=rev;
+    profAll+=prof;
+    if(o.at>=todayStart) completedToday+=1;
+    if(o.at>=cm.s&&o.at<cm.e){ revM+=rev; profM+=prof; }
+    if(o.at>=pm.s&&o.at<pm.e) revPM+=rev;
+    if(o.at>=cy.s&&o.at<cy.e) revY+=rev;
+    if(o.at>=py.s&&o.at<py.e) revPY+=rev;
+  });
   const bootMetrics=DASH_BOOTSTRAP_METRICS||{};
   return{
-    revAll:sumRev(S.orders),profAll:sumProf(S.orders),
-    revM:rM,profM:sumProf(oM),
-    activeCount:S.orders.filter(o=>!isCompleted(o)&&o.status!=='cancelled'&&o.status!=='returned').length,
-    completedToday:S.orders.filter(o=>isCompleted(o)&&o.at>=new Date().setHours(0,0,0,0)).length,
-    mom:rPM>0?((rM-rPM)/rPM*100):null,
-    yoy:rPY>0?((rY-rPY)/rPY*100):null,
+    revAll,profAll,
+    revM,profM,
+    activeCount,
+    completedToday,
+    mom:revPM>0?((revM-revPM)/revPM*100):null,
+    yoy:revPY>0?((revY-revPY)/revPY*100):null,
     websiteUsersTotal:Number(bootMetrics.websiteUsersTotal)||0,
     websiteUsersActive:Number(bootMetrics.websiteUsersActive)||0,
     websiteUsersPassive:Number(bootMetrics.websiteUsersPassive)||0,
+    websiteMetrics:bootMetrics.websiteMetrics||null,
   };
 }
 
@@ -2363,6 +2376,7 @@ async function triggerLoyaltySync(){
     toast(`Loyalty sync complete (${Number(res?.synced||0)} customers)`, 'ok');
     rCustomers();
     rDash();
+    if(g('view-marketing')?.classList.contains('active')) rMarketingView();
   }catch(e){
     toast('Error: '+e.message,'err');
   }
@@ -2504,7 +2518,8 @@ function toggleCustomerFiltersPanel(){
 function handleCustomerNameSearch(value){
   CUSTOMER_NAME_SEARCH=String(value||'').trim().toLowerCase();
   CUSTOMER_PAGE=1;
-  rCustomers();
+  clearTimeout(CUSTOMER_SEARCH_TIMER);
+  CUSTOMER_SEARCH_TIMER=setTimeout(()=>{ rCustomers(); },120);
 }
 function rMarketingView(){
   refreshMarketingAreas();
@@ -2521,6 +2536,7 @@ function rMarketingView(){
     if(g('mkt-meta')) g('mkt-meta').textContent='Campaign restored in paused mode. Click Resume to continue.';
   }
   refreshMarketingGroup();
+  renderDashboardBadgeCoupons();
   updateMarketingProgressUI();
 }
 function previewMarketingTemplate(){
@@ -3191,11 +3207,17 @@ function rCustomers(){
   CUSTOMER_PAGE=Math.min(Math.max(1,CUSTOMER_PAGE),totalPages);
   const start=(CUSTOMER_PAGE-1)*CUSTOMERS_PAGE_SIZE;
   const pageCustomers=filteredCustomers.slice(start,start+CUSTOMERS_PAGE_SIZE);
+  const orderCountsByCustomer={};
+  (S.orders||[]).forEach((o)=>{
+    const cid=Number(o?.cid||0);
+    if(cid>0) orderCountsByCustomer[cid]=(orderCountsByCustomer[cid]||0)+1;
+  });
   const cards=pageCustomers.map(c=>{
-    const oc=S.orders.filter(o=>o.cid===c.id).length;
+    const oc=orderCountsByCustomer[Number(c.id)]||0;
     const ini=c.name.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();
     const tags=normalizeCustomerProductTags(c.productTags||[]);
-    const earnedBadges=(Array.isArray(getCustomerLoyaltySnapshot(c.id)?.badges)?getCustomerLoyaltySnapshot(c.id).badges:[]).filter((b)=>!!b?.earned).length;
+    const loyaltySnap=getCustomerLoyaltySnapshot(c.id);
+    const earnedBadges=(Array.isArray(loyaltySnap?.badges)?loyaltySnap.badges:[]).filter((b)=>!!b?.earned).length;
     return`<div class="cc" onclick="openCustomerAnalytics(${c.id})" style="cursor:pointer">
       <div class="cc-top">
         <div class="cav">${ini}</div>
@@ -4868,6 +4890,27 @@ function setInventorySyncBtnLoading(on){
     }
   });
 }
+function setWebsiteActivityRefreshLoading(on){
+  const btn=g('website-activity-refresh-btn');
+  if(!btn) return;
+  btn.disabled=!!on;
+  btn.classList.toggle('is-loading',!!on);
+}
+async function refreshWebsiteActivity(){
+  setWebsiteActivityRefreshLoading(true);
+  try{
+    const res=await api.post('/api/dashboard/website-metrics/refresh',{});
+    if(!DASH_BOOTSTRAP_METRICS) DASH_BOOTSTRAP_METRICS=calcFin();
+    DASH_BOOTSTRAP_METRICS.websiteMetrics=res?.websiteMetrics||null;
+    rDash();
+    const available=res?.websiteMetrics?.available!==false;
+    toast(available?'Website activity refreshed':'Website activity unavailable',available?'ok':'err');
+  }catch(e){
+    toast('Error: '+(e?.message||'Could not refresh website activity'),'err');
+  }finally{
+    setWebsiteActivityRefreshLoading(false);
+  }
+}
 async function syncCompletedOrdersToInventory(){
   try{
     const res=await postJSONWithTimeout('/api/inventory/sync-completed-orders',{},45000);
@@ -5014,6 +5057,8 @@ function applyDashboardCardVisibility(){
     const visibleHalves=Array.from(box.querySelectorAll('.sbox-half')).filter((half)=>half.style.display!=='none');
     box.style.display=visibleHalves.length?'':'none';
   });
+  const websiteActivityCard=g('d-website-activity-card');
+  if(websiteActivityCard) websiteActivityCard.style.display=hasDashboardCard('websiteUsers')?'':'none';
 }
 
 const DASH_INV_ANALYTICS_KEY='kudagu_dash_inv_pid_v1';
@@ -5143,6 +5188,104 @@ function showInventoryAnalyticsInfo(){
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
+function setWebsiteActivityRange(range){
+  WEBSITE_ACTIVITY_RANGE=['week','month','year'].includes(String(range||''))?String(range):'week';
+  try{ localStorage.setItem('kudagu_website_activity_range',WEBSITE_ACTIVITY_RANGE); }catch(_){}
+  rDash();
+}
+function loadWebsiteActivityRange(){
+  try{
+    const saved=String(localStorage.getItem('kudagu_website_activity_range')||'').trim();
+    if(['week','month','year'].includes(saved)) WEBSITE_ACTIVITY_RANGE=saved;
+  }catch(_){}
+}
+function localMidnightMs(value){
+  const d=value?new Date(value):new Date();
+  return new Date(d.getFullYear(),d.getMonth(),d.getDate()).getTime();
+}
+function visitRowMidnightMs(row, fallbackAt){
+  if(!row || typeof row!=='object') return fallbackAt;
+  const raw=row.at??row.date??row.day??row.bucketStart??row.bucketStartAt??row.timestamp??row.ts;
+  if(raw==null || raw==='') return fallbackAt;
+  const numeric=Number(raw);
+  if(Number.isFinite(numeric) && numeric>0) return localMidnightMs(numeric<10000000000?numeric*1000:numeric);
+  const parsed=new Date(String(raw));
+  return Number.isNaN(parsed.getTime())?fallbackAt:localMidnightMs(parsed.getTime());
+}
+function fallbackVisitSeries(total, points){
+  const today=localMidnightMs();
+  const start=today-(points-1)*86400000;
+  const safeTotal=Math.max(0,Number(total)||0);
+  const base=Math.floor(safeTotal/points);
+  const extra=safeTotal%points;
+  return Array.from({length:points},(_,idx)=>({at:start+(idx*86400000),count:base+(idx>=points-extra?1:0)}));
+}
+function fallbackVisitMonthSeries(total, points=12){
+  const now=new Date();
+  const safeTotal=Math.max(0,Number(total)||0);
+  const base=Math.floor(safeTotal/points);
+  const extra=safeTotal%points;
+  return Array.from({length:points},(_,idx)=>{
+    const offset=points-1-idx;
+    const at=new Date(now.getFullYear(),now.getMonth()-offset,1).getTime();
+    return {at,count:base+(idx>=points-extra?1:0)};
+  });
+}
+function normalizeVisitSeries(metrics, range){
+  const visits=metrics?.visits||{};
+  const series=metrics?.visitSeries||{};
+  const key=range==='year'?'year':range==='month'?'month':'week';
+  const points=key==='year'?12:key==='month'?30:7;
+  const fallbackTotal=key==='year'?visits.last365Days:key==='month'?visits.last30Days:visits.last7Days;
+  const raw=Array.isArray(series[key])?series[key]:[];
+  const fallback=key==='year'?fallbackVisitMonthSeries(fallbackTotal,points):fallbackVisitSeries(fallbackTotal,points);
+  const byAt={};
+  raw.forEach((row,idx)=>{
+    let at=visitRowMidnightMs(row,fallback[Math.min(idx,fallback.length-1)].at);
+    if(key==='year'){
+      const d=new Date(at);
+      at=new Date(d.getFullYear(),d.getMonth(),1).getTime();
+    }
+    byAt[at]=Math.max(0,Number(row?.count??row?.visits??row?.value??0)||0);
+  });
+  return fallback.map((row)=>({at:row.at,count:raw.length?Number(byAt[row.at]||0):row.count}));
+}
+function websiteChartDateLabel(ms, range){
+  const d=new Date(ms);
+  if(range==='year') return d.toLocaleDateString('en-IN',{month:'short'});
+  return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'});
+}
+function renderWebsiteVisitChart(metrics, range, available=true){
+  if(!available) return `<div class="website-activity-chart-wrap" style="display:flex;align-items:center;color:var(--text-3);font-size:12px">Website metrics unavailable</div>`;
+  const rows=normalizeVisitSeries(metrics,range);
+  const values=rows.map(row=>Math.max(0,Number(row.count)||0));
+  const total=values.reduce((sum,n)=>sum+n,0);
+  const max=Math.max(1,...values);
+  const w=320,h=86,padX=8,padY=10;
+  const step=rows.length>1?(w-(padX*2))/(rows.length-1):0;
+  const pts=rows.map((row,idx)=>{
+    const x=padX+(idx*step);
+    const y=h-padY-((Math.max(0,Number(row.count)||0)/max)*(h-(padY*2)));
+    return {x,y,count:row.count,at:row.at};
+  });
+  const path=pts.map((p,idx)=>`${idx?'L':'M'}${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const fillPath=`${path} L ${(pts[pts.length-1]?.x||padX).toFixed(1)} ${h-padY} L ${padX} ${h-padY} Z`;
+  const dotEvery=range==='week'?1:range==='month'?Math.ceil(rows.length/6):2;
+  const dots=pts.filter((_,idx)=>idx===0||idx===pts.length-1||idx%dotEvery===0).map(p=>`<circle class="website-activity-chart-dot" cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="2.7"></circle>`).join('');
+  const startLabel=rows[0]?websiteChartDateLabel(rows[0].at,range):'';
+  const endLabel=rows[rows.length-1]?websiteChartDateLabel(rows[rows.length-1].at,range):'';
+  return `
+    <div class="website-activity-chart-wrap">
+      <svg class="website-activity-chart" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true">
+        <line class="website-activity-chart-grid" x1="${padX}" y1="${h-padY}" x2="${w-padX}" y2="${h-padY}"></line>
+        <line class="website-activity-chart-grid" x1="${padX}" y1="${padY}" x2="${w-padX}" y2="${padY}"></line>
+        <path class="website-activity-chart-fill" d="${fillPath}"></path>
+        <path class="website-activity-chart-line" d="${path}"></path>
+        ${dots}
+      </svg>
+    </div>
+    <div class="website-activity-chart-axis"><span>${esc(startLabel)}</span><span class="website-activity-chart-total">${total}</span><span>${esc(endLabel)}</span></div>`;
+}
 function rDash(){
   const visibleInventory=visibleInventorySnapshot();
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
@@ -5181,6 +5324,17 @@ function rDash(){
   const websiteUsersTotal=Number(f.websiteUsersTotal)||0;
   const websiteUsersActive=Number(f.websiteUsersActive)||0;
   const websiteUsersPassive=Number(f.websiteUsersPassive)||0;
+  const websiteMetrics=f.websiteMetrics||{};
+  const websiteMetricsAvailable=websiteMetrics.available!==false;
+  const websiteVisits=websiteMetrics.visits||{};
+  const websiteCarts=websiteMetrics.carts||{};
+  const loggedInCarts=websiteCarts.loggedIn||{};
+  const loggedOutCarts=websiteCarts.loggedOut||{};
+  const checkoutLoginRequired=websiteMetrics.checkoutLoginRequired||{};
+  const checkoutLoginCompleted=websiteMetrics.checkoutLoginCompleted||{};
+  const checkoutLoginDropoffCount=Math.max(0,(Number(checkoutLoginRequired.count)||0)-(Number(checkoutLoginCompleted.count)||0));
+  const metricNum=(value)=>websiteMetricsAvailable?String(Number(value)||0):'—';
+  const metricMoney=(value)=>websiteMetricsAvailable?fC(Number(value)||0):'—';
   const orderCountByCid={};
   (S.orders||[]).forEach(o=>{
     if(!o||!o.cid||o.cid<=0) return;
@@ -5305,6 +5459,52 @@ function rDash(){
       </div>
     </div>`;
   }).join(''):`<div class="empty" style="padding:28px 18px"><div class="ei">📋</div><div class="et">No orders yet</div></div>`;
+  const websiteActivity=g('d-website-activity');
+  if(websiteActivity){
+    const range=WEBSITE_ACTIVITY_RANGE||'week';
+    websiteActivity.innerHTML=`
+      <div class="website-activity-grid">
+        <div class="website-activity-card website-activity-card--chart">
+          <div class="website-activity-chart-head">
+            <div>
+              <div class="website-activity-label">Visits</div>
+              <div class="website-activity-sub" style="margin-top:3px">Buckets reset at 12:00 AM</div>
+            </div>
+            <select class="website-activity-range" onchange="setWebsiteActivityRange(this.value)" aria-label="Website visit chart range">
+              <option value="week" ${range==='week'?'selected':''}>1w</option>
+              <option value="month" ${range==='month'?'selected':''}>1m</option>
+              <option value="year" ${range==='year'?'selected':''}>1y</option>
+            </select>
+          </div>
+          ${renderWebsiteVisitChart(websiteMetrics,range,websiteMetricsAvailable)}
+        </div>
+        <div class="website-activity-card website-activity-card--cart">
+          <div class="website-activity-label">Cart Logged In</div>
+          <div class="website-activity-value">${metricNum(loggedInCarts.count)}</div>
+          <div class="website-activity-sub">Avg ${metricMoney(loggedInCarts.avgCartValue)}</div>
+        </div>
+        <div class="website-activity-card website-activity-card--cart">
+          <div class="website-activity-label">Cart Guest</div>
+          <div class="website-activity-value">${metricNum(loggedOutCarts.count)}</div>
+          <div class="website-activity-sub">Avg ${metricMoney(loggedOutCarts.avgCartValue)}</div>
+        </div>
+        <div class="website-activity-card website-activity-card--login">
+          <div class="website-activity-label">Checkout Login Prompt</div>
+          <div class="website-activity-value">${metricNum(checkoutLoginRequired.count)}</div>
+          <div class="website-activity-sub">30d · Avg ${metricMoney(checkoutLoginRequired.avgCartValue)}</div>
+        </div>
+        <div class="website-activity-card website-activity-card--login">
+          <div class="website-activity-label">Signed In After Prompt</div>
+          <div class="website-activity-value">${metricNum(checkoutLoginCompleted.count)}</div>
+          <div class="website-activity-sub">30d · Avg ${metricMoney(checkoutLoginCompleted.avgCartValue)}</div>
+        </div>
+        <div class="website-activity-card website-activity-card--login">
+          <div class="website-activity-label">Prompt Drop-off</div>
+          <div class="website-activity-value">${websiteMetricsAvailable?String(checkoutLoginDropoffCount):'—'}</div>
+          <div class="website-activity-sub">Prompted minus signed in</div>
+        </div>
+      </div>`;
+  }
   renderDashboardBadgeCoupons();
 
   applyDashboardCardVisibility();
@@ -6343,6 +6543,7 @@ async function loadApplicationData(){
   normalizeAppState();
   enterAppMode();
   applyTheme(S?.uiPreferences?.theme||'light');
+  loadWebsiteActivityRange();
   setCustomerFiltersExpanded(false);
   ensureUserManagementUi();
   applyPermissionUI();
@@ -6353,7 +6554,11 @@ async function loadApplicationData(){
     showStartupRenderError(err);
   }
   refreshLoyaltyStatusFromApi();
-  pollStockAlerts().then(()=>{ rDash(); rAlerts(); updBadge(); }).catch(()=>{});
+  pollStockAlerts().then(()=>{
+    if(activeViewId()==='dashboard') rDash();
+    if(activeViewId()==='alerts') rAlerts();
+    updBadge();
+  }).catch(()=>{});
   if(!window.__inventoryPollStarted){
     window.__inventoryPollStarted=true;
     setInterval(pollStockAlerts, 5 * 60 * 1000);

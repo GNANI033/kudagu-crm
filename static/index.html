@@ -7,10 +7,31 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>Kudagu Kaapi — CRM</title>
-<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Instrument+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script>
+try {
+  const key = 'kudagu-theme';
+  const allowed = new Set(['light', 'dark', 'nord', 'solarized', 'dracula']);
+  const raw = String(localStorage.getItem(key) || '').trim().toLowerCase();
+  if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
+} catch (_) {}
+</script>
+<link rel="preload" href="/static/fonts/instrument-sans-400.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/static/fonts/instrument-sans-600.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/static/fonts/syne-700.ttf" as="font" type="font/ttf" crossorigin>
+<link rel="preload" href="/static/fonts/syne-800.ttf" as="font" type="font/ttf" crossorigin>
 <style>
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 400; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-400.ttf') format('truetype'); }
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 500; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-500.ttf') format('truetype'); }
+@font-face { font-family: 'Instrument Sans'; font-style: normal; font-weight: 600; font-stretch: normal; font-display: swap; src: url('/static/fonts/instrument-sans-600.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 400; font-display: swap; src: url('/static/fonts/syne-400.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 500; font-display: swap; src: url('/static/fonts/syne-500.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 600; font-display: swap; src: url('/static/fonts/syne-600.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 700; font-display: swap; src: url('/static/fonts/syne-700.ttf') format('truetype'); }
+@font-face { font-family: 'Syne'; font-style: normal; font-weight: 800; font-display: swap; src: url('/static/fonts/syne-800.ttf') format('truetype'); }
 /* ─── DESIGN TOKENS ─────────────────────────────────────────────────────── */
 :root {
+  --font-ui: 'Instrument Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-display: 'Syne', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --bg:         #f7f7f5;
   --surface:    #ffffff;
   --surface-2:  #f2f2ef;
@@ -112,7 +133,7 @@ html[data-theme="dracula"] {
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html { -webkit-text-size-adjust: 100%; }
-body { font-family: 'Instrument Sans', sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+body { font-family: var(--font-ui); background: var(--bg); color: var(--text); min-height: 100vh; font-size: 14px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
 html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .app { display: flex; min-height: 100vh; width: 100%; max-width: 100%; overflow-x: hidden; }
 
@@ -203,7 +224,7 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .sbox.green-top  { border-top: 2px solid var(--green); }
 .sbox.red-top    { border-top: 2px solid var(--red); }
 .sbox.amber-top  { border-top: 2px solid var(--amber); }
-.sbox-inner { display: flex; min-width: 0; }
+.sbox-inner { display: flex; min-width: 0; min-height: 122px; }
 .sbox-half { flex: 1; min-width: 0; padding: 18px 20px; }
 .sbox-half + .sbox-half { border-left: 1px solid var(--border); }
 .website-users-split { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 0; margin-top: 8px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--surface); }
@@ -211,6 +232,25 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .website-users-stat + .website-users-stat { border-left: 1px solid var(--border); }
 .website-users-label { font-size: 9.5px; font-weight: 800; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .website-users-value { margin-top: 3px; font-size: 22px; font-weight: 850; color: var(--text); line-height: 1.05; }
+.website-activity-grid { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; align-items: stretch; }
+.website-activity-card { min-width: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); display: flex; flex-direction: column; justify-content: center; }
+.website-activity-card--chart { grid-column: 1 / -1; min-height: 158px; padding: 12px 14px; }
+.website-activity-card--cart { grid-column: span 2; min-height: 74px; padding: 11px 14px; }
+.website-activity-card--login { grid-column: span 2; min-height: 62px; padding: 11px 14px; }
+.website-activity-label { font-size: 10px; font-weight: 800; color: var(--text-3); text-transform: uppercase; letter-spacing: .04em; line-height: 1.15; }
+.website-activity-value { margin-top: 4px; font-size: 24px; font-weight: 850; line-height: 1; color: var(--text); }
+.website-activity-card--cart .website-activity-value { font-size: 28px; }
+.website-activity-sub { margin-top: 6px; font-size: 12px; font-weight: 700; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.website-activity-chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 8px; }
+.website-activity-range { width: 76px; min-height: 30px; height: 30px; padding: 4px 24px 4px 9px; font-size: 12px; line-height: 1; }
+.website-activity-chart-wrap { height: 86px; min-height: 86px; }
+.website-activity-chart { display: block; width: 100%; height: 86px; overflow: visible; }
+.website-activity-chart-grid { stroke: var(--border); stroke-width: 1; }
+.website-activity-chart-line { fill: none; stroke: var(--text); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.website-activity-chart-fill { fill: color-mix(in srgb, var(--text) 9%, transparent); }
+.website-activity-chart-dot { fill: var(--surface); stroke: var(--text); stroke-width: 2; }
+.website-activity-chart-axis { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; font-size: 10.5px; font-weight: 700; color: var(--text-3); }
+.website-activity-chart-total { font-size: 18px; font-weight: 850; line-height: 1; color: var(--text); }
 .sl { font-size: 11px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; text-transform: uppercase; }
 .sv { font-family: 'Syne', sans-serif; font-size: 26px; font-weight: 700; color: var(--text); margin-top: 5px; line-height: 1; }
 .sv.red { color: var(--red); } .sv.green { color: var(--green); }
@@ -219,6 +259,12 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 
 /* ─── CARD ──────────────────────────────────────────────────────────────── */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--r); box-shadow: var(--sh-sm); overflow: hidden; }
+.stats-merged, .two, .cg { contain: layout style; }
+.two > .card { min-height: 360px; }
+.cc, .sbox, .website-activity-card { contain: layout paint style; }
+.btn, .nb, .data-btn, .vb, .ch-btn, .qb, .toggle-track, .toggle-track::before, .inline-status-sel, .ctx-item, .dash-order-row, .ai, .cc, .c-menu-btn, .smenu-item, .theme-card, .theme-option, .size-tab, .del-btn, .token-chip, .bnav-item {
+  transition-property: background-color, color, border-color, box-shadow, opacity, transform;
+}
 .orders-card { overflow: visible; }
 .orders-card .tbl-wrap { overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; }
 .orders-toolbar{padding:10px 12px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:7px}
@@ -358,7 +404,8 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
   animation: spin .75s linear infinite;
 }
 .btn-p.is-loading::after { border-color: rgba(255,255,255,.95); border-right-color: transparent; }
-#dash-inv-sync-btn.is-loading::after { border-color: var(--text-3); border-right-color: transparent; }
+#dash-inv-sync-btn.is-loading::after,
+#website-activity-refresh-btn.is-loading::after { border-color: var(--text-3); border-right-color: transparent; }
 .btn-spin {
   width: 12px;
   height: 12px;
@@ -852,6 +899,11 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .sv { font-size: 22px; }
   .sl { font-size: 10px; }
   .sn { font-size: 11px; }
+  .website-activity-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .website-activity-card--cart { grid-column: span 1; }
+  .website-activity-card--chart { grid-column: 1 / -1; }
+  .website-activity-card--login { grid-column: span 1; }
+  .website-activity-value { font-size: 22px; }
 
   /* Prevent heading/action clipping on narrow devices */
   .ph, .ch { gap: 8px; flex-wrap: wrap; }
@@ -975,9 +1027,9 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
         <div class="ch"><div class="ct">Recent Orders</div><button class="btn btn-g btn-xs" onclick="nav('orders')">View all →</button></div>
         <div id="d-orders"></div>
       </div>
-      <div class="card">
-        <div class="ch"><div class="ct">Customer Retention - Coupon <span id="d-bc-count"></span></div><button class="btn btn-g btn-xs" onclick="triggerLoyaltySync()">Sync →</button></div>
-        <div id="d-badge-coupons"></div>
+      <div class="card" id="d-website-activity-card">
+        <div class="ch"><div class="ct">Website Activity</div><button class="btn btn-g btn-xs" id="website-activity-refresh-btn" onclick="refreshWebsiteActivity()" title="Refresh website activity" aria-label="Refresh website activity" style="width:24px;height:24px;min-height:24px;padding:0;display:inline-flex;align-items:center;justify-content:center;background:transparent;border:none;box-shadow:none;color:var(--text-3);font-size:16px;line-height:1"><span>⟳</span></button></div>
+        <div class="cb" id="d-website-activity"></div>
       </div>
     </div>
   </div>
@@ -1275,6 +1327,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 
         <div id="mkt-meta" style="font-size:12px;color:var(--text-3)"></div>
       </div>
+    </div>
+    <div class="card" style="max-width:1050px">
+      <div class="ch"><div class="ct">Customer Retention - Coupon <span id="d-bc-count"></span></div><button class="btn btn-g btn-xs" onclick="triggerLoyaltySync()">Sync →</button></div>
+      <div id="d-badge-coupons"></div>
     </div>
   </div>
 
@@ -1820,14 +1876,6 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script>
-try {
-  const key = 'kudagu-theme';
-  const allowed = new Set(['light', 'dark', 'nord', 'solarized', 'dracula']);
-  const raw = String(localStorage.getItem(key) || '').trim().toLowerCase();
-  if (allowed.has(raw)) document.documentElement.setAttribute('data-theme', raw);
-} catch (_) {}
-</script>
-<script src="/static/app.js?v=20260618-selected-invoices-11"></script>
+<script src="/static/app.js?v=20260623-activity-chart-1"></script>
 </body>
 </html>

@@ -39,6 +39,7 @@ import subprocess
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -162,6 +163,8 @@ UI_PREFS_LOCK = threading.RLock()
 DATA_CACHE: dict | None = None
 DASHBOARD_CACHE_LOCK = threading.RLock()
 DASHBOARD_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
+WEBSITE_METRICS_CACHE_LOCK = threading.RLock()
+WEBSITE_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
 SCHEMA_VERSION = 4
@@ -511,6 +514,221 @@ def _website_loyalty_request(path: str, *, method: str = "GET", body: dict | Non
         raise HTTPException(status_code=502, detail=f"Website loyalty API error ({exc.code}). {detail[:180]}") from exc
     except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=502, detail=f"Website loyalty API unavailable: {_redact_sensitive_text(str(exc))}") from exc
+
+
+def _empty_website_metrics_snapshot(*, available: bool = False, error: str = "") -> dict[str, Any]:
+    payload = {
+        "available": bool(available),
+        "generatedAt": int(time.time() * 1000),
+        "visits": {
+            "last24Hours": 0,
+            "last7Days": 0,
+            "last30Days": 0,
+            "last365Days": 0,
+        },
+        "visitSeries": _empty_website_visit_series(),
+        "carts": {
+            "loggedIn": {"count": 0, "avgCartValue": 0.0},
+            "loggedOut": {"count": 0, "avgCartValue": 0.0},
+        },
+        "checkoutLoginRequired": {"count": 0, "avgCartValue": 0.0, "windowDays": 30},
+        "checkoutLoginCompleted": {"count": 0, "avgCartValue": 0.0, "windowDays": 30},
+    }
+    if error:
+        payload["error"] = error[:160]
+    return payload
+
+
+def _local_midnight_ms(dt: datetime | None = None) -> int:
+    now = (dt or datetime.now()).astimezone()
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp() * 1000)
+
+
+def _empty_website_visit_buckets(days: int) -> list[dict[str, Any]]:
+    today_start = _local_midnight_ms()
+    day_ms = 86400000
+    start = today_start - ((days - 1) * day_ms)
+    return [{"at": start + (idx * day_ms), "count": 0} for idx in range(days)]
+
+
+def _empty_website_visit_month_buckets(months: int = 12) -> list[dict[str, Any]]:
+    now = datetime.now().astimezone()
+    current = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    rows: list[dict[str, Any]] = []
+    for offset in range(months - 1, -1, -1):
+        month_index = (current.month - 1) - offset
+        year = current.year + (month_index // 12)
+        month = (month_index % 12) + 1
+        bucket = current.replace(year=year, month=month)
+        rows.append({"at": int(bucket.timestamp() * 1000), "count": 0})
+    return rows
+
+
+def _empty_website_visit_series() -> dict[str, list[dict[str, Any]]]:
+    return {
+        "week": _empty_website_visit_buckets(7),
+        "month": _empty_website_visit_buckets(30),
+        "year": _empty_website_visit_month_buckets(12),
+    }
+
+
+def _parse_visit_bucket_at(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        raw = float(value)
+        if raw <= 0:
+            return None
+        if raw < 10000000000:
+            raw *= 1000
+        return _local_midnight_ms(datetime.fromtimestamp(raw / 1000).astimezone())
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            dt = datetime.strptime(text[:10], "%Y-%m-%d")
+        except ValueError:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    return _local_midnight_ms(dt.astimezone())
+
+
+def _visit_bucket_count(row: Any) -> int:
+    if isinstance(row, (int, float)):
+        return max(0, int(_safe_float(row)))
+    if not isinstance(row, dict):
+        return 0
+    for key in ("count", "visits", "value", "total"):
+        if key in row:
+            return max(0, int(_safe_float(row.get(key))))
+    return 0
+
+
+def _visit_bucket_at(row: Any, fallback_at: int) -> int:
+    if not isinstance(row, dict):
+        return fallback_at
+    for key in ("at", "date", "day", "bucketStart", "bucketStartAt", "timestamp", "ts"):
+        parsed = _parse_visit_bucket_at(row.get(key))
+        if parsed is not None:
+            return parsed
+    return fallback_at
+
+
+def _month_start_ms(value: Any) -> int | None:
+    parsed = _parse_visit_bucket_at(value)
+    if parsed is None:
+        return None
+    dt = datetime.fromtimestamp(parsed / 1000).astimezone()
+    return int(dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0).timestamp() * 1000)
+
+
+def _coerce_visit_series(rows: Any, points: int, fallback_total: int = 0, *, monthly: bool = False) -> list[dict[str, Any]]:
+    buckets = _empty_website_visit_month_buckets(points) if monthly else _empty_website_visit_buckets(points)
+    allowed = {int(row["at"]) for row in buckets}
+    by_at: dict[int, int] = {int(row["at"]): 0 for row in buckets}
+    if isinstance(rows, list) and rows:
+        fallback_start = int(buckets[0]["at"])
+        for idx, row in enumerate(rows[-points:]):
+            fallback_at = int(buckets[min(idx, len(buckets)-1)]["at"]) if monthly else fallback_start + (idx * 86400000)
+            at = _month_start_ms(row.get("at") or row.get("date") or row.get("day") or row.get("bucketStart") or row.get("bucketStartAt") or row.get("timestamp") or row.get("ts")) if monthly and isinstance(row, dict) else _visit_bucket_at(row, fallback_at)
+            at = at if at is not None else fallback_at
+            if at in allowed:
+                by_at[at] = by_at.get(at, 0) + _visit_bucket_count(row)
+    elif fallback_total > 0:
+        base = int(fallback_total) // points
+        extra = int(fallback_total) % points
+        for idx, row in enumerate(buckets):
+            by_at[int(row["at"])] = base + (1 if idx >= points - extra else 0)
+    return [{"at": int(row["at"]), "count": by_at.get(int(row["at"]), 0)} for row in buckets]
+
+
+def _normalize_website_visit_series(raw: dict, visits: dict) -> dict[str, list[dict[str, Any]]]:
+    source = raw.get("visitSeries") if isinstance(raw.get("visitSeries"), dict) else {}
+    visits_series = visits.get("series") if isinstance(visits.get("series"), dict) else {}
+    daily = raw.get("dailyVisits") if isinstance(raw.get("dailyVisits"), list) else None
+    daily = daily if daily is not None else (visits.get("daily") if isinstance(visits.get("daily"), list) else None)
+    return {
+        "week": _coerce_visit_series(source.get("week") or visits_series.get("week") or visits.get("last7DaysSeries") or daily, 7, int(_safe_float(visits.get("last7Days")))),
+        "month": _coerce_visit_series(source.get("month") or visits_series.get("month") or visits.get("last30DaysSeries") or daily, 30, int(_safe_float(visits.get("last30Days")))),
+        "year": _coerce_visit_series(source.get("year") or visits_series.get("year") or visits.get("last365DaysSeries") or raw.get("monthlyVisits"), 12, int(_safe_float(visits.get("last365Days"))), monthly=True),
+    }
+
+
+def _normalize_website_metrics_snapshot(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return _empty_website_metrics_snapshot(error="invalid_response")
+    base = _empty_website_metrics_snapshot(available=True)
+    visits = raw.get("visits") if isinstance(raw.get("visits"), dict) else {}
+    carts = raw.get("carts") if isinstance(raw.get("carts"), dict) else {}
+    for key in base["visits"]:
+        base["visits"][key] = int(_safe_float(visits.get(key)))
+    base["visitSeries"] = _normalize_website_visit_series(raw, visits)
+    for bucket in ("loggedIn", "loggedOut"):
+        source = carts.get(bucket) if isinstance(carts.get(bucket), dict) else {}
+        base["carts"][bucket] = {
+            "count": int(_safe_float(source.get("count"))),
+            "avgCartValue": round(float(_safe_float(source.get("avgCartValue"))), 2),
+        }
+    checkout_login_required = raw.get("checkoutLoginRequired") if isinstance(raw.get("checkoutLoginRequired"), dict) else {}
+    base["checkoutLoginRequired"] = {
+        "count": int(_safe_float(checkout_login_required.get("count"))),
+        "avgCartValue": round(float(_safe_float(checkout_login_required.get("avgCartValue"))), 2),
+        "windowDays": int(_safe_float(checkout_login_required.get("windowDays")) or 30),
+    }
+    checkout_login_completed = raw.get("checkoutLoginCompleted") if isinstance(raw.get("checkoutLoginCompleted"), dict) else {}
+    base["checkoutLoginCompleted"] = {
+        "count": int(_safe_float(checkout_login_completed.get("count"))),
+        "avgCartValue": round(float(_safe_float(checkout_login_completed.get("avgCartValue"))), 2),
+        "windowDays": int(_safe_float(checkout_login_completed.get("windowDays")) or 30),
+    }
+    base["generatedAt"] = int(_safe_float(raw.get("generatedAt")) or time.time() * 1000)
+    return base
+
+
+def _fetch_website_metrics_snapshot() -> dict[str, Any]:
+    if not WEBSITE_BACKEND_BASE_URL or not WEBSITE_BACKEND_API_KEY:
+        return _empty_website_metrics_snapshot(error="not_configured")
+    endpoint = f"{WEBSITE_BACKEND_BASE_URL}/internal/metrics/website"
+    req = urlrequest.Request(
+        endpoint,
+        headers=_website_backend_headers(),
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=3.0) as resp:
+            raw = resp.read().decode("utf-8")
+            return _normalize_website_metrics_snapshot(json.loads(raw) if raw else {})
+    except urlerror.HTTPError as exc:
+        detail = _redact_sensitive_text(exc.read().decode("utf-8", errors="ignore"))
+        return _empty_website_metrics_snapshot(error=f"http_{exc.code}:{detail[:80]}")
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return _empty_website_metrics_snapshot(error=_redact_sensitive_text(str(exc))[:120])
+
+
+def _get_cached_website_metrics_snapshot(ttl_seconds: int = 60) -> dict[str, Any]:
+    now = time.time()
+    with WEBSITE_METRICS_CACHE_LOCK:
+        cached = WEBSITE_METRICS_CACHE.get("payload")
+        if cached is not None and now < float(WEBSITE_METRICS_CACHE.get("expires_at") or 0):
+            return copy.deepcopy(cached)
+    payload = _fetch_website_metrics_snapshot()
+    with WEBSITE_METRICS_CACHE_LOCK:
+        WEBSITE_METRICS_CACHE["payload"] = copy.deepcopy(payload)
+        WEBSITE_METRICS_CACHE["expires_at"] = now + max(1, ttl_seconds)
+    return payload
+
+
+def _refresh_website_metrics_snapshot(ttl_seconds: int = 60) -> dict[str, Any]:
+    payload = _fetch_website_metrics_snapshot()
+    with WEBSITE_METRICS_CACHE_LOCK:
+        WEBSITE_METRICS_CACHE["payload"] = copy.deepcopy(payload)
+        WEBSITE_METRICS_CACHE["expires_at"] = time.time() + max(1, ttl_seconds)
+    return payload
 
 
 def _inventory_circuit_open() -> bool:
@@ -2997,6 +3215,7 @@ def _compute_dashboard_metrics(data: dict) -> dict:
         "websiteUsersTotal": website_users_total,
         "websiteUsersActive": website_users_active,
         "websiteUsersPassive": website_users_passive,
+        "websiteMetrics": _empty_website_metrics_snapshot(),
         "generatedAt": int(now_ms),
     }
 
@@ -4987,11 +5206,13 @@ async def get_bootstrap(request: Request):
     filtered = _filtered_data_for_user(data, ctx.get("user"))
     bootstrap_state = _client_safe_data(filtered, request, auth_source_data=data)
     metrics_source = {**filtered, "websiteUsers": data.get("websiteUsers", []) or []}
+    dashboard_metrics = _compute_dashboard_metrics(metrics_source)
+    dashboard_metrics["websiteMetrics"] = _get_cached_website_metrics_snapshot()
     return JSONResponse(
         {
             "state": bootstrap_state,
             "dashboardMetrics": _sanitize_dashboard_metrics_for_user(
-                _compute_dashboard_metrics(metrics_source),
+                dashboard_metrics,
                 ctx.get("user"),
             ),
             "featureConfig": {
@@ -5001,6 +5222,13 @@ async def get_bootstrap(request: Request):
             },
         }
     )
+
+
+@app.post("/api/dashboard/website-metrics/refresh")
+async def refresh_dashboard_website_metrics(request: Request):
+    data = read_data()
+    _require_signed_in(request, data)
+    return JSONResponse(content={"websiteMetrics": _refresh_website_metrics_snapshot()})
 
 
 def _normalize_awb_candidate(raw: Any) -> str:
