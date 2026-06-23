@@ -789,6 +789,35 @@ def _fetch_website_metrics_snapshot() -> dict[str, Any]:
         return _empty_website_metrics_snapshot(error=_redact_sensitive_text(str(exc))[:120])
 
 
+def _fetch_logged_in_cart_details_from_website() -> dict[str, Any]:
+    if not WEBSITE_BACKEND_BASE_URL or not WEBSITE_BACKEND_API_KEY:
+        return {"available": False, "error": "not_configured", "carts": [], "windowDays": 30}
+    endpoint = f"{WEBSITE_BACKEND_BASE_URL}/internal/metrics/website/logged-in-carts"
+    req = urlrequest.Request(
+        endpoint,
+        headers=_website_backend_headers(),
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=4.0) as resp:
+            raw = resp.read().decode("utf-8")
+            payload = json.loads(raw) if raw else {}
+            if not isinstance(payload, dict):
+                return {"available": False, "error": "invalid_response", "carts": [], "windowDays": 30}
+            carts = payload.get("carts") if isinstance(payload.get("carts"), list) else []
+            return {
+                "available": True,
+                "generatedAt": int(_safe_float(payload.get("generatedAt")) or time.time() * 1000),
+                "windowDays": int(_safe_float(payload.get("windowDays")) or 30),
+                "carts": carts,
+            }
+    except urlerror.HTTPError as exc:
+        detail = _redact_sensitive_text(exc.read().decode("utf-8", errors="ignore"))
+        return {"available": False, "error": f"http_{exc.code}:{detail[:80]}", "carts": [], "windowDays": 30}
+    except (urlerror.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        return {"available": False, "error": _redact_sensitive_text(str(exc))[:120], "carts": [], "windowDays": 30}
+
+
 def _get_cached_website_metrics_snapshot(ttl_seconds: int = 60) -> dict[str, Any]:
     now = time.time()
     with WEBSITE_METRICS_CACHE_LOCK:
@@ -808,6 +837,83 @@ def _refresh_website_metrics_snapshot(ttl_seconds: int = 60) -> dict[str, Any]:
         WEBSITE_METRICS_CACHE["payload"] = copy.deepcopy(payload)
         WEBSITE_METRICS_CACHE["expires_at"] = time.time() + max(1, ttl_seconds)
     return payload
+
+
+def _sanitize_logged_in_cart_item(raw: Any) -> dict[str, Any] | None:
+    if not isinstance(raw, dict):
+        return None
+    quantity = int(_safe_float(raw.get("quantity")))
+    if quantity <= 0:
+        return None
+    unit_price = round(float(_safe_float(raw.get("unitPrice"))), 2)
+    line_total = round(float(_safe_float(raw.get("lineTotal")) or (unit_price * quantity)), 2)
+    return {
+        "name": str(raw.get("name") or "").strip()[:180],
+        "variant": str(raw.get("variant") or "").strip()[:120],
+        "quantity": quantity,
+        "unitPrice": unit_price,
+        "lineTotal": line_total,
+        "subscriptionTag": str(raw.get("subscriptionTag") or "").strip()[:120],
+        "subscriptionFrequency": str(raw.get("subscriptionFrequency") or "").strip()[:80],
+        "subscriptionDuration": str(raw.get("subscriptionDuration") or "").strip()[:80],
+    }
+
+
+def _build_logged_in_cart_details_for_user(data: dict, user: dict | None) -> dict[str, Any]:
+    _ensure_page_access(user, "dashboard")
+    if not _has_financial_access(user):
+        raise HTTPException(status_code=403, detail="Financial dashboard access is required.")
+
+    upstream = _fetch_logged_in_cart_details_from_website()
+    website_users_by_id = {
+        str(row.get("id") or "").strip(): row
+        for row in data.get("websiteUsers", []) or []
+        if isinstance(row, dict)
+    }
+    customers_by_id = {
+        int(_safe_float(row.get("id"))): row
+        for row in data.get("customers", []) or []
+        if isinstance(row, dict) and int(_safe_float(row.get("id"))) > 0
+    }
+    visible_customer_ids = _visible_customer_ids_for_user(user, data)
+    carts: list[dict[str, Any]] = []
+    upstream_carts = upstream.get("carts") if isinstance(upstream.get("carts"), list) else []
+    for raw in upstream_carts:
+        if not isinstance(raw, dict):
+            continue
+        website_user_id = str(raw.get("websiteUserId") or "").strip()
+        website_user = website_users_by_id.get(website_user_id) or {}
+        customer_id = int(_safe_float(website_user.get("customerId")))
+        if visible_customer_ids is not None and (customer_id <= 0 or customer_id not in visible_customer_ids):
+            continue
+        customer = customers_by_id.get(customer_id) or {}
+        display_name = (
+            str(customer.get("name") or "").strip()
+            or str(website_user.get("name") or "").strip()
+            or f"Website user #{website_user_id}"
+        )
+        items = [
+            item
+            for item in (_sanitize_logged_in_cart_item(row) for row in (raw.get("items") if isinstance(raw.get("items"), list) else []))
+            if item is not None
+        ]
+        carts.append(
+            {
+                "websiteUserId": website_user_id,
+                "customerId": customer_id,
+                "customerName": display_name[:160],
+                "cartValue": round(float(_safe_float(raw.get("cartSubtotal"))), 2),
+                "itemCount": int(_safe_float(raw.get("itemCount"))),
+                "updatedAt": int(_safe_float(raw.get("updatedAt"))),
+                "items": items,
+            }
+        )
+    return {
+        "available": bool(upstream.get("available", True)),
+        "windowDays": int(_safe_float(upstream.get("windowDays")) or 30),
+        "generatedAt": int(_safe_float(upstream.get("generatedAt")) or time.time() * 1000),
+        "carts": carts,
+    }
 
 
 def _inventory_circuit_open() -> bool:
@@ -5308,6 +5414,13 @@ async def refresh_dashboard_website_metrics(request: Request):
     data = read_data()
     _require_signed_in(request, data)
     return JSONResponse(content={"websiteMetrics": _refresh_website_metrics_snapshot()})
+
+
+@app.get("/api/dashboard/website-carts/logged-in")
+async def logged_in_website_cart_details(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    return JSONResponse(content=_build_logged_in_cart_details_for_user(data, ctx.get("user")))
 
 
 def _normalize_awb_candidate(raw: Any) -> str:

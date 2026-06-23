@@ -4911,6 +4911,59 @@ async function refreshWebsiteActivity(){
     setWebsiteActivityRefreshLoading(false);
   }
 }
+async function showLoggedInCartDetails(){
+  openModal(`
+    <div class="modal-title">Logged-in Carts</div>
+    <div style="margin-top:12px;color:var(--text-3);font-size:13px">Loading cart details...</div>
+  `,'lg');
+  try{
+    const res=await api.get('/api/dashboard/website-carts/logged-in');
+    const carts=Array.isArray(res?.carts)?res.carts:[];
+    const rows=carts.length?carts.map((cart,idx)=>{
+      const items=Array.isArray(cart.items)?cart.items:[];
+      const itemRows=items.length?items.map(item=>{
+        const label=[item.name,item.variant].filter(Boolean).join(' · ') || 'Cart item';
+        const sub=[item.subscriptionTag,item.subscriptionFrequency,item.subscriptionDuration].filter(Boolean).join(' · ');
+        return `<div class="cart-detail-item">
+          <div><strong>${esc(label)}</strong>${sub?`<div>${esc(sub)}</div>`:''}<div>Qty ${Number(item.quantity)||0} · ${fC(Number(item.unitPrice)||0)}</div></div>
+          <div>${fC(Number(item.lineTotal)||0)}</div>
+        </div>`;
+      }).join(''):'<div class="cart-detail-item"><div>No item detail available.</div><div></div></div>';
+      const updated=Number(cart.updatedAt)||0;
+      return `<details class="cart-detail-row" ${idx===0?'open':''}>
+        <summary>
+          <div>
+            <div class="cart-detail-name">${esc(cart.customerName||'Website customer')}</div>
+            <div class="website-activity-sub">${Number(cart.itemCount)||0} item${Number(cart.itemCount)===1?'':'s'}${updated?` · Updated ${fdt(updated)}`:''}</div>
+          </div>
+          <div class="cart-detail-value">${fC(Number(cart.cartValue)||0)}</div>
+        </summary>
+        <div class="cart-detail-items">${itemRows}</div>
+      </details>`;
+    }).join(''):'<div style="margin-top:12px;color:var(--text-3);font-size:13px">No active logged-in carts in the last 30 days.</div>';
+    const unavailable=res?.available===false?'<div style="margin-top:10px;color:var(--red);font-size:12px">Website cart detail service is unavailable.</div>':'';
+    const box=g('modal-box');
+    if(box){
+      box.className='modal-box modal-lg';
+      box.innerHTML=`
+        <div class="modal-title">Logged-in Carts</div>
+        <div style="margin-top:6px;color:var(--text-3);font-size:12px">Active carts updated in the last ${Number(res?.windowDays)||30} days. Customer contact details are not exposed here.</div>
+        ${unavailable}
+        <div class="cart-detail-list">${rows}</div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-s" onclick="closeModal()">Close</button></div>
+      `;
+    }
+  }catch(e){
+    const box=g('modal-box');
+    if(box){
+      box.innerHTML=`
+        <div class="modal-title">Logged-in Carts</div>
+        <div style="margin-top:12px;color:var(--red);font-size:13px">Could not load cart details.</div>
+        <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-s" onclick="closeModal()">Close</button></div>
+      `;
+    }
+  }
+}
 async function syncCompletedOrdersToInventory(){
   try{
     const res=await postJSONWithTimeout('/api/inventory/sync-completed-orders',{},45000);
@@ -5507,7 +5560,7 @@ function rDash(){
           </div>
           ${renderWebsiteVisitChart(websiteMetrics,range,websiteMetricsAvailable)}
         </div>
-        <div class="website-activity-card website-activity-card--cart">
+        <div class="website-activity-card website-activity-card--cart is-clickable" role="button" tabindex="0" onclick="showLoggedInCartDetails()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showLoggedInCartDetails();}">
           <div class="website-activity-label">Cart Logged In</div>
           <div class="website-activity-value">${metricNum(loggedInCarts.count)}</div>
           <div class="website-activity-sub">Avg ${metricMoney(loggedInCarts.avgCartValue)}</div>
