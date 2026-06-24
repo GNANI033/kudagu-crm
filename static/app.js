@@ -4930,7 +4930,7 @@ async function showLoggedInCartDetails(){
         </div>`;
       }).join(''):'<div class="cart-detail-item"><div>No item detail available.</div><div></div></div>';
       const updated=Number(cart.updatedAt)||0;
-      return `<details class="cart-detail-row" ${idx===0?'open':''}>
+      return `<details class="cart-detail-row">
         <summary>
           <div>
             <div class="cart-detail-name">${esc(cart.customerName||'Website customer')}</div>
@@ -5368,6 +5368,169 @@ function renderWebsiteVisitChart(metrics, range, available=true){
     </div>
     <div class="website-activity-chart-axis"><span>${esc(startLabel)}</span><span class="website-activity-chart-total">${total}</span><span>${esc(endLabel)}</span></div>`;
 }
+function renderWebsiteFunnel(metrics, available=true){
+  if(!available) return '<div class="website-ladder"><div class="website-ladder-empty">Conversion data unavailable</div></div>';
+  const steps=Array.isArray(metrics?.funnel?.steps)?metrics.funnel.steps:[];
+  if(!steps.length) return '<div class="website-ladder"><div class="website-ladder-empty">No conversion data yet</div></div>';
+  const max=Math.max(1,...steps.map(step=>Number(step.count)||0));
+  return `<div class="website-ladder">
+    <div class="website-ladder-table">
+      <div class="website-ladder-head">
+        <div>Step</div>
+        <div>Count</div>
+        <div>Conv</div>
+        <div>Drop</div>
+      </div>
+      <div class="website-ladder-body">
+        ${steps.map((step,idx)=>{
+          const count=Math.max(0,Number(step.count)||0);
+          const conv=Number(step.conversionPct)||0;
+          const drop=Number(step.dropoffPct)||0;
+          const widthPct=Math.max(6, Math.min(100, (count/max)*100));
+          const label=step.label||step.key||'Step';
+          return `<div class="website-ladder-row">
+            <div class="website-ladder-step">
+              <div class="website-ladder-index">${idx+1}</div>
+              <div class="website-ladder-label">${esc(label)}</div>
+            </div>
+            <div class="website-ladder-count">
+              <div class="website-ladder-count-value">${esc(String(count))}</div>
+              <div class="website-ladder-count-bar"><span style="width:${widthPct}%"></span></div>
+            </div>
+            <div class="website-ladder-conv">${idx===0?'100.0%':`${conv.toFixed(1)}%`}</div>
+            <div class="website-ladder-drop">${idx===0?'0.0%':`${drop.toFixed(1)}%`}</div>
+          </div>`;
+        }).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+function renderWebsitePromptFlow(metrics, available=true){
+  if(!available) return '<div class="website-flow-empty">Checkout prompt metrics unavailable</div>';
+  const shown=Number(metrics?.checkoutLoginRequired?.count)||0;
+  const loginSuccess=Math.max(0,(Number(metrics?.checkoutLoginCompleted?.count)||0)-(Number(metrics?.checkoutRegistrationCompleted?.count)||0));
+  const registrationSuccess=Number(metrics?.checkoutRegistrationCompleted?.count)||0;
+  const dropoff=Math.max(0,shown-(Number(metrics?.checkoutLoginCompleted?.count)||0));
+  const rows=[
+    {key:'login', label:'Login success', count:loginSuccess, pct:shown>0?(loginSuccess/shown)*100:0, cls:'is-login'},
+    {key:'register', label:'Registration success', count:registrationSuccess, pct:shown>0?(registrationSuccess/shown)*100:0, cls:'is-register'},
+    {key:'dropoff', label:'Prompt drop-off', count:dropoff, pct:shown>0?(dropoff/shown)*100:0, cls:'is-dropoff'}
+  ];
+  const totalShown=Math.max(0,shown);
+  return `<div class="website-flow">
+    <div class="website-band-head">
+      <div>
+        <div class="website-band-kicker">Checkout prompt conversion</div>
+        <div class="website-band-title">Prompt -> login -> registration</div>
+      </div>
+      <div class="website-band-note">${shown?`${shown} prompts`:'No prompts yet'}</div>
+    </div>
+    <div class="website-prompt-bar-wrap">
+      <div class="website-prompt-bar" aria-hidden="true">
+        ${totalShown>0?rows.map((row)=>{
+          const width=Math.max(0,(row.count/totalShown)*100);
+          return `<span class="website-prompt-seg ${row.cls}" style="width:${width}%"></span>`;
+        }).join(''):''}
+      </div>
+      <div class="website-prompt-legend">
+        <span><i class="website-prompt-dot is-login"></i>Login ${loginSuccess}</span>
+        <span><i class="website-prompt-dot is-register"></i>Reg ${registrationSuccess}</span>
+        <span><i class="website-prompt-dot is-dropoff"></i>Drop ${dropoff}</span>
+      </div>
+      <div class="website-prompt-foot">
+        <span>Shown ${totalShown}</span>
+        <span>${shown>0?`${((loginSuccess/shown)*100).toFixed(1)}% login`:'0.0% login'}</span>
+        <span>${shown>0?`${((registrationSuccess/shown)*100).toFixed(1)}% reg`:'0.0% reg'}</span>
+        <span>${shown>0?`${((dropoff/shown)*100).toFixed(1)}% drop`:'0.0% drop'}</span>
+      </div>
+    </div>
+  </div>`;
+}
+function websiteDeviceTotals(metrics){
+  const source=metrics?.deviceBreakdown?.carts||{};
+  const buckets=[source.loggedIn||{}, source.loggedOut||{}];
+  const totals={mobile:0,desktop:0,tablet:0,other:0};
+  buckets.forEach(bucket=>{
+    totals.mobile += Number(bucket.mobile)||0;
+    totals.desktop += Number(bucket.desktop)||0;
+    totals.tablet += Number(bucket.tablet)||0;
+    totals.other += Number(bucket.other)||0;
+  });
+  return totals;
+}
+function websiteCartDeviceLegend(totals){
+  const items=[
+    ['mobile','Mob'],
+    ['desktop','Desk'],
+    ['tablet','Tab'],
+    ['other','Other']
+  ].map(([key,label])=>`${label} ${Number(totals[key])||0}`).filter(s=>!s.endsWith(' 0'));
+  return items.length?items.join(' · '):'No device split yet';
+}
+function renderWebsiteCartMix(metrics, available=true){
+  if(!available) return '<div class="website-flow-empty">Cart metrics unavailable</div>';
+  const loggedIn=metrics?.carts?.loggedIn||{};
+  const loggedOut=metrics?.carts?.loggedOut||{};
+  const totals=websiteDeviceTotals(metrics);
+  const totalCount=(Number(loggedIn.count)||0)+(Number(loggedOut.count)||0);
+  const totalAvg=totalCount>0
+    ? (((Number(loggedIn.avgCartValue)||0)*(Number(loggedIn.count)||0) + (Number(loggedOut.avgCartValue)||0)*(Number(loggedOut.count)||0)) / totalCount)
+    : 0;
+  const summaryNote=totalCount>0 ? `${esc(String(totalCount))} active carts · Avg ${fC(totalAvg||0)}` : 'No active carts';
+  const deviceTotal=Math.max(1, totals.mobile+totals.desktop+totals.tablet+totals.other);
+  const segments=[
+    ['mobile','var(--blue)'],
+    ['desktop','var(--green)'],
+    ['tablet','var(--amber)'],
+    ['other','var(--red)']
+  ].map(([key,color])=>{
+    const n=Number(totals[key])||0;
+    const w=Math.max(0,n/deviceTotal*100);
+    return `<div class="website-device-mix-segment" style="width:${w}%;background:${color};display:${n>0?'block':'none'}"></div>`;
+  }).join('');
+  return `<div class="website-cart-mix">
+    <div class="website-band-head">
+      <div>
+        <div class="website-band-kicker">Cart mix</div>
+        <div class="website-band-title">Logged in vs guest carts</div>
+      </div>
+      <div class="website-band-note">${summaryNote}</div>
+    </div>
+    <div class="website-cart-summary-grid">
+      <button class="website-cart-summary is-clickable" type="button" onclick="showLoggedInCartDetails()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showLoggedInCartDetails();}" aria-label="Open logged in cart customer details">
+        <div class="website-cart-summary-label">Logged in carts</div>
+        <div class="website-cart-summary-value">${Number(loggedIn.count)||0}</div>
+        <div class="website-cart-summary-sub">Avg ${fC(Number(loggedIn.avgCartValue)||0)} · view customers</div>
+      </button>
+      <div class="website-cart-summary">
+        <div class="website-cart-summary-label">Guest carts</div>
+        <div class="website-cart-summary-value">${Number(loggedOut.count)||0}</div>
+        <div class="website-cart-summary-sub">Avg ${fC(Number(loggedOut.avgCartValue)||0)}</div>
+      </div>
+    </div>
+    <div class="website-device-mix">
+      <div class="website-device-mix-head">
+        <span>Device mix</span>
+        <span>${websiteCartDeviceLegend(totals)}</span>
+      </div>
+      <div class="website-device-mix-bar">${segments||''}</div>
+    </div>
+  </div>`;
+}
+function websiteCartDeviceText(metrics,bucket){
+  const source=metrics?.deviceBreakdown?.carts?.[bucket]||{};
+  const mobile=Number(source.mobile)||0;
+  const desktop=Number(source.desktop)||0;
+  const tablet=Number(source.tablet)||0;
+  const other=Number(source.other)||0;
+  const parts=[
+    mobile?`Mob ${mobile}`:'',
+    desktop?`Desk ${desktop}`:'',
+    tablet?`Tab ${tablet}`:'',
+    other?`Other ${other}`:''
+  ].filter(Boolean);
+  return parts.length?parts.join(' · '):'No device split yet';
+}
 function rDash(){
   const visibleInventory=visibleInventorySnapshot();
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
@@ -5410,13 +5573,7 @@ function rDash(){
   const websiteMetricsAvailable=websiteMetrics.available!==false;
   const websiteVisits=websiteMetrics.visits||{};
   const websiteCarts=websiteMetrics.carts||{};
-  const loggedInCarts=websiteCarts.loggedIn||{};
-  const loggedOutCarts=websiteCarts.loggedOut||{};
   const checkoutLoginRequired=websiteMetrics.checkoutLoginRequired||{};
-  const checkoutLoginCompleted=websiteMetrics.checkoutLoginCompleted||{};
-  const checkoutLoginDropoffCount=Math.max(0,(Number(checkoutLoginRequired.count)||0)-(Number(checkoutLoginCompleted.count)||0));
-  const metricNum=(value)=>websiteMetricsAvailable?String(Number(value)||0):'—';
-  const metricMoney=(value)=>websiteMetricsAvailable?fC(Number(value)||0):'—';
   const orderCountByCid={};
   (S.orders||[]).forEach(o=>{
     if(!o||!o.cid||o.cid<=0) return;
@@ -5545,8 +5702,8 @@ function rDash(){
   if(websiteActivity){
     const range=WEBSITE_ACTIVITY_RANGE||'week';
     websiteActivity.innerHTML=`
-      <div class="website-activity-grid">
-        <div class="website-activity-card website-activity-card--chart">
+    <div class="website-activity-stack">
+      <div class="website-activity-band website-activity-band--overview">
           <div class="website-activity-chart-head">
             <div>
               <div class="website-activity-label">Visits</div>
@@ -5556,36 +5713,14 @@ function rDash(){
               <option value="week" ${range==='week'?'selected':''}>1w</option>
               <option value="month" ${range==='month'?'selected':''}>1m</option>
               <option value="year" ${range==='year'?'selected':''}>1y</option>
-            </select>
-          </div>
-          ${renderWebsiteVisitChart(websiteMetrics,range,websiteMetricsAvailable)}
+          </select>
         </div>
-        <div class="website-activity-card website-activity-card--cart is-clickable" role="button" tabindex="0" onclick="showLoggedInCartDetails()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();showLoggedInCartDetails();}">
-          <div class="website-activity-label">Cart Logged In</div>
-          <div class="website-activity-value">${metricNum(loggedInCarts.count)}</div>
-          <div class="website-activity-sub">Avg ${metricMoney(loggedInCarts.avgCartValue)}</div>
-        </div>
-        <div class="website-activity-card website-activity-card--cart">
-          <div class="website-activity-label">Cart Guest</div>
-          <div class="website-activity-value">${metricNum(loggedOutCarts.count)}</div>
-          <div class="website-activity-sub">Avg ${metricMoney(loggedOutCarts.avgCartValue)}</div>
-        </div>
-        <div class="website-activity-card website-activity-card--login">
-          <div class="website-activity-label">Checkout Login Prompt</div>
-          <div class="website-activity-value">${metricNum(checkoutLoginRequired.count)}</div>
-          <div class="website-activity-sub">30d · Avg ${metricMoney(checkoutLoginRequired.avgCartValue)}</div>
-        </div>
-        <div class="website-activity-card website-activity-card--login">
-          <div class="website-activity-label">Signed In After Prompt</div>
-          <div class="website-activity-value">${metricNum(checkoutLoginCompleted.count)}</div>
-          <div class="website-activity-sub">30d · Avg ${metricMoney(checkoutLoginCompleted.avgCartValue)}</div>
-        </div>
-        <div class="website-activity-card website-activity-card--login">
-          <div class="website-activity-label">Prompt Drop-off</div>
-          <div class="website-activity-value">${websiteMetricsAvailable?String(checkoutLoginDropoffCount):'—'}</div>
-          <div class="website-activity-sub">Prompted minus signed in</div>
-        </div>
-      </div>`;
+        ${renderWebsiteVisitChart(websiteMetrics,range,websiteMetricsAvailable)}
+        ${renderWebsiteFunnel(websiteMetrics,websiteMetricsAvailable)}
+      </div>
+      <div class="website-activity-band website-activity-band--prompt">${renderWebsitePromptFlow(websiteMetrics,websiteMetricsAvailable)}</div>
+      <div class="website-activity-band website-activity-band--cart">${renderWebsiteCartMix(websiteMetrics,websiteMetricsAvailable)}</div>
+    </div>`;
   }
   renderDashboardBadgeCoupons();
 

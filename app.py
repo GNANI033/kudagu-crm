@@ -534,6 +534,15 @@ def _empty_website_metrics_snapshot(*, available: bool = False, error: str = "")
         },
         "checkoutLoginRequired": {"count": 0, "avgCartValue": 0.0, "windowDays": 30},
         "checkoutLoginCompleted": {"count": 0, "avgCartValue": 0.0, "windowDays": 30},
+        "checkoutRegistrationCompleted": {"count": 0, "windowDays": 30},
+        "funnel": {"windowDays": 30, "counting": "unique_visitors", "steps": []},
+        "deviceBreakdown": {
+            "windowDays": 30,
+            "carts": {
+                "loggedIn": {"mobile": 0, "desktop": 0, "tablet": 0, "other": 0},
+                "loggedOut": {"mobile": 0, "desktop": 0, "tablet": 0, "other": 0},
+            },
+        },
     }
     if error:
         payload["error"] = error[:160]
@@ -764,6 +773,43 @@ def _normalize_website_metrics_snapshot(raw: Any) -> dict[str, Any]:
         "count": int(_safe_float(checkout_login_completed.get("count"))),
         "avgCartValue": round(float(_safe_float(checkout_login_completed.get("avgCartValue"))), 2),
         "windowDays": int(_safe_float(checkout_login_completed.get("windowDays")) or 30),
+    }
+    checkout_registration_completed = raw.get("checkoutRegistrationCompleted") if isinstance(raw.get("checkoutRegistrationCompleted"), dict) else {}
+    base["checkoutRegistrationCompleted"] = {
+        "count": int(_safe_float(checkout_registration_completed.get("count"))),
+        "windowDays": int(_safe_float(checkout_registration_completed.get("windowDays")) or 30),
+    }
+    funnel = raw.get("funnel") if isinstance(raw.get("funnel"), dict) else {}
+    funnel_steps = []
+    for step in funnel.get("steps") if isinstance(funnel.get("steps"), list) else []:
+        if not isinstance(step, dict):
+            continue
+        funnel_steps.append({
+            "key": str(step.get("key") or "")[:60],
+            "label": str(step.get("label") or step.get("key") or "")[:80],
+            "count": int(_safe_float(step.get("count"))),
+            "conversionPct": round(float(_safe_float(step.get("conversionPct"))), 1),
+            "dropoffPct": round(float(_safe_float(step.get("dropoffPct"))), 1),
+        })
+    base["funnel"] = {
+        "windowDays": int(_safe_float(funnel.get("windowDays")) or 30),
+        "counting": str(funnel.get("counting") or "unique_visitors")[:40],
+        "steps": funnel_steps,
+    }
+    device_breakdown = raw.get("deviceBreakdown") if isinstance(raw.get("deviceBreakdown"), dict) else {}
+    device_carts = device_breakdown.get("carts") if isinstance(device_breakdown.get("carts"), dict) else {}
+    normalized_devices = {"loggedIn": {}, "loggedOut": {}}
+    for bucket in ("loggedIn", "loggedOut"):
+        source = device_carts.get(bucket) if isinstance(device_carts.get(bucket), dict) else {}
+        normalized_devices[bucket] = {
+            "mobile": int(_safe_float(source.get("mobile"))),
+            "desktop": int(_safe_float(source.get("desktop"))),
+            "tablet": int(_safe_float(source.get("tablet"))),
+            "other": int(_safe_float(source.get("other"))),
+        }
+    base["deviceBreakdown"] = {
+        "windowDays": int(_safe_float(device_breakdown.get("windowDays")) or 30),
+        "carts": normalized_devices,
     }
     base["generatedAt"] = int(_safe_float(raw.get("generatedAt")) or time.time() * 1000)
     return base
