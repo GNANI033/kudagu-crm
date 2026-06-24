@@ -949,6 +949,49 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .toast.err { background: var(--red); }
 @keyframes tin { from { opacity: 0; transform: translateY(8px) scale(.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
 
+/* ─── SUBSCRIPTIONS CALENDAR ───────────────────────────────────────────── */
+.sub-layout { display: grid; grid-template-columns: minmax(0,1fr); gap: 14px; align-items: start; }
+.sub-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.sub-month-title { font-family: var(--font-display); font-size: 15px; font-weight: 800; }
+.sub-legend { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--text-2); flex-wrap: wrap; }
+.sub-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+.sub-dot.create { background: var(--blue); }
+.sub-dot.ship { background: var(--amber); }
+.sub-dot.delivery { background: var(--green); }
+.sub-calendar { padding: 10px; }
+.sub-weekdays, .sub-grid { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 5px; }
+.sub-weekday { font-size: 10px; font-weight: 800; color: var(--text-3); letter-spacing: .08em; text-transform: uppercase; text-align: center; padding: 4px 0; }
+.sub-day { min-height: 72px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); padding: 7px; cursor: pointer; display: flex; flex-direction: column; gap: 5px; transition: border-color .15s, background .15s, transform .15s; }
+.sub-day:hover { border-color: var(--border-s); background: var(--surface-2); transform: translateY(-1px); }
+.sub-day.muted { opacity: .42; }
+.sub-day.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.sub-date-num { font-size: 12px; font-weight: 800; color: var(--text); }
+.sub-marks { display: flex; flex-wrap: wrap; gap: 4px; }
+.sub-mark { font-size: 9.5px; font-weight: 800; line-height: 1; border-radius: 999px; padding: 4px 5px; color: #111110; }
+.sub-mark.create { background: var(--blue-bg); border: 1px solid var(--blue-bd); color: var(--blue); }
+.sub-mark.ship { background: var(--amber-bg); border: 1px solid var(--amber-bd); color: var(--amber); }
+.sub-mark.delivery { background: var(--green-bg); border: 1px solid var(--green-bd); color: var(--green); }
+.sub-side-body { padding: 12px; display: grid; grid-template-columns: repeat(auto-fill,minmax(300px,1fr)); gap: 10px; }
+.sub-event { border: 1px solid var(--border); border-radius: 12px; padding: 10px; background: var(--surface); min-width: 0; text-align: left; width: 100%; cursor: pointer; transition: border-color .15s, background .15s, transform .15s; }
+.sub-event:hover { border-color: var(--border-s); background: var(--surface-2); transform: translateY(-1px); }
+.sub-event.create { border-left: 4px solid var(--blue); }
+.sub-event.ship { border-left: 4px solid var(--amber); }
+.sub-event.delivery { border-left: 4px solid var(--green); }
+.sub-event-top { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.sub-event-title { font-size: 13px; font-weight: 800; color: var(--text); overflow-wrap: anywhere; }
+.sub-event-meta { font-size: 11.5px; color: var(--text-3); margin-top: 2px; line-height: 1.45; }
+.sub-event-badge { font-size: 10px; font-weight: 800; border-radius: 999px; padding: 4px 7px; white-space: nowrap; }
+.sub-event-badge.create { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-bd); }
+.sub-event-badge.ship { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber-bd); }
+.sub-event-badge.delivery { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-bd); }
+.sub-cycle-row.completed { background: var(--green-bg); }
+.sub-cycle-row.due { background: var(--amber-bg); }
+.sub-cycle-row.upcoming { background: var(--blue-bg); }
+.sub-cycle-status { display: inline-flex; align-items: center; border-radius: 999px; padding: 4px 8px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+.sub-cycle-status.completed { color: var(--green); border: 1px solid var(--green-bd); background: var(--surface); }
+.sub-cycle-status.due { color: var(--amber); border: 1px solid var(--amber-bd); background: var(--surface); }
+.sub-cycle-status.upcoming { color: var(--blue); border: 1px solid var(--blue-bd); background: var(--surface); }
+
 /* ═══════════════════════════════════════════════════════════════════════════
    TABLET — 600-1023px: icon-only sidebar
 ══════════════════════════════════════════════════════════════════════════ */
@@ -963,6 +1006,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .fr3 { grid-template-columns: 1fr 1fr; }
   .settings-layout { grid-template-columns: 1fr; }
   .mkt-filter-grid { grid-template-columns: repeat(2,minmax(170px,1fr)); }
+  .sub-layout { grid-template-columns: 1fr; }
   .tbl th:nth-child(8), .tbl td:nth-child(8),
   .tbl th:nth-child(9), .tbl td:nth-child(9) { display: none; }
 }
@@ -1081,6 +1125,12 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .website-ladder-count-value { font-size: 14px; }
   .website-ladder-conv,
   .website-ladder-drop { font-size: 10px; }
+  .sub-layout { grid-template-columns: 1fr; }
+  .sub-toolbar { align-items: flex-start; }
+  .sub-calendar { padding: 8px; overflow-x: auto; }
+  .sub-weekdays, .sub-grid { min-width: 620px; }
+  .sub-day { min-height: 70px; }
+  .sub-side-body { grid-template-columns: 1fr; }
 
   /* Prevent heading/action clipping on narrow devices */
   .ph, .ch { gap: 8px; flex-wrap: wrap; }
@@ -1171,6 +1221,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     <div class="sb-sect">Main</div>
     <button class="nb active" onclick="nav('dashboard')"><span class="nb-ic">◈</span><span>Dashboard</span></button>
     <button class="nb" onclick="nav('orders')"><span class="nb-ic">≡</span><span>Orders</span></button>
+    <button class="nb" onclick="nav('subscriptions')"><span class="nb-ic">◍</span><span>Subscriptions</span></button>
     <button class="nb" id="nav-alerts" onclick="nav('alerts')"><span class="nb-ic">◯</span><span>Alerts</span></button>
     <button class="nb" onclick="nav('marketing')"><span class="nb-ic">✦</span><span>Marketing</span></button>
     <button class="nb" onclick="nav('distribution')"><span class="nb-ic">◫</span><span>Distribution</span></button>
@@ -1277,6 +1328,20 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
           <input type="date" id="sale-date">
           <div style="font-size:11.5px;color:var(--text-3);margin-top:3px">Defaults to today — edit to backdate</div>
         </div>
+        <div class="fr3">
+          <div class="fg">
+            <label>Subscription Frequency <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <input type="text" id="sale-sub-frequency" placeholder="monthly, weekly, 15 days">
+          </div>
+          <div class="fg">
+            <label>Subscription Duration <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <input type="text" id="sale-sub-duration" placeholder="6 months, 1 year">
+          </div>
+          <div class="fg">
+            <label>Subscription Label <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <input type="text" id="sale-sub-tag" placeholder="Monthly filter coffee plan">
+          </div>
+        </div>
         <div class="fr">
           <div class="fg">
             <label>Invoice Payment</label>
@@ -1312,6 +1377,44 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     <div class="ph"><div><div class="ph-title">Orders</div><div class="ph-sub" id="os"></div></div></div>
     <div class="card orders-card">
       <div id="ob"></div>
+    </div>
+  </div>
+
+  <!-- SUBSCRIPTIONS -->
+  <div class="view" id="view-subscriptions">
+    <div class="ph">
+      <div>
+        <div class="ph-title">Subscriptions</div>
+        <div class="ph-sub" id="subs-sub">Subscription shipments and delivery windows</div>
+      </div>
+      <button class="btn btn-p btn-sm" onclick="openAllSubscriptionsModal()">All Subscriptions</button>
+    </div>
+    <div class="sub-layout">
+      <div class="card">
+        <div class="sub-toolbar">
+          <div>
+            <div class="sub-month-title" id="subs-month-title">Subscriptions</div>
+            <div class="sub-legend">
+              <span><span class="sub-dot create"></span>Order creation</span>
+              <span><span class="sub-dot ship"></span>Ship date</span>
+              <span><span class="sub-dot delivery"></span>Delivery ETA +5 to +7 days</span>
+            </div>
+          </div>
+          <div class="inv-actions-row">
+            <button class="btn btn-s btn-sm" onclick="shiftSubscriptionMonth(-1)">Prev</button>
+            <button class="btn btn-g btn-sm" onclick="goSubscriptionToday()">Today</button>
+            <button class="btn btn-s btn-sm" onclick="shiftSubscriptionMonth(1)">Next</button>
+          </div>
+        </div>
+        <div class="sub-calendar">
+          <div class="sub-weekdays" id="subs-weekdays"></div>
+          <div class="sub-grid" id="subs-grid"></div>
+        </div>
+      </div>
+      <div class="card sub-side">
+        <div class="ch"><div class="ct" id="subs-detail-title">Selected Day</div></div>
+        <div class="sub-side-body" id="subs-detail"></div>
+      </div>
     </div>
   </div>
 
@@ -2019,6 +2122,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   <button class="bnav-item" id="bnav-orders" onclick="nav('orders')">
     <span class="bnav-icon">≡</span>
     <span>Orders</span>
+  </button>
+  <button class="bnav-item" id="bnav-subscriptions" onclick="nav('subscriptions')">
+    <span class="bnav-icon">◍</span>
+    <span>Subs</span>
   </button>
   <button class="bnav-item" id="bnav-alerts" onclick="nav('alerts')">
     <span class="bnav-icon">◯</span>

@@ -179,7 +179,7 @@ AUTH_THROTTLE_STATE: dict[str, list[float]] = {}
 KEY_METADATA_LOCK = threading.Lock()
 KEY_METADATA: dict[str, dict[str, Any]] = {}
 
-PAGE_KEYS = ("dashboard", "sales", "orders", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
+PAGE_KEYS = ("dashboard", "sales", "orders", "subscriptions", "alerts", "marketing", "distribution", "expenses", "customers", "settings")
 DASHBOARD_CARD_KEYS = (
     "revenue",
     "profit",
@@ -1066,7 +1066,7 @@ def _rbac_enabled() -> bool:
 
 def _default_permissions_for_role(role: str) -> dict:
     if role == "employee":
-        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "customers"} for key in PAGE_KEYS}
+        pages = {key: key in {"dashboard", "sales", "orders", "subscriptions", "alerts", "customers"} for key in PAGE_KEYS}
         cards = {
             "revenue": False,
             "profit": False,
@@ -1090,7 +1090,7 @@ def _default_permissions_for_role(role: str) -> dict:
             "users": {"manage": False},
         }
     elif role == "partner":
-        pages = {key: key in {"dashboard", "sales", "orders", "alerts", "marketing", "distribution", "customers"} for key in PAGE_KEYS}
+        pages = {key: key in {"dashboard", "sales", "orders", "subscriptions", "alerts", "marketing", "distribution", "customers"} for key in PAGE_KEYS}
         cards = {key: True for key in DASHBOARD_CARD_KEYS}
         actions = {
             "customers": {"create": True, "edit": True, "delete": False},

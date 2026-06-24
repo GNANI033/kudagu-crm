@@ -70,6 +70,8 @@ let ORDER_PAGES = { active: 1, completed: 1, billed: 1 };
 let ORDER_SELECTED = new Set();
 let BILLED_ORDER_SELECTED = new Set();
 let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '' };
+let SUBS_MONTH = new Date();
+let SUBS_SELECTED_DATE = dateToISO(Date.now());
 let CUSTOMER_PAGE = 1;
 let CUSTOMER_SEARCH_TIMER = 0;
 const ORDERS_PAGE_SIZE = 40;
@@ -760,7 +762,7 @@ function getSelectedCustomerTags(prefix){
   return normalizeCustomerProductTags(getCustomerTagPickerState(prefix).selected);
 }
 function firstAccessiblePage(){
-  const pages=['dashboard','sales','orders','alerts','marketing','distribution','expenses','customers','settings'];
+  const pages=['dashboard','sales','orders','subscriptions','alerts','marketing','distribution','expenses','customers','settings'];
   return pages.find(hasPageAccess) || 'dashboard';
 }
 function appShellEls(){
@@ -958,6 +960,7 @@ function rerenderActiveView(){
   const p=activeViewId();
   if(p==='dashboard') rDash();
   if(p==='orders') rOrders();
+  if(p==='subscriptions') rSubscriptions();
   if(p==='alerts') rAlerts();
   if(p==='marketing') rMarketingView();
   if(p==='distribution') rDistribution();
@@ -1843,7 +1846,6 @@ async function downloadSelectedInvoices(orderIds){
 function isMobile(){ return window.innerWidth < 600; }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
-// Sidebar nav: dashboard=0, orders=1, alerts=2, marketing=3, distribution=4, customers=5, settings=6
 function nav(p){
   if(!hasPageAccess(p)){
     const fallback=firstAccessiblePage();
@@ -1855,16 +1857,16 @@ function nav(p){
   g('view-'+p).classList.add('active');
   // Desktop sidebar
   document.querySelectorAll('.nb').forEach(b=>b.classList.remove('active'));
-  const IDX={dashboard:0,orders:1,alerts:2,marketing:3,distribution:4,expenses:5,customers:6,settings:7};
-  if(IDX[p]!==undefined) document.querySelectorAll('.nb')[IDX[p]].classList.add('active');
+  document.querySelectorAll(`.sidebar .nb[onclick="nav('${p}')"]`).forEach(b=>b.classList.add('active'));
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',expenses:'bnav-expenses',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',subscriptions:'bnav-subscriptions',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',expenses:'bnav-expenses',customers:'bnav-customers',settings:'bnav-settings'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
   if(p==='dashboard') rDash();
   if(p==='orders')    rOrders();
+  if(p==='subscriptions') rSubscriptions();
   if(p==='alerts')    rAlerts();
   if(p==='marketing') rMarketingView();
   if(p==='distribution') rDistribution();
@@ -1900,6 +1902,7 @@ function applyPermissionUI(){
   const signedIn=!!currentUser();
   setNavVisibility('.sidebar .nb[onclick="nav(\'dashboard\')"]', hasPageAccess('dashboard'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'orders\')"]', hasPageAccess('orders'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'subscriptions\')"]', hasPageAccess('subscriptions'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'alerts\')"]', hasPageAccess('alerts'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'marketing\')"]', hasPageAccess('marketing'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'distribution\')"]', hasPageAccess('distribution'));
@@ -1908,6 +1911,7 @@ function applyPermissionUI(){
   setNavVisibility('.sidebar .nb[onclick="nav(\'settings\')"]', hasPageAccess('settings'));
   if(g('bnav-dashboard')) g('bnav-dashboard').style.display=hasPageAccess('dashboard')?'':'none';
   if(g('bnav-orders')) g('bnav-orders').style.display=hasPageAccess('orders')?'':'none';
+  if(g('bnav-subscriptions')) g('bnav-subscriptions').style.display=hasPageAccess('subscriptions')?'':'none';
   if(g('bnav-alerts')) g('bnav-alerts').style.display=hasPageAccess('alerts')?'':'none';
   if(g('bnav-marketing')) g('bnav-marketing').style.display=hasPageAccess('marketing')?'':'none';
   if(g('bnav-distribution')) g('bnav-distribution').style.display=hasPageAccess('distribution')?'':'none';
@@ -3494,7 +3498,7 @@ async function recSale(){
   const pm=saleDelivered?(g('sale-pm')?.value||''):'';
   if(invoicePaymentStatus==='due'&&!invoiceDueDate){toast('Select invoice due date','err');return;}
   try{
-    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,status,paymentMethod:pm,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails:(g('sale-invoice-details')?.value||'').trim(),invoiceTerms:(g('sale-invoice-terms')?.value||'').trim()});
+    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,status,paymentMethod:pm,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails:(g('sale-invoice-details')?.value||'').trim(),invoiceTerms:(g('sale-invoice-terms')?.value||'').trim(),subscriptionFrequency:(g('sale-sub-frequency')?.value||'').trim(),subscriptionDuration:(g('sale-sub-duration')?.value||'').trim(),subscriptionTag:(g('sale-sub-tag')?.value||'').trim()});
     S.orders.unshift(order);S.oid=order.id+1;
     updBadge();clearC();selV=null;qty=1;selCh='retail';saleDelivered=false;
     g('ps').value='';g('vr-row').innerHTML='';g('qv').textContent='1';
@@ -3504,6 +3508,9 @@ async function recSale(){
     if(g('sale-due-date'))g('sale-due-date').value='';
     if(g('sale-invoice-details'))g('sale-invoice-details').value='';
     if(g('sale-invoice-terms'))g('sale-invoice-terms').value='';
+    if(g('sale-sub-frequency'))g('sale-sub-frequency').value='';
+    if(g('sale-sub-duration'))g('sale-sub-duration').value='';
+    if(g('sale-sub-tag'))g('sale-sub-tag').value='';
     g('sale-sum').style.display='none';setDefaultDate();renderChannelPicker();updateDeliveredToggle();
     toggleSaleDueDate();
     toast('Sale recorded','ok');
@@ -3649,6 +3656,358 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
 function setOrderPage(bucket,page){
   ORDER_PAGES[bucket]=Math.max(1,parseInt(page||1,10)||1);
   rOrders();
+}
+
+// ─── SUBSCRIPTIONS ───────────────────────────────────────────────────────────
+function subscriptionText(o){
+  return [o.subscriptionTag,o.subscriptionFrequency,o.subscriptionDuration].map(v=>String(v||'').trim()).filter(Boolean).join(' · ');
+}
+function isSubscriptionOrder(o){
+  if(!o || ['cancelled','returned'].includes(String(o.status||''))) return false;
+  return !!parseSubscriptionInterval(o.subscriptionFrequency);
+}
+function parseSubscriptionInterval(value){
+  const raw=String(value||'').trim().toLowerCase();
+  if(!raw) return null;
+  const compact=raw.replace(/[-_]+/g,' ');
+  const numMatch=compact.match(/(\d+(?:\.\d+)?)\s*(day|days|d|week|weeks|w|month|months|mo|quarter|quarterly|year|years|yr|yrs)/);
+  if(numMatch){
+    const n=Math.max(1,Math.round(Number(numMatch[1])||1));
+    const unit=numMatch[2];
+    if(['day','days','d'].includes(unit)) return { days:n };
+    if(['week','weeks','w'].includes(unit)) return { days:n*7 };
+    if(['month','months','mo'].includes(unit)) return { months:n };
+    if(['quarter','quarterly'].includes(unit)) return { months:n*3 };
+    if(['year','years','yr','yrs'].includes(unit)) return { months:n*12 };
+  }
+  if(/\b(daily|every day)\b/.test(compact)) return { days:1 };
+  if(/\b(weekly|every week)\b/.test(compact)) return { days:7 };
+  if(/\b(fortnight|biweekly|bi weekly)\b/.test(compact)) return { days:14 };
+  if(/\b(monthly|every month)\b/.test(compact)) return { months:1 };
+  if(/\b(quarterly|every quarter)\b/.test(compact)) return { months:3 };
+  if(/\b(half yearly|semi annual|semiannual)\b/.test(compact)) return { months:6 };
+  if(/\b(yearly|annual|annually|every year)\b/.test(compact)) return { months:12 };
+  return null;
+}
+function addSubscriptionInterval(date, interval){
+  const next=new Date(date);
+  if(interval?.days){
+    next.setDate(next.getDate()+interval.days);
+    return next;
+  }
+  const months=Math.max(1,Number(interval?.months)||1);
+  const day=next.getDate();
+  next.setDate(1);
+  next.setMonth(next.getMonth()+months);
+  const last=new Date(next.getFullYear(),next.getMonth()+1,0).getDate();
+  next.setDate(Math.min(day,last));
+  return next;
+}
+function dateAtNoon(ts){
+  const d=new Date(ts);
+  if(isNaN(d.getTime())) return null;
+  return new Date(d.getFullYear(),d.getMonth(),d.getDate(),12,0,0);
+}
+function addDays(date, days){
+  const d=new Date(date);
+  d.setDate(d.getDate()+days);
+  return d;
+}
+function subscriptionOccurrences(){
+  const today=dateAtNoon(Date.now());
+  const horizon=new Date(today);
+  horizon.setMonth(horizon.getMonth()+12);
+  const startFloor=new Date(today);
+  startFloor.setMonth(startFloor.getMonth()-1);
+  const events=[];
+  (S.orders||[]).filter(isSubscriptionOrder).forEach((order)=>{
+    const interval=parseSubscriptionInterval(order.subscriptionFrequency);
+    if(!interval) return;
+    let ship=dateAtNoon(order.at);
+    if(!ship) return;
+    ship=addDays(ship,1);
+    let guard=0;
+    while(ship < startFloor && guard < 5000){
+      ship=addSubscriptionInterval(ship,interval);
+      guard++;
+    }
+    while(ship <= horizon && guard < 6000){
+      const shipISO=dateToISO(ship.getTime());
+      const create=dateToISO(addDays(ship,-1).getTime());
+      events.push({ type:'create', date:create, order, shipDate:shipISO, createDate:create });
+      events.push({ type:'ship', date:shipISO, order, shipDate:shipISO, createDate:create });
+      const delivery=addDays(ship,5);
+      events.push({ type:'delivery', date:dateToISO(delivery.getTime()), order, shipDate:shipISO, createDate:create });
+      ship=addSubscriptionInterval(ship,interval);
+      guard++;
+    }
+  });
+  return events.sort((a,b)=>a.date.localeCompare(b.date)||Number(a.order.id||0)-Number(b.order.id||0));
+}
+function eventsByDate(events){
+  return events.reduce((map,event)=>{
+    if(!map[event.date]) map[event.date]=[];
+    map[event.date].push(event);
+    return map;
+  },{});
+}
+function shiftSubscriptionMonth(delta){
+  SUBS_MONTH.setMonth(SUBS_MONTH.getMonth()+delta);
+  SUBS_MONTH=new Date(SUBS_MONTH.getFullYear(),SUBS_MONTH.getMonth(),1);
+  rSubscriptions();
+}
+function goSubscriptionToday(){
+  SUBS_MONTH=new Date();
+  SUBS_SELECTED_DATE=dateToISO(Date.now());
+  rSubscriptions();
+}
+function selectSubscriptionDate(iso){
+  SUBS_SELECTED_DATE=iso;
+  rSubscriptions();
+}
+function selectSubscriptionCalendarDate(iso){
+  const events=(eventsByDate(subscriptionOccurrences())[iso]||[]);
+  const orderIds=Array.from(new Set(events.map(e=>Number(e.order?.id||0)).filter(Boolean)));
+  SUBS_SELECTED_DATE=iso;
+  rSubscriptions();
+  if(orderIds.length===1) openSubscriptionDetails(orderIds[0]);
+}
+function sameSubscriptionSeries(order, base){
+  if(!order || !base) return false;
+  if(!isSubscriptionOrder(order) || !isSubscriptionOrder(base)) return false;
+  const sameCustomer=Number(order.cid||0)===Number(base.cid||0);
+  const sameProduct=String(order.prodId||'')===String(base.prodId||'');
+  const sameVariant=String(order.variant||'')===String(base.variant||'');
+  const orderFrequency=String(order.subscriptionFrequency||'').trim().toLowerCase();
+  const baseFrequency=String(base.subscriptionFrequency||'').trim().toLowerCase();
+  const orderTag=String(order.subscriptionTag||'').trim().toLowerCase();
+  const baseTag=String(base.subscriptionTag||'').trim().toLowerCase();
+  const sameFrequency=!!baseFrequency && orderFrequency===baseFrequency;
+  const sameTag=!!baseTag && orderTag===baseTag;
+  return sameCustomer && sameProduct && sameVariant && (sameFrequency || sameTag);
+}
+function subscriptionCycleKey(event){
+  return `${event.createDate||''}|${event.shipDate||''}|${Number(event.order?.id||0)}`;
+}
+function subscriptionSeriesEvents(baseOrder){
+  return subscriptionOccurrences().filter((event)=>sameSubscriptionSeries(event.order,baseOrder));
+}
+function subscriptionCycleRows(baseOrder){
+  const cycles=new Map();
+  subscriptionSeriesEvents(baseOrder).forEach((event)=>{
+    const key=subscriptionCycleKey(event);
+    if(!cycles.has(key)){
+      const etaStart=new Date(`${event.shipDate}T12:00:00`);
+      etaStart.setDate(etaStart.getDate()+5);
+      const etaEnd=new Date(`${event.shipDate}T12:00:00`);
+      etaEnd.setDate(etaEnd.getDate()+7);
+      cycles.set(key,{
+        createDate:event.createDate,
+        shipDate:event.shipDate,
+        etaStart:dateToISO(etaStart.getTime()),
+        etaEnd:dateToISO(etaEnd.getTime()),
+        order:event.order,
+      });
+    }
+  });
+  return Array.from(cycles.values()).sort((a,b)=>a.shipDate.localeCompare(b.shipDate));
+}
+function realSubscriptionOrders(baseOrder){
+  return (S.orders||[])
+    .filter((order)=>sameSubscriptionSeries(order,baseOrder))
+    .sort((a,b)=>Number(a.at||0)-Number(b.at||0));
+}
+function subscriptionSeriesKey(order){
+  return [
+    Number(order.cid||0),
+    String(order.prodId||''),
+    String(order.variant||''),
+    String(order.subscriptionFrequency||'').trim().toLowerCase(),
+  ].join('|');
+}
+function allSubscriptionSeries(){
+  const map=new Map();
+  (S.orders||[]).filter(isSubscriptionOrder).forEach((order)=>{
+    const key=subscriptionSeriesKey(order);
+    if(!map.has(key)) map.set(key, order);
+    const current=map.get(key);
+    if(Number(order.at||0)<Number(current.at||0)) map.set(key, order);
+  });
+  return Array.from(map.values()).sort((a,b)=>{
+    const an=String(a.cname||'').localeCompare(String(b.cname||''));
+    if(an) return an;
+    return String(a.prod||'').localeCompare(String(b.prod||'')) || Number(a.at||0)-Number(b.at||0);
+  });
+}
+function openAllSubscriptionsModal(){
+  const series=allSubscriptionSeries();
+  const rows=series.map((order)=>{
+    const actual=realSubscriptionOrders(order);
+    const cycles=subscriptionCycleRows(order);
+    const todayISO=dateToISO(Date.now());
+    const completed=actual.filter(isCompleted).length;
+    const due=cycles.filter((cycle,idx)=>{
+      const actualOrder=actual[idx]||null;
+      return cycle.createDate<=todayISO && !(actualOrder && isCompleted(actualOrder));
+    }).length;
+    const upcoming=cycles.filter(cycle=>cycle.createDate>todayISO).length;
+    const next=cycles.find(cycle=>cycle.createDate>=todayISO);
+    return `<div class="sub-event" role="button" tabindex="0" style="display:block" onclick="openSubscriptionDetails(${Number(order.id)||0})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSubscriptionDetails(${Number(order.id)||0})}">
+      <div class="sub-event-top">
+        <div>
+          <div class="sub-event-title">${esc(order.cname||'Customer')}</div>
+          <div class="sub-event-meta">${esc(order.cphone||'')} ${order.carea?`· ${esc(order.carea)}`:''}</div>
+        </div>
+        <span class="sub-event-badge delivery">${actual.length} order${actual.length!==1?'s':''}</span>
+      </div>
+      <div class="sub-event-meta" style="margin-top:8px">
+        <strong style="color:var(--text)">${esc(order.prod||'Product')}</strong> · ${esc(VL[order.variant]||order.variant||'')} × ${Number(order.qty)||1}<br>
+        ${esc(subscriptionText(order))}<br>
+        Completed ${completed} · Yet to complete ${due} · Upcoming ${upcoming}${next?` · Next create ${fd(new Date(`${next.createDate}T12:00:00`).getTime())}`:''}
+      </div>
+    </div>`;
+  }).join('');
+  openModal(`
+    <div class="modal-title">All Subscriptions</div>
+    <div style="margin-top:4px;color:var(--text-2);font-size:12.5px">${series.length} active subscription customer${series.length!==1?'s':''} / product plan${series.length!==1?'s':''}</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:10px;margin-top:14px">
+      ${rows||'<div class="empty" style="grid-column:1/-1"><div class="ei">◍</div><div class="et">No subscriptions found</div><div class="es">Add subscription frequency to website or CRM orders.</div></div>'}
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-s" onclick="closeModal()">Close</button></div>
+  `,'lg');
+}
+function openSubscriptionDetails(orderId){
+  const base=(S.orders||[]).find(o=>Number(o.id)===Number(orderId));
+  if(!base){ toast('Subscription order not found','err'); return; }
+  const customer=(S.customers||[]).find(c=>Number(c.id)===Number(base.cid||0))||{};
+  const actualOrders=realSubscriptionOrders(base);
+  const cancelled=actualOrders.filter(o=>['cancelled','returned'].includes(String(o.status||''))).length;
+  const cycles=subscriptionCycleRows(base);
+  const todayISO=dateToISO(Date.now());
+  const upcomingCycles=cycles.filter(c=>c.shipDate>=todayISO);
+  const pastCycles=cycles.filter(c=>c.shipDate<todayISO);
+  const cycleStatusRows=cycles.map((cycle,idx)=>{
+    const actual=actualOrders[idx]||null;
+    const isDone=actual ? isCompleted(actual) : false;
+    const statusKey=isDone?'completed':(cycle.createDate>todayISO?'upcoming':'due');
+    return { cycle, idx, actual, statusKey };
+  });
+  const completed=cycleStatusRows.filter(row=>row.statusKey==='completed').length;
+  const active=cycleStatusRows.filter(row=>row.statusKey==='due').length;
+  const cycleRows=cycles.slice(0,18).map((cycle,idx)=>{
+    const row=cycleStatusRows[idx]||{statusKey:'upcoming'};
+    const statusKey=row.statusKey;
+    const statusLabel=statusKey==='completed'?'Completed':(statusKey==='upcoming'?'Upcoming':'Yet To Complete');
+    return `
+    <tr class="sub-cycle-row ${statusKey}">
+      <td style="padding:8px 10px;font-weight:700">#${idx+1}</td>
+      <td style="padding:8px 10px"><span class="sub-cycle-status ${statusKey}">${statusLabel}</span></td>
+      <td style="padding:8px 10px">${fd(new Date(`${cycle.createDate}T12:00:00`).getTime())}</td>
+      <td style="padding:8px 10px">${fd(new Date(`${cycle.shipDate}T12:00:00`).getTime())}</td>
+      <td style="padding:8px 10px">${fd(new Date(`${cycle.etaStart}T12:00:00`).getTime())} to ${fd(new Date(`${cycle.etaEnd}T12:00:00`).getTime())}</td>
+    </tr>`;
+  }).join('');
+  const orderRows=actualOrders.slice(-8).reverse().map(o=>`
+    <tr>
+      <td style="padding:8px 10px;font-weight:700">#${o.id}</td>
+      <td style="padding:8px 10px">${fd(o.at)}</td>
+      <td style="padding:8px 10px">${stBadge(o.status||'pending')}</td>
+      <td style="padding:8px 10px;text-align:right">${Number(o.qty)||1}</td>
+    </tr>`).join('');
+  openModal(`
+    <div class="modal-title">Subscription Details</div>
+    <div style="margin-top:4px;color:var(--text-2);font-size:12.5px">${esc(base.cname||customer.name||'Customer')} · ${esc(base.cphone||customer.phone||'')}</div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px">
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text-3)">Actual Orders</div><div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800">${actualOrders.length}</div></div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text-3)">Completed</div><div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--green)">${completed}</div></div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text-3)">Yet To Complete</div><div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--amber)">${active}</div></div>
+      <div style="background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:10px"><div style="font-size:11px;color:var(--text-3)">Upcoming Cycles</div><div style="font-family:'Syne',sans-serif;font-size:20px;font-weight:800;color:var(--blue)">${upcomingCycles.length}</div></div>
+    </div>
+    <div style="margin-top:12px;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12.5px;color:var(--text-2);line-height:1.55">
+      <strong style="color:var(--text)">${esc(base.prod||'Product')}</strong> · ${esc(VL[base.variant]||base.variant||'')} × ${Number(base.qty)||1}<br>
+      ${esc(subscriptionText(base))}<br>
+      Generated cycles shown: ${cycles.length} (${pastCycles.length} past, ${upcomingCycles.length} upcoming)${cancelled?` · Cancelled/returned actual orders: ${cancelled}`:''}
+    </div>
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:800;margin-bottom:8px;color:var(--text)">Generated Schedule</div>
+      <div style="border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:260px">
+        <table class="tbl" style="min-width:760px">
+          <thead><tr><th>Cycle</th><th>Status</th><th>Create Order</th><th>Ship</th><th>Delivery Window</th></tr></thead>
+          <tbody>${cycleRows||'<tr><td colspan="5" style="padding:12px;color:var(--text-3)">No generated cycles.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="margin-top:14px">
+      <div style="font-size:12px;font-weight:800;margin-bottom:8px;color:var(--text)">Actual CRM Orders</div>
+      <div style="border:1px solid var(--border);border-radius:10px;overflow:auto;max-height:220px">
+        <table class="tbl" style="min-width:520px">
+          <thead><tr><th>Order</th><th>Date</th><th>Status</th><th style="text-align:right">Qty</th></tr></thead>
+          <tbody>${orderRows||'<tr><td colspan="4" style="padding:12px;color:var(--text-3)">No actual matching orders found.</td></tr>'}</tbody>
+        </table>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-s" onclick="closeModal()">Close</button></div>
+  `,'lg');
+}
+function subscriptionEventHTML(event){
+  const o=event.order;
+  const etaStart=new Date(`${event.shipDate}T12:00:00`);
+  etaStart.setDate(etaStart.getDate()+5);
+  const etaEnd=new Date(`${event.shipDate}T12:00:00`);
+  etaEnd.setDate(etaEnd.getDate()+7);
+  const createDate=event.createDate || dateToISO(addDays(new Date(`${event.shipDate}T12:00:00`),-1).getTime());
+  const badge=event.type==='create'?'Create Order':event.type==='ship'?'Ship':'Delivery ETA';
+  return `<div class="sub-event ${event.type}" role="button" tabindex="0" onclick="openSubscriptionDetails(${Number(o.id)||0})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSubscriptionDetails(${Number(o.id)||0})}">
+    <div class="sub-event-top">
+      <div>
+        <div class="sub-event-title">#${o.id} · ${esc(o.cname||'Customer')}</div>
+        <div class="sub-event-meta">${esc(o.prod||'Product')} · ${esc(VL[o.variant]||o.variant||'')} × ${Number(o.qty)||1}</div>
+      </div>
+      <span class="sub-event-badge ${event.type}">${badge}</span>
+    </div>
+    <div class="sub-event-meta">
+      ${esc(o.cphone||'')} ${o.carea?`· ${esc(o.carea)}`:''}<br>
+      ${esc(subscriptionText(o))}<br>
+      Create: ${fd(new Date(`${createDate}T12:00:00`).getTime())} · Ship: ${fd(new Date(`${event.shipDate}T12:00:00`).getTime())} · Delivery: ${fd(etaStart.getTime())} to ${fd(etaEnd.getTime())}
+    </div>
+  </div>`;
+}
+function rSubscriptions(){
+  const grid=g('subs-grid'), weekdays=g('subs-weekdays'), detail=g('subs-detail'), title=g('subs-month-title'), sub=g('subs-sub');
+  if(!grid || !weekdays || !detail) return;
+  const monthDate=new Date(SUBS_MONTH.getFullYear(),SUBS_MONTH.getMonth(),1);
+  const events=subscriptionOccurrences();
+  const byDate=eventsByDate(events);
+  const subscriptionCount=(S.orders||[]).filter(isSubscriptionOrder).length;
+  if(title) title.textContent=monthDate.toLocaleDateString('en-IN',{month:'long',year:'numeric'});
+  if(sub) sub.textContent=`${subscriptionCount} subscription order${subscriptionCount!==1?'s':''} · create 1 day before ship · generated 12 months ahead`;
+  weekdays.innerHTML=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d=>`<div class="sub-weekday">${d}</div>`).join('');
+  const first=new Date(monthDate);
+  first.setDate(first.getDate()-first.getDay());
+  const cells=[];
+  for(let i=0;i<42;i++){
+    const d=new Date(first);
+    d.setDate(first.getDate()+i);
+    const iso=dateToISO(d.getTime());
+    const dayEvents=byDate[iso]||[];
+    const creates=dayEvents.filter(e=>e.type==='create').length;
+    const ships=dayEvents.filter(e=>e.type==='ship').length;
+    const deliveries=dayEvents.filter(e=>e.type==='delivery').length;
+    const muted=d.getMonth()!==monthDate.getMonth();
+    cells.push(`<button class="sub-day ${muted?'muted':''} ${iso===SUBS_SELECTED_DATE?'active':''}" onclick="selectSubscriptionCalendarDate('${iso}')">
+      <span class="sub-date-num">${d.getDate()}</span>
+      <span class="sub-marks">
+        ${creates?`<span class="sub-mark create">${creates} create</span>`:''}
+        ${ships?`<span class="sub-mark ship">${ships} ship</span>`:''}
+        ${deliveries?`<span class="sub-mark delivery">${deliveries} window</span>`:''}
+      </span>
+    </button>`);
+  }
+  grid.innerHTML=cells.join('');
+  const selectedEvents=byDate[SUBS_SELECTED_DATE]||[];
+  const detailTitle=g('subs-detail-title');
+  if(detailTitle) detailTitle.textContent=new Date(`${SUBS_SELECTED_DATE}T12:00:00`).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'});
+  detail.innerHTML=selectedEvents.length?selectedEvents.map(subscriptionEventHTML).join(''):`<div class="empty" style="padding:26px 12px"><div class="ei">◍</div><div class="et">No subscription activity</div><div class="es">Select a marked date to view shipments or delivery windows.</div></div>`;
 }
 
 function orderRow(o,selectionMode=''){
@@ -3998,6 +4357,11 @@ function openEditOrder(oid){
         <div class="fg"><label>Invoice Payment</label><select id="eo-invoice-payment" onchange="toggleEditDueDate()"><option value="prepaid" ${(o.invoicePaymentStatus||'prepaid')==='prepaid'?'selected':''}>Prepaid</option><option value="due" ${o.invoicePaymentStatus==='due'?'selected':''}>Payment Due</option></select></div>
         <div class="fg" id="eo-due-date-row" style="display:${o.invoicePaymentStatus==='due'?'block':'none'}"><label>Due Date <span class="req">*</span></label><input type="date" id="eo-due-date" value="${esc(o.invoiceDueDate||'')}"></div>
       </div>
+      <div class="fr3">
+        <div class="fg"><label>Subscription Frequency</label><input type="text" id="eo-sub-frequency" value="${esc(o.subscriptionFrequency||'')}" placeholder="monthly, weekly, 15 days"></div>
+        <div class="fg"><label>Subscription Duration</label><input type="text" id="eo-sub-duration" value="${esc(o.subscriptionDuration||'')}" placeholder="6 months, 1 year"></div>
+        <div class="fg"><label>Subscription Label</label><input type="text" id="eo-sub-tag" value="${esc(o.subscriptionTag||'')}" placeholder="Monthly filter coffee plan"></div>
+      </div>
       <div class="fg"><label>Additional Details</label><textarea id="eo-invoice-details" rows="3">${esc(o.invoiceAdditionalDetails||'')}</textarea></div>
       <div class="fg"><label>Terms</label><textarea id="eo-invoice-terms" rows="3">${esc(o.invoiceTerms||'')}</textarea></div>
       <div class="sumbox" id="eo-preview"></div>
@@ -4052,6 +4416,9 @@ async function submitEditOrder(oid){
   const invoiceDueDate=(g('eo-due-date')?.value||'').trim();
   const invoiceAdditionalDetails=(g('eo-invoice-details')?.value||'').trim();
   const invoiceTerms=(g('eo-invoice-terms')?.value||'').trim();
+  const subscriptionFrequency=(g('eo-sub-frequency')?.value||'').trim();
+  const subscriptionDuration=(g('eo-sub-duration')?.value||'').trim();
+  const subscriptionTag=(g('eo-sub-tag')?.value||'').trim();
   const dateVal=g('eo-date').value;
   let at=S.orders.find(x=>x.id===oid)?.at||Date.now();
   if(dateVal){const[y,m,d]=dateVal.split('-').map(Number);const dt=new Date(y,m-1,d,12,0,0);if(!isNaN(dt.getTime()))at=dt.getTime();}
@@ -4071,9 +4438,9 @@ async function submitEditOrder(oid){
     }
   }
   try{
-    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms});
+    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag});
     syncOrder(updated); closeModal();
-    rOrders(); rDash(); updBadge();
+    rOrders(); rDash(); if(activeViewId()==='subscriptions') rSubscriptions(); updBadge();
     toast('Order updated','ok');
   }catch(e){toast('Error: '+e.message,'err');}
 }
@@ -5838,7 +6205,7 @@ async function rUsersSettings(){
     body.innerHTML=`<div style="font-size:12.5px;color:var(--red)">Could not load users: ${esc(e.message)}</div>`;
   }
 }
-const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',expenses:'Expenses',customers:'Customers',settings:'Settings'};
+const USER_PAGE_LABELS={dashboard:'Dashboard',sales:'Record Sale',orders:'Orders',subscriptions:'Subscriptions',alerts:'Alerts',marketing:'Marketing',distribution:'Distribution',expenses:'Expenses',customers:'Customers',settings:'Settings'};
 const USER_CARD_LABELS={revenue:'Revenue',profit:'Profit',momChange:'MoM Change',analytics:'Analytics',avgOrderValue:'Avg Order Value',inventoryMoved:'Inventory Moved',customers:'Customers',websiteUsers:'Website Users'};
 const USER_ACTION_LABELS={
   customers:{create:'Create customers',edit:'Edit customers',delete:'Delete customers'},
