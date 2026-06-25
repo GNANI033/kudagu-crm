@@ -3449,18 +3449,26 @@ function refreshSum(){
   const bulkOn=qualifiesForBulk(pid,selV,qty),bulkMin=getBulkMinQty(pid);
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
+  const deliveryMethod=(g('sale-delivery-method')?.value||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
+  const deliveryCharge=Math.max(0,parseFloat(g('sale-delivery-charge')?.value||0)||0);
+  const discountReason=(g('sale-discount-reason')?.value||'').trim();
   let priceRows='';
   if(sp>0){
     const rev=sp*qty;
-    const pgComm=websiteGatewayCommission(rev,selCh,disc);
-    const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
+    const deliveryLabel=deliveryMethod==='pickup'?'Pickup':'Delivery';
+    const customerTotal=Math.max(0,rev+deliveryCharge-disc);
+    const pgComm=websiteGatewayCommission(rev+deliveryCharge,selCh,disc);
+    const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm;
     priceRows=`<hr class="sdiv">
       <div class="sr"><span class="sk">${bulkOn?'Bulk price / pack':'Sale price / pack'}</span><span class="sval">₹${sp.toFixed(0)}</span></div>
       ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Normal price / pack</span><span class="sval" style="color:var(--text-3)">₹${normalSp.toFixed(0)}</span></div>`:''}
       ${bulkMin>0&&!bulkOn?`<div class="sr"><span class="sk">Bulk starts at</span><span class="sval">${bulkMin} packs</span></div>`:''}
       <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>
+      <div class="sr"><span class="sk">Delivery</span><span class="sval">${esc(deliveryLabel)}${deliveryCharge>0?` · ₹${deliveryCharge.toFixed(0)}`:''}</span></div>
+      <div class="sr"><span class="sk">Invoice total</span><span class="sval">₹${customerTotal.toFixed(0)}</span></div>
       ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${((normalSp-sp)*qty).toFixed(0)} (${(((normalSp-sp)/normalSp)*100).toFixed(1)}%)</span></div>`:''}
       ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
+      ${discountReason?`<div class="sr"><span class="sk">Discount reason</span><span class="sval">${esc(discountReason)}</span></div>`:''}
       ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
       ${pgComm>0?`<div class="sr"><span class="sk">Gateway commission (${paymentGatewayCommissionPct().toFixed(2)}%)</span><span class="sval" style="color:var(--amber)">−₹${pgComm.toFixed(0)}</span></div>`:''}
       <div class="sr"><span class="sk">Net profit</span><span class="sval" style="color:${net>=0?'var(--green)':'var(--red)'}">₹${net.toFixed(0)}</span></div>`;
@@ -3492,18 +3500,24 @@ async function recSale(){
   if(dateVal){const[y,m,d]=dateVal.split('-').map(Number);const dt=new Date(y,m-1,d,12,0,0);if(!isNaN(dt.getTime()))at=dt.getTime();}
   const disc=parseFloat(g('sale-discount')?.value||0)||0;
   const comm=parseFloat(g('sale-commission')?.value||0)||0;
+  const deliveryMethod=(g('sale-delivery-method')?.value||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
+  const deliveryCharge=Math.max(0,parseFloat(g('sale-delivery-charge')?.value||0)||0);
+  const discountReason=(g('sale-discount-reason')?.value||'').trim();
   const invoicePaymentStatus=(g('sale-invoice-payment')?.value||'prepaid');
   const invoiceDueDate=(g('sale-due-date')?.value||'').trim();
   const status=saleDelivered?'completed':(selCh==='retail'?'confirmed':'pending');
   const pm=saleDelivered?(g('sale-pm')?.value||''):'';
   if(invoicePaymentStatus==='due'&&!invoiceDueDate){toast('Select invoice due date','err');return;}
   try{
-    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,status,paymentMethod:pm,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails:(g('sale-invoice-details')?.value||'').trim(),invoiceTerms:(g('sale-invoice-terms')?.value||'').trim(),subscriptionFrequency:(g('sale-sub-frequency')?.value||'').trim(),subscriptionDuration:(g('sale-sub-duration')?.value||'').trim(),subscriptionTag:(g('sale-sub-tag')?.value||'').trim()});
+    const order=await api.post('/api/orders',{cid:selC.id,cname:selC.name,cphone:selC.phone,carea:selC.area,prod:prod.name,prodId:pid,variant:selV,qty,channel:selCh,discount:disc,commission:comm,deliveryMethod,deliveryCharge,discountReason,status,paymentMethod:pm,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails:(g('sale-invoice-details')?.value||'').trim(),invoiceTerms:(g('sale-invoice-terms')?.value||'').trim(),subscriptionFrequency:(g('sale-sub-frequency')?.value||'').trim(),subscriptionDuration:(g('sale-sub-duration')?.value||'').trim(),subscriptionTag:(g('sale-sub-tag')?.value||'').trim()});
     S.orders.unshift(order);S.oid=order.id+1;
     updBadge();clearC();selV=null;qty=1;selCh='retail';saleDelivered=false;
     g('ps').value='';g('vr-row').innerHTML='';g('qv').textContent='1';
     if(g('sale-discount'))g('sale-discount').value='';
     if(g('sale-commission'))g('sale-commission').value='';
+    if(g('sale-delivery-method'))g('sale-delivery-method').value='delivery';
+    if(g('sale-delivery-charge'))g('sale-delivery-charge').value='';
+    if(g('sale-discount-reason'))g('sale-discount-reason').value='';
     if(g('sale-invoice-payment'))g('sale-invoice-payment').value='prepaid';
     if(g('sale-due-date'))g('sale-due-date').value='';
     if(g('sale-invoice-details'))g('sale-invoice-details').value='';
@@ -4346,6 +4360,10 @@ function openEditOrder(oid){
         <div class="fg"><label>Commission (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-comm" value="${o.commission||0}" min="0" oninput="eoPreview(${oid})"></div></div>
       </div>
       <div class="fr">
+        <div class="fg"><label>Delivery</label><select id="eo-delivery-method" onchange="eoPreview(${oid})"><option value="delivery" ${(o.deliveryMethod||'delivery')==='delivery'?'selected':''}>Delivery</option><option value="pickup" ${o.deliveryMethod==='pickup'?'selected':''}>Pickup</option></select></div>
+        <div class="fg"><label>Delivery Charge (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-delivery-charge" value="${o.deliveryCharge||0}" min="0" step="0.01" oninput="eoPreview(${oid})"></div></div>
+      </div>
+      <div class="fr">
         <div class="fg"><label>Status</label><select id="eo-status">${stOpts}</select></div>
         <div class="fg"><label>Payment Method</label><select id="eo-pm"><option value="">Not set</option>${pmOpts}</select></div>
       </div>
@@ -4362,6 +4380,7 @@ function openEditOrder(oid){
         <div class="fg"><label>Subscription Duration</label><input type="text" id="eo-sub-duration" value="${esc(o.subscriptionDuration||'')}" placeholder="6 months, 1 year"></div>
         <div class="fg"><label>Subscription Label</label><input type="text" id="eo-sub-tag" value="${esc(o.subscriptionTag||'')}" placeholder="Monthly filter coffee plan"></div>
       </div>
+      <div class="fg"><label>Discount Reason</label><textarea id="eo-discount-reason" rows="2" placeholder="Why was this discount applied?">${esc(o.discountReason||'')}</textarea></div>
       <div class="fg"><label>Additional Details</label><textarea id="eo-invoice-details" rows="3">${esc(o.invoiceAdditionalDetails||'')}</textarea></div>
       <div class="fg"><label>Terms</label><textarea id="eo-invoice-terms" rows="3">${esc(o.invoiceTerms||'')}</textarea></div>
       <div class="sumbox" id="eo-preview"></div>
@@ -4388,17 +4407,23 @@ function eoPreview(oid){
   const cost=getTotalCost(o.prodId,sz,o.channel||'retail');
   const disc=parseFloat(g('eo-disc')?.value||0)||0;
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
+  const deliveryMethod=(g('eo-delivery-method')?.value||o.deliveryMethod||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
+  const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||o.deliveryCharge||0)||0);
+  const discountReason=(g('eo-discount-reason')?.value||o.discountReason||'').trim();
   if(!sp){prev.innerHTML=`<span style="color:var(--text-3);font-size:12.5px">No pricing set for this channel</span>`;return;}
   const rev=sp*qty;
-  const pgComm=websiteGatewayCommission(rev,o.channel||'retail',disc);
-  const gross=(sp-cost)*qty,net=gross-disc-comm-pgComm;
+  const pgComm=websiteGatewayCommission(rev+deliveryCharge,o.channel||'retail',disc);
+  const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm;
   const bulkOn=qualifiesForBulk(o.prodId,sz,qty),bulkSavings=bulkOn&&normalSp>sp?(normalSp-sp)*qty:0;
   prev.innerHTML=`
     ${bulkOn?`<div class="sr"><span class="sk">Bulk price applied</span><span class="sval">₹${sp.toFixed(0)} / pack</span></div>`:''}
     <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>
+    <div class="sr"><span class="sk">Delivery</span><span class="sval">${esc(deliveryMethod==='pickup'?'Pickup':'Delivery')}${deliveryCharge>0?` · ₹${deliveryCharge.toFixed(0)}`:''}</span></div>
+    <div class="sr"><span class="sk">Invoice total</span><span class="sval">₹${Math.max(0,rev+deliveryCharge-disc).toFixed(0)}</span></div>
     ${bulkSavings>0?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${bulkSavings.toFixed(0)} (${((bulkSavings/(normalSp*qty))*100).toFixed(1)}%)</span></div>`:''}
     <div class="sr"><span class="sk">Gross profit</span><span class="sval">₹${gross.toFixed(0)}</span></div>
     ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
+    ${discountReason?`<div class="sr"><span class="sk">Discount reason</span><span class="sval">${esc(discountReason)}</span></div>`:''}
     ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
     ${pgComm>0?`<div class="sr"><span class="sk">Gateway commission (${paymentGatewayCommissionPct().toFixed(2)}%)</span><span class="sval" style="color:var(--amber)">−₹${pgComm.toFixed(0)}</span></div>`:''}
     <hr class="sdiv">
@@ -4412,6 +4437,9 @@ async function submitEditOrder(oid){
   const pm=g('eo-pm').value||'';
   const qty=parseInt(g('eo-qty').value)||1;
   const variant=g('eo-var').value;
+  const deliveryMethod=(g('eo-delivery-method')?.value||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
+  const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||0)||0);
+  const discountReason=(g('eo-discount-reason')?.value||'').trim();
   const invoicePaymentStatus=g('eo-invoice-payment')?.value||'prepaid';
   const invoiceDueDate=(g('eo-due-date')?.value||'').trim();
   const invoiceAdditionalDetails=(g('eo-invoice-details')?.value||'').trim();
@@ -4438,7 +4466,7 @@ async function submitEditOrder(oid){
     }
   }
   try{
-    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag});
+    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,deliveryMethod,deliveryCharge,discountReason,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag});
     syncOrder(updated); closeModal();
     rOrders(); rDash(); if(activeViewId()==='subscriptions') rSubscriptions(); updBadge();
     toast('Order updated','ok');

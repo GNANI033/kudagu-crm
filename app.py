@@ -2055,6 +2055,12 @@ def migrate(data: dict) -> dict:
             o["discount"] = 0
         if "commission" not in o:
             o["commission"] = 0
+        if "deliveryMethod" not in o:
+            o["deliveryMethod"] = "delivery"
+        if "deliveryCharge" not in o:
+            o["deliveryCharge"] = 0
+        if "discountReason" not in o:
+            o["discountReason"] = ""
         if "paymentMethod" not in o:
             o["paymentMethod"] = ""
         if "inventorySynced" not in o:
@@ -3330,7 +3336,8 @@ def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
     subtotal = round(unit_price * qty, 2)
     normal_subtotal = round(normal_unit * qty, 2)
     discount = round(_safe_float(order.get("discount")), 2)
-    payable = round(max(0.0, subtotal - discount), 2)
+    delivery_charge = round(max(0.0, _safe_float(order.get("deliveryCharge"))), 2)
+    payable = round(max(0.0, subtotal + delivery_charge - discount), 2)
     return {
         "qty": qty,
         "unitPrice": round(unit_price, 2),
@@ -3339,6 +3346,9 @@ def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
         "subtotal": subtotal,
         "normalSubtotal": normal_subtotal,
         "discount": discount,
+        "deliveryCharge": delivery_charge,
+        "deliveryMethod": str(order.get("deliveryMethod") or "delivery").strip().lower() or "delivery",
+        "discountReason": str(order.get("discountReason") or "").strip(),
         "payable": payable,
         "couponCode": _normalize_coupon_code(order.get("couponCode")),
         "couponDiscountType": str(order.get("couponDiscountType") or "").strip(),
@@ -3859,8 +3869,10 @@ def _build_invoice_pdf(order: dict, customer: dict, product: dict, profile: dict
     effective_unit = _safe_float(snapshot.get("unitPrice")) or _effective_unit_price_for_product(product, order.get("variant"), qty, channel)
     normal_subtotal = _safe_float(snapshot.get("normalSubtotal")) or round(normal_unit * qty, 2)
     subtotal = _safe_float(snapshot.get("subtotal")) or round(effective_unit * qty, 2)
-    discount = min(_safe_float(snapshot.get("discount")) if snapshot else _safe_float(order.get("discount")), subtotal)
-    payable = round(max(0.0, subtotal - discount), 2)
+    delivery_charge = _safe_float(snapshot.get("deliveryCharge")) if snapshot else _safe_float(order.get("deliveryCharge"))
+    delivery_charge = round(max(0.0, delivery_charge), 2)
+    discount = min(_safe_float(snapshot.get("discount")) if snapshot else _safe_float(order.get("discount")), subtotal + delivery_charge)
+    payable = round(max(0.0, subtotal + delivery_charge - discount), 2)
     bulk_savings = round(max(0.0, normal_subtotal - subtotal), 2)
     total_discount = round(bulk_savings + discount, 2)
     total_discount_pct = (total_discount / normal_subtotal * 100.0) if normal_subtotal > 0 else 0.0
@@ -3962,13 +3974,24 @@ def _build_invoice_pdf(order: dict, customer: dict, product: dict, profile: dict
     coupon_code = _normalize_coupon_code(order.get("couponCode"))
     if coupon_code:
         discount_reasons.append(f"Coupon {coupon_code}")
-    discount_label = f"Discount ({' + '.join(discount_reasons)} - {total_discount_pct:.2f}%)" if discount_reasons else f"Discount ({total_discount_pct:.2f}%)"
+    discount_reason = str(order.get("discountReason") or "").strip()
+    if discount_reason:
+        discount_reasons.append(discount_reason)
+    if discount_reason:
+        label_core = " + ".join(discount_reasons) if discount_reasons else discount_reason
+        discount_label = f"({label_core} - {total_discount_pct:.2f}%)"
+    else:
+        discount_label = f"Discount ({' + '.join(discount_reasons)} - {total_discount_pct:.2f}%)" if discount_reasons else f"Discount ({total_discount_pct:.2f}%)"
     rows = [
         ("Subtotal", normal_subtotal),
+        ("Delivery Charges", delivery_charge) if delivery_charge > 0 else None,
         (discount_label, -total_discount),
     ]
     c.setFont("Helvetica", 10)
-    for label, value in rows:
+    for row in rows:
+        if row is None:
+            continue
+        label, value = row
         c.setFillColor(colors.HexColor("#555555"))
         c.drawString(summary_x, summary_y, label)
         c.setFillColor(colors.HexColor("#111111"))
@@ -6088,6 +6111,9 @@ async def add_order(request: Request):
         "status":        body.get("status", default_status),
         "discount":      float(body.get("discount", 0) or 0),
         "commission":    float(body.get("commission", 0) or 0),
+        "deliveryMethod": "pickup" if str(body.get("deliveryMethod") or "").strip().lower() == "pickup" else "delivery",
+        "deliveryCharge": max(0.0, float(body.get("deliveryCharge", 0) or 0)),
+        "discountReason": str(body.get("discountReason") or "").strip(),
         "paymentMethod": body.get("paymentMethod", ""),
         "at":            body["at"],
         "realizedRevenue": body.get("realizedRevenue"),
@@ -6423,9 +6449,15 @@ async def update_order(order_id: int, request: Request):
         if next_customer_id > 0:
             _ensure_customer_scope(ctx.get("user"), data, next_customer_id)
     prev = copy.deepcopy(data["orders"][idx])
-    for key in ("status", "discount", "commission", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal", "invoiceDueDate", "invoiceAdditionalDetails", "invoiceTerms"):
+    for key in ("status", "discount", "commission", "deliveryMethod", "deliveryCharge", "discountReason", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal", "invoiceDueDate", "invoiceAdditionalDetails", "invoiceTerms"):
         if key in body:
             data["orders"][idx][key] = body[key]
+    if "deliveryMethod" in body:
+        data["orders"][idx]["deliveryMethod"] = "pickup" if str(body.get("deliveryMethod") or "").strip().lower() == "pickup" else "delivery"
+    if "deliveryCharge" in body:
+        data["orders"][idx]["deliveryCharge"] = max(0.0, _safe_float(body.get("deliveryCharge")))
+    if "discountReason" in body:
+        data["orders"][idx]["discountReason"] = str(body.get("discountReason") or "").strip()
     if "invoicePaymentStatus" in body:
         data["orders"][idx]["invoicePaymentStatus"] = "due" if str(body.get("invoicePaymentStatus") or "").strip() == "due" else "prepaid"
     if any(k in body for k in ("subscriptionFrequency", "subscriptionDuration", "subscriptionTag")):
@@ -6654,6 +6686,9 @@ async def complete_distribution_batch(batch_id: int, request: Request):
         "status": "completed",
         "discount": 0.0,
         "commission": float(total_commission or 0),
+        "deliveryMethod": "delivery",
+        "deliveryCharge": 0.0,
+        "discountReason": "",
         "paymentMethod": str(body.get("paymentMethod", "")).strip(),
         "at": now_ms,
         "realizedRevenue": amount_collected,

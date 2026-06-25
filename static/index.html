@@ -475,6 +475,25 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .fr { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .fr2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .fr3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+.sale-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 18px;
+  align-items: start;
+}
+.sale-form > .fg,
+.sale-form > .fr,
+.sale-form > .fr2,
+.sale-form > .fr3,
+.sale-form > .toggle-row,
+.sale-form > #sale-sum,
+.sale-form > button {
+  min-width: 0;
+}
+.sale-form > #sale-sum,
+.sale-form > button {
+  grid-column: 1 / -1;
+}
 label { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
 .req { color: var(--red); margin-left: 2px; }
 input, select, textarea {
@@ -1141,6 +1160,9 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .two { grid-template-columns: 1fr; gap: 12px; }
 
   /* Forms: all single column */
+  .sale-form { grid-template-columns: 1fr; }
+  .sale-form > #sale-sum,
+  .sale-form > button { grid-column: auto; }
   .fr, .fr2, .fr3, .channel-row { grid-template-columns: 1fr; }
 
   /* Variant buttons: 2-col on mobile */
@@ -1265,8 +1287,8 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   <!-- RECORD SALE -->
   <div class="view" id="view-sales">
     <div class="ph"><div><div class="ph-title">Record Sale</div><div class="ph-sub">Log a new order</div></div></div>
-    <div class="card" style="max-width:600px">
-      <div class="cb" style="display:flex;flex-direction:column;gap:18px">
+    <div class="card" style="max-width:1040px;width:100%">
+      <div class="cb sale-form">
         <div class="fg">
           <label>Customer <span class="req">*</span></label>
           <div class="sw">
@@ -1278,6 +1300,19 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
         <div class="fg">
           <label>Product / Service <span class="req">*</span></label>
           <select id="ps" onchange="onProdChange()"><option value="">Select product / service…</option></select>
+        </div>
+        <div class="fr">
+          <div class="fg">
+            <label>Delivery</label>
+            <select id="sale-delivery-method" onchange="refreshSum()">
+              <option value="delivery">Delivery</option>
+              <option value="pickup">Pickup</option>
+            </select>
+          </div>
+          <div class="fg">
+            <label>Delivery Charge (₹) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+            <div class="input-prefix"><span>₹</span><input type="number" id="sale-delivery-charge" placeholder="0" min="0" step="0.01" inputmode="decimal" oninput="refreshSum()"></div>
+          </div>
         </div>
         <div class="fg">
           <label>Pack Size <span class="req">*</span></label>
@@ -1304,6 +1339,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
             <label>Commission (₹) <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
             <div class="input-prefix"><span>₹</span><input type="number" id="sale-commission" placeholder="0" min="0" inputmode="decimal" oninput="refreshSum()"></div>
           </div>
+        </div>
+        <div class="fg">
+          <label>Discount Reason <span style="color:var(--text-3);font-weight:400">(optional)</span></label>
+          <textarea id="sale-discount-reason" rows="2" placeholder="Why is this discount being applied?" oninput="refreshSum()"></textarea>
         </div>
         <div class="toggle-row">
           <div>
