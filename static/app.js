@@ -85,6 +85,7 @@ let _uiReqDepth = 0;
 let _uiLoadingEl = null;
 let _marketingLastWaUrl = '';
 let AWB_SCAN_STATE = { active:false, stream:null, raf:0, detector:null, canvas:null, candidate:'', confirmTimer:0, saving:false, serverInFlight:false, lastServerAt:0, orderId:null, from:'orders', shipDate:'', courier:'' };
+let PRICING_CALC_STATE = { profiles: [], activeId: null, draft: null };
 
 function _isActionEl(el){
   if(!el) return false;
@@ -645,6 +646,7 @@ function emptyState(){
     loyaltyBadgesCatalog: [],
     loyaltySnapshots: {},
     loyaltySync: { status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 },
+    pricingCalculatorProfiles: [],
     cid: 1,
     oid: 1,
     dbid: 1,
@@ -664,6 +666,7 @@ function normalizeAppState(){
   ['customers','customerProductTags','orders','products','distributorBatches','distributionChannels','operationalExpenses','closedFollowUps','coupons','badgeCouponCompletions'].forEach(key=>{
     if(!Array.isArray(S[key])) S[key]=[];
   });
+  if(!Array.isArray(S.pricingCalculatorProfiles)) S.pricingCalculatorProfiles=[];
   if(!S.loyaltySnapshots || typeof S.loyaltySnapshots!=='object' || Array.isArray(S.loyaltySnapshots)) S.loyaltySnapshots={};
   if(!Array.isArray(S.loyaltyBadgesCatalog)) S.loyaltyBadgesCatalog=[];
   if(!S.loyaltySync || typeof S.loyaltySync!=='object') S.loyaltySync={ status:'idle', lastAttemptAt:0, lastSuccessAt:0, lastError:'', totalSynced:0 };
@@ -762,8 +765,8 @@ function getSelectedCustomerTags(prefix){
   return normalizeCustomerProductTags(getCustomerTagPickerState(prefix).selected);
 }
 function firstAccessiblePage(){
-  const pages=['dashboard','sales','orders','subscriptions','alerts','marketing','distribution','expenses','customers','settings'];
-  return pages.find(hasPageAccess) || 'dashboard';
+  const pages=['dashboard','sales','orders','subscriptions','alerts','marketing','distribution','expenses','customers','pricing-calculator','settings'];
+  return pages.find((page)=>page==='pricing-calculator'?canAccessPricingCalculator():hasPageAccess(page)) || 'dashboard';
 }
 function appShellEls(){
   return [
@@ -966,6 +969,7 @@ function rerenderActiveView(){
   if(p==='distribution') rDistribution();
   if(p==='expenses') rOperationalExpenses();
   if(p==='customers') rCustomers();
+  if(p==='pricing-calculator') rPricingCalculator();
   if(p==='settings'){ sPanel('products'); rSettings(); }
 }
 function pagerMarkup(page,totalPages,onClick){
@@ -1847,7 +1851,8 @@ function isMobile(){ return window.innerWidth < 600; }
 
 // ─── NAVIGATION ──────────────────────────────────────────────────────────────
 function nav(p){
-  if(!hasPageAccess(p)){
+  const allowed = p==='pricing-calculator' ? canAccessPricingCalculator() : hasPageAccess(p);
+  if(!allowed){
     const fallback=firstAccessiblePage();
     if(p!==fallback) return nav(fallback);
     toast('Access restricted for this account','err');
@@ -1860,7 +1865,7 @@ function nav(p){
   document.querySelectorAll(`.sidebar .nb[onclick="nav('${p}')"]`).forEach(b=>b.classList.add('active'));
   // Mobile bottom nav
   document.querySelectorAll('.bnav-item').forEach(b=>b.classList.remove('active'));
-  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',subscriptions:'bnav-subscriptions',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',expenses:'bnav-expenses',customers:'bnav-customers',settings:'bnav-settings'};
+  const BIDX={dashboard:'bnav-dashboard',orders:'bnav-orders',subscriptions:'bnav-subscriptions',alerts:'bnav-alerts',marketing:'bnav-marketing',distribution:'bnav-distribution',expenses:'bnav-expenses',customers:'bnav-customers',settings:'bnav-settings','pricing-calculator':'bnav-pricing-calculator'};
   if(BIDX[p]) { const el=g(BIDX[p]); if(el) el.classList.add('active'); }
   // Scroll to top on mobile when switching views
   if(isMobile()) window.scrollTo({top:0,behavior:'smooth'});
@@ -1872,6 +1877,7 @@ function nav(p){
   if(p==='distribution') rDistribution();
   if(p==='expenses') rOperationalExpenses();
   if(p==='customers') rCustomers();
+  if(p==='pricing-calculator') rPricingCalculator();
   if(p==='sales')     { populateProdSelect(); setDefaultDate(); }
   if(p==='settings')  { sPanel('products'); rSettings(); }
 }
@@ -1898,6 +1904,12 @@ function sPanel(id){
 function setNavVisibility(selector, visible){
   document.querySelectorAll(selector).forEach((el)=>{ el.style.display=visible?'':'none'; });
 }
+function canAccessPricingCalculator(){
+  return hasPageAccess('settings') && canViewFinancialData();
+}
+function canManagePricingCalculator(){
+  return canAccessPricingCalculator() && hasActionAccess('settings','manage');
+}
 function applyPermissionUI(){
   const signedIn=!!currentUser();
   setNavVisibility('.sidebar .nb[onclick="nav(\'dashboard\')"]', hasPageAccess('dashboard'));
@@ -1908,6 +1920,7 @@ function applyPermissionUI(){
   setNavVisibility('.sidebar .nb[onclick="nav(\'distribution\')"]', hasPageAccess('distribution'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'expenses\')"]', hasPageAccess('expenses'));
   setNavVisibility('.sidebar .nb[onclick="nav(\'customers\')"]', hasPageAccess('customers'));
+  setNavVisibility('.sidebar .nb[onclick="nav(\'pricing-calculator\')"]', canAccessPricingCalculator());
   setNavVisibility('.sidebar .nb[onclick="nav(\'settings\')"]', hasPageAccess('settings'));
   if(g('bnav-dashboard')) g('bnav-dashboard').style.display=hasPageAccess('dashboard')?'':'none';
   if(g('bnav-orders')) g('bnav-orders').style.display=hasPageAccess('orders')?'':'none';
@@ -1917,6 +1930,7 @@ function applyPermissionUI(){
   if(g('bnav-distribution')) g('bnav-distribution').style.display=hasPageAccess('distribution')?'':'none';
   if(g('bnav-expenses')) g('bnav-expenses').style.display=hasPageAccess('expenses')?'':'none';
   if(g('bnav-customers')) g('bnav-customers').style.display=hasPageAccess('customers')?'':'none';
+  if(g('bnav-pricing-calculator')) g('bnav-pricing-calculator').style.display=canAccessPricingCalculator()?'':'none';
   if(g('bnav-settings')) g('bnav-settings').style.display=hasPageAccess('settings')?'':'none';
   document.querySelectorAll('.dash-sale-btn, .mobile-topbar .btn').forEach((el)=>{ el.style.display=(hasPageAccess('sales') && hasActionAccess('orders','create'))?'':'none'; });
   document.querySelectorAll('[onclick="openAddCustomerModal()"]').forEach((el)=>{ el.style.display=(hasPageAccess('customers') && hasActionAccess('customers','create'))?'':'none'; });
@@ -1931,7 +1945,7 @@ function applyPermissionUI(){
     if(fallback) sPanel(fallback);
   }
   const active=activeViewId();
-  if(active && !hasPageAccess(active)) nav(firstAccessiblePage());
+  if(active && !((active==='pricing-calculator' && canAccessPricingCalculator()) || (active!=='pricing-calculator' && hasPageAccess(active)))) nav(firstAccessiblePage());
 }
 
 function marketingWaPhone(phone){
@@ -7096,6 +7110,162 @@ async function saveShippingSettings(){
     toast('Shipping details saved','ok');
   }catch(e){toast('Error: '+e.message,'err');}
 }
+
+const PRICING_CALC_DEFAULT_INPUTS = {
+  robustaCostPerKg:560, arabicaCostPerKg:790, chicoryCostPerKg:180, processingCostPerKg:100,
+  bulkPackagingPerKg:27, nonBulkPackagingPerKg:80, bulkShippingPerKg:65, nonBulkShippingPerKg:110,
+  baseTransportPerKg:15, bulkMarginPct:0.30, nonBulkMarginPct:0.60,
+};
+const PRICING_CALC_DEFAULT_VARIANTS = [
+  {id:'base-250g',label:'250g',grams:250,discountPct:0,isBase:true},
+  {id:'var-500g',label:'500g',grams:500,discountPct:0.085,isBase:false},
+  {id:'var-1000g',label:'1000g',grams:1000,discountPct:0.085,isBase:false},
+];
+const PRICING_CALC_EXTRA_COST_SCOPES = [
+  {id:'both',label:'Both'},
+  {id:'bulk',label:'Bulk'},
+  {id:'nonBulk',label:'Non-bulk'},
+];
+function pricingCalcMarkSmallestVariantAsBase(variants){
+  const rows=(Array.isArray(variants)?variants:[]).map((row)=>({...row}));
+  if(!rows.length) return rows;
+  let smallestIdx=0;
+  let smallestGrams=parseFloat(rows[0].grams||0)||0;
+  rows.forEach((row,idx)=>{
+    const grams=parseFloat(row.grams||0)||0;
+    if(grams<smallestGrams){
+      smallestGrams=grams;
+      smallestIdx=idx;
+    }
+  });
+  return rows.map((row,idx)=>({...row,isBase:idx===smallestIdx}));
+}
+function pricingCalcProductRows(){ return (S?.products||[]).map((p)=>({crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:100,arabicaPct:0,chicoryPct:0,enabled:true})); }
+function pricingCalcDefaultProfile(name='Untitled Profile'){ return {id:0,name,inputs:{...PRICING_CALC_DEFAULT_INPUTS},extraCosts:[],variants:PRICING_CALC_DEFAULT_VARIANTS.map(v=>({...v})),rows:pricingCalcProductRows(),createdAt:0,updatedAt:0}; }
+function clonePricingCalcProfile(profile){ return JSON.parse(JSON.stringify(profile||pricingCalcDefaultProfile())); }
+function pricingCalcMaterializeProfile(profile){
+  const base=clonePricingCalcProfile(profile||pricingCalcDefaultProfile());
+  base.inputs={...PRICING_CALC_DEFAULT_INPUTS,...(base.inputs||{})};
+  const rowsById=new Map((base.rows||[]).map((row)=>[row.crmProductId,{...row}]));
+  const mergedRows=(S?.products||[]).map((p)=>{ const ex=rowsById.get(p.id)||{}; rowsById.delete(p.id); return {crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:parseFloat(ex.robustaPct??100)||0,arabicaPct:parseFloat(ex.arabicaPct||0)||0,chicoryPct:parseFloat(ex.chicoryPct||0)||0,enabled:ex.enabled!==false}; });
+  rowsById.forEach((row,pid)=>mergedRows.push({crmProductId:pid,productNameSnapshot:row.productNameSnapshot||row.productName||pid,productName:row.productName||row.productNameSnapshot||pid,missingProduct:true,robustaPct:parseFloat(row.robustaPct||0)||0,arabicaPct:parseFloat(row.arabicaPct||0)||0,chicoryPct:parseFloat(row.chicoryPct||0)||0,enabled:row.enabled!==false}));
+  base.rows=mergedRows;
+  base.extraCosts=(Array.isArray(base.extraCosts)?base.extraCosts:[]).map((row,idx)=>({id:String(row.id||`extra-cost-${idx+1}`),label:String(row.label||''),amount:parseFloat(row.amount||0)||0,applyTo:['both','bulk','nonBulk'].includes(String(row.applyTo||''))?String(row.applyTo):'both'}));
+  base.variants=pricingCalcMarkSmallestVariantAsBase((Array.isArray(base.variants)&&base.variants.length?base.variants:PRICING_CALC_DEFAULT_VARIANTS).map((row,idx)=>({id:String(row.id||`variant-${idx+1}`),label:String(row.label||`Variant ${idx+1}`),grams:parseFloat(row.grams||0)||0,discountPct:parseFloat(row.discountPct||0)||0,isBase:!!row.isBase})));
+  return base;
+}
+function syncPricingCalculatorState(){
+  PRICING_CALC_STATE.profiles=(S?.pricingCalculatorProfiles||[]).map(pricingCalcMaterializeProfile);
+  if(PRICING_CALC_STATE.activeId){
+    const active=PRICING_CALC_STATE.profiles.find((row)=>row.id===PRICING_CALC_STATE.activeId);
+    if(active) PRICING_CALC_STATE.draft=pricingCalcMaterializeProfile(active);
+  }
+  if(!PRICING_CALC_STATE.draft){
+    const first=PRICING_CALC_STATE.profiles[0];
+    PRICING_CALC_STATE.activeId=first?.id||0;
+    PRICING_CALC_STATE.draft=pricingCalcMaterializeProfile(first||pricingCalcDefaultProfile());
+  }
+}
+function pricingCalcComputed(profile){
+  const draft=pricingCalcMaterializeProfile(profile), rows=[];
+  const bulkExtra=(draft.extraCosts||[]).filter((row)=>row.applyTo==='bulk'||row.applyTo==='both').reduce((sum,row)=>sum+(parseFloat(row.amount||0)||0),0);
+  const nonBulkExtra=(draft.extraCosts||[]).filter((row)=>row.applyTo==='nonBulk'||row.applyTo==='both').reduce((sum,row)=>sum+(parseFloat(row.amount||0)||0),0);
+  draft.rows.forEach((row)=>{ const raw=((row.robustaPct/100)*draft.inputs.robustaCostPerKg)+((row.arabicaPct/100)*draft.inputs.arabicaCostPerKg)+((row.chicoryPct/100)*draft.inputs.chicoryCostPerKg); const bulk=(raw+draft.inputs.processingCostPerKg+draft.inputs.bulkPackagingPerKg+draft.inputs.bulkShippingPerKg+bulkExtra)*(1+draft.inputs.bulkMarginPct); const nonBulkCostPerGramBeforeMargin=(raw+draft.inputs.processingCostPerKg+draft.inputs.nonBulkPackagingPerKg+draft.inputs.nonBulkShippingPerKg+draft.inputs.baseTransportPerKg+nonBulkExtra)/1000; const base=(raw+draft.inputs.processingCostPerKg+draft.inputs.nonBulkPackagingPerKg+draft.inputs.nonBulkShippingPerKg+draft.inputs.baseTransportPerKg+nonBulkExtra)*(1+draft.inputs.nonBulkMarginPct)/1000; rows.push({rawCoffeeCostPerKg:raw,bulkMrpPerKg:bulk,variants:draft.variants.map((variant)=>{ const grams=parseFloat(variant.grams||0)||0; const discount=(parseFloat(variant.discountPct||0)||0); const mrp=grams*base*(1-discount); return {id:variant.id,mrp,marginRupees:mrp-(grams*nonBulkCostPerGramBeforeMargin)}; })}); });
+  return { rows, bulkExtra, nonBulkExtra };
+}
+function pricingCalcValidation(profile){
+  const draft=pricingCalcMaterializeProfile(profile), errors=[];
+  if(!String(draft.name||'').trim()) errors.push('Profile name is required');
+  draft.variants.forEach((row)=>{ if((parseFloat(row.grams)||0)<=0) errors.push(`Variant ${row.label||row.id} must have grams greater than 0`); if((parseFloat(row.discountPct)||0)<0) errors.push(`Variant ${row.label||row.id} discount cannot be negative`); });
+  draft.extraCosts.forEach((row)=>{ if((parseFloat(row.amount)||0)<0) errors.push(`${row.label||'Extra cost'} cannot be negative`); });
+  draft.rows.forEach((row)=>{ const total=(parseFloat(row.robustaPct)||0)+(parseFloat(row.arabicaPct)||0)+(parseFloat(row.chicoryPct)||0); if(total<99.99||total>100.01) errors.push(`${row.productName||row.productNameSnapshot} blend must total 100%`); });
+  return errors;
+}
+function pricingCalcFormatCurrency(value){ return `₹${Number(value||0).toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`; }
+function pricingCalcPercentValue(value){ return (parseFloat(value||0)||0)*100; }
+function rPricingCalculator(){
+  syncPricingCalculatorState();
+  const draft=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft); PRICING_CALC_STATE.draft=draft;
+  const host=g('view-pricing-calculator'); if(!host) return;
+  const variantHead=draft.variants.map((v)=>`<th>${esc(v.label||v.id)}</th>`).join('');
+  const variantRows=draft.variants.map((v,idx)=>`<tr><td><input type="text" value="${esc(v.label)}" oninput="updatePricingCalcVariant(${idx},'label',this.value)"></td><td><input type="number" min="1" step="1" value="${v.grams}" oninput="updatePricingCalcVariant(${idx},'grams',this.value)"></td><td><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(v.discountPct)}" oninput="updatePricingCalcVariant(${idx},'discountPct',this.value)"></div></td><td><button type="button" class="btn btn-g btn-xs" data-pc-action="remove-variant" data-pc-index="${idx}">Remove</button></td></tr>`).join('');
+  const extraCostRows=(draft.extraCosts||[]).map((row,idx)=>`<tr><td><input type="text" value="${esc(row.label)}" placeholder="e.g. Wastage / misc" oninput="updatePricingCalcExtraCost(${idx},'label',this.value)"></td><td><div class="input-prefix"><span>₹</span><input type="number" min="0" step="0.01" value="${row.amount}" oninput="updatePricingCalcExtraCost(${idx},'amount',this.value)"></div></td><td><select onchange="updatePricingCalcExtraCost(${idx},'applyTo',this.value)">${PRICING_CALC_EXTRA_COST_SCOPES.map((scope)=>`<option value="${scope.id}" ${row.applyTo===scope.id?'selected':''}>${scope.label}</option>`).join('')}</select></td><td><button type="button" class="btn btn-g btn-xs" data-pc-action="remove-extra-cost" data-pc-index="${idx}">Remove</button></td></tr>`).join('');
+  const productRows=draft.rows.map((row,idx)=>`<tr class="${row.enabled===false?'pc-row-disabled':''}"><td><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" ${row.enabled!==false?'checked':''} onchange="togglePricingCalcRow(${idx},this.checked)"><span>${esc(row.productName||row.productNameSnapshot||row.crmProductId)}${row.missingProduct?' <span class="pill pn">Missing</span>':''}</span></label></td><td><input type="number" min="0" step="0.01" value="${row.robustaPct}" oninput="updatePricingCalcRow(${idx},'robustaPct',this.value)"></td><td><input type="number" min="0" step="0.01" value="${row.arabicaPct}" oninput="updatePricingCalcRow(${idx},'arabicaPct',this.value)"></td><td><input type="number" min="0" step="0.01" value="${row.chicoryPct}" oninput="updatePricingCalcRow(${idx},'chicoryPct',this.value)"></td><td id="pc-total-${idx}">-</td><td id="pc-raw-${idx}">-</td><td id="pc-bulk-${idx}">-</td>${draft.variants.map((variant)=>`<td id="pc-var-${idx}-${variant.id}">-</td>`).join('')}</tr>`).join('');
+  const profileOptions=['<option value="0">Unsaved draft</option>',...PRICING_CALC_STATE.profiles.map((profile)=>`<option value="${profile.id}" ${draft.id===profile.id?'selected':''}>${esc(profile.name)}</option>`)].join('');
+  host.innerHTML=`<div class="ph"><div><div class="ph-title">Pricing Calculator</div><div class="ph-sub">Standalone pricing workbench. Save stores calculator profiles. Update Product Pricing publishes MRPs and bulk prices into Settings → Products.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-s btn-sm" data-pc-action="new-profile">New</button><button type="button" class="btn btn-s btn-sm" data-pc-action="duplicate-profile">Duplicate</button><button type="button" class="btn btn-danger btn-sm" data-pc-action="delete-profile" ${draft.id?'':'disabled'}>Delete</button><button type="button" class="btn btn-s btn-sm" data-pc-action="publish-products" ${canManagePricingCalculator()?'':'disabled'}>Update Product Pricing</button><button type="button" class="btn btn-p btn-sm" data-pc-action="save-profile" ${canManagePricingCalculator()?'':'disabled'}>Save</button></div></div><div class="card" style="margin-bottom:12px"><div class="cb" style="display:flex;flex-direction:column;gap:12px"><div class="fr"><div class="fg"><label>Saved Profile</label><select onchange="loadPricingCalcProfile(this.value)">${profileOptions}</select></div><div class="fg"><label>Profile Name</label><input type="text" value="${esc(draft.name)}" oninput="updatePricingCalcName(this.value)"></div></div><div id="pc-errors" style="font-size:12px;color:var(--red)"></div></div></div><div class="two"><div class="card"><div class="ch"><div class="ct">Input Costs</div></div><div class="cb"><div class="fr2">${[['robustaCostPerKg','Robusta / kg'],['arabicaCostPerKg','Arabica / kg'],['chicoryCostPerKg','Chicory / kg'],['processingCostPerKg','Processing / kg'],['bulkPackagingPerKg','Bulk packaging / kg'],['nonBulkPackagingPerKg','Non-bulk packaging / kg'],['bulkShippingPerKg','Bulk shipping / kg'],['nonBulkShippingPerKg','Non-bulk shipping / kg'],['baseTransportPerKg','Base transport / kg']].map(([key,label])=>`<div class="fg"><label>${label}</label><div class="input-prefix"><span>₹</span><input type="number" min="0" step="0.01" value="${draft.inputs[key]}" oninput="updatePricingCalcInput('${key}',this.value)"></div></div>`).join('')}<div class="fg"><label>Bulk margin</label><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.bulkMarginPct)}" oninput="updatePricingCalcInput('bulkMarginPct',this.value,true)"></div></div><div class="fg"><label>Non-bulk margin</label><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.nonBulkMarginPct)}" oninput="updatePricingCalcInput('nonBulkMarginPct',this.value,true)"></div></div></div><div style="margin-top:12px;font-size:11.5px;color:var(--text-3)" id="pc-cost-summary"></div><div style="margin-top:16px"><div class="sl-label" style="margin-bottom:8px">Extra Input Costs</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Amount / kg</th><th>Apply To</th><th></th></tr></thead><tbody>${extraCostRows||'<tr><td colspan="4" style="color:var(--text-3)">No extra costs added.</td></tr>'}</tbody></table></div><div style="margin-top:10px"><button type="button" class="btn btn-s btn-sm" data-pc-action="add-extra-cost">＋ Add Extra Cost</button></div></div></div></div><div class="card"><div class="ch"><div class="ct">Variants</div><button type="button" class="btn btn-s btn-xs" data-pc-action="add-variant">＋ Add Variant</button></div><div class="cb"><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px">The smallest size is automatically treated as the base variant.</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Grams</th><th>Discount</th><th></th></tr></thead><tbody>${variantRows}</tbody></table></div></div></div></div><div class="card" style="margin-top:12px"><div class="ch"><div class="ct">Product Calculator</div></div><div class="cb" style="overflow:auto"><table class="tbl"><thead><tr><th>Product</th><th>Robusta %</th><th>Arabica %</th><th>Chicory %</th><th>Total</th><th>Raw Cost / kg</th><th>Bulk MRP / kg</th>${variantHead}</tr></thead><tbody>${productRows}</tbody></table></div></div>`;
+  refreshPricingCalcComputed();
+}
+function refreshPricingCalcComputed(){
+  const draft=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft), computed=pricingCalcComputed(draft); PRICING_CALC_STATE.draft=draft;
+  draft.rows.forEach((row,idx)=>{ const total=(parseFloat(row.robustaPct)||0)+(parseFloat(row.arabicaPct)||0)+(parseFloat(row.chicoryPct)||0); const totalEl=g(`pc-total-${idx}`); if(totalEl){ totalEl.textContent=`${total.toFixed(2)}%`; totalEl.style.color=(total>=99.99&&total<=100.01)?'var(--green)':'var(--red)'; } const result=computed.rows[idx]; if(!result) return; if(g(`pc-raw-${idx}`)) g(`pc-raw-${idx}`).textContent=pricingCalcFormatCurrency(result.rawCoffeeCostPerKg); if(g(`pc-bulk-${idx}`)) g(`pc-bulk-${idx}`).textContent=pricingCalcFormatCurrency(result.bulkMrpPerKg); result.variants.forEach((variant)=>{ const el=g(`pc-var-${idx}-${variant.id}`); if(el) el.innerHTML=`<div>${pricingCalcFormatCurrency(variant.mrp)}</div><div style="font-size:11px;color:${variant.marginRupees>=0?'var(--green)':'var(--red)'}">Margin ${pricingCalcFormatCurrency(variant.marginRupees)}</div>`; }); });
+  const summary=g('pc-cost-summary'); if(summary) summary.textContent=`Extra costs are added into total cost before margin. Bulk extras: ${pricingCalcFormatCurrency(computed.bulkExtra)} / kg. Non-bulk extras: ${pricingCalcFormatCurrency(computed.nonBulkExtra)} / kg.`;
+  const errEl=g('pc-errors'); if(errEl){ const errors=pricingCalcValidation(draft); errEl.innerHTML=errors.length?errors.map((msg)=>`<div>${esc(msg)}</div>`).join(''):`<span style="color:var(--green)">Ready to save</span>`; }
+}
+function loadPricingCalcProfile(profileId){ const id=parseInt(profileId||0,10)||0; PRICING_CALC_STATE.activeId=id; if(!id){ PRICING_CALC_STATE.draft=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft||pricingCalcDefaultProfile()); PRICING_CALC_STATE.draft.id=0; return rPricingCalculator(); } const profile=PRICING_CALC_STATE.profiles.find((row)=>row.id===id); if(!profile){ toast('Profile not found','err'); return; } PRICING_CALC_STATE.draft=pricingCalcMaterializeProfile(profile); rPricingCalculator(); }
+function updatePricingCalcName(value){ PRICING_CALC_STATE.draft.name=String(value||''); refreshPricingCalcComputed(); }
+function updatePricingCalcInput(key, value, isPercent=false){ const num=parseFloat(value||0)||0; PRICING_CALC_STATE.draft.inputs[key]=isPercent?(num/100):num; refreshPricingCalcComputed(); }
+function addPricingCalcExtraCost(){ PRICING_CALC_STATE.draft.extraCosts=[...(PRICING_CALC_STATE.draft.extraCosts||[]),{id:`extra-cost-${Date.now()}`,label:'',amount:0,applyTo:'both'}]; rPricingCalculator(); }
+function updatePricingCalcExtraCost(idx,key,value){ const row=(PRICING_CALC_STATE.draft.extraCosts||[])[idx]; if(!row) return; if(key==='amount') row.amount=parseFloat(value||0)||0; else row[key]=String(value||''); refreshPricingCalcComputed(); }
+function removePricingCalcExtraCost(idx){ PRICING_CALC_STATE.draft.extraCosts=(PRICING_CALC_STATE.draft.extraCosts||[]).filter((_,i)=>i!==idx); rPricingCalculator(); }
+function updatePricingCalcVariant(idx,key,value){ const row=PRICING_CALC_STATE.draft.variants[idx]; if(!row) return; if(key==='discountPct') row.discountPct=(parseFloat(value||0)||0)/100; else if(key==='grams') row.grams=parseFloat(value||0)||0; else row[key]=String(value||''); PRICING_CALC_STATE.draft.variants=pricingCalcMarkSmallestVariantAsBase(PRICING_CALC_STATE.draft.variants); refreshPricingCalcComputed(); }
+function addPricingCalcVariant(){ const idx=PRICING_CALC_STATE.draft.variants.length+1; PRICING_CALC_STATE.draft.variants.push({id:`variant-${Date.now()}`,label:`Variant ${idx}`,grams:250,discountPct:0,isBase:false}); PRICING_CALC_STATE.draft.variants=pricingCalcMarkSmallestVariantAsBase(PRICING_CALC_STATE.draft.variants); rPricingCalculator(); }
+function removePricingCalcVariant(idx){ if((PRICING_CALC_STATE.draft.variants||[]).length<=1){ toast('Keep at least one variant','err'); return; } PRICING_CALC_STATE.draft.variants=pricingCalcMarkSmallestVariantAsBase(PRICING_CALC_STATE.draft.variants.filter((_,i)=>i!==idx)); rPricingCalculator(); }
+function updatePricingCalcRow(idx,key,value){ const row=PRICING_CALC_STATE.draft.rows[idx]; if(!row) return; row[key]=parseFloat(value||0)||0; refreshPricingCalcComputed(); }
+function togglePricingCalcRow(idx,checked){ const row=PRICING_CALC_STATE.draft.rows[idx]; if(!row) return; row.enabled=!!checked; }
+function newPricingCalcProfile(){ PRICING_CALC_STATE.activeId=0; PRICING_CALC_STATE.draft=pricingCalcDefaultProfile(`Profile ${((S?.pricingCalculatorProfiles||[]).length||0)+1}`); rPricingCalculator(); }
+function duplicatePricingCalcProfile(){ const source=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft||pricingCalcDefaultProfile()); source.id=0; source.name=`${source.name||'Profile'} Copy`; source.createdAt=0; source.updatedAt=0; PRICING_CALC_STATE.activeId=0; PRICING_CALC_STATE.draft=source; rPricingCalculator(); }
+async function savePricingCalcProfile(){ if(!canManagePricingCalculator()){ toast('Settings access is restricted','err'); return; } const draft=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft); const errors=pricingCalcValidation(draft); if(errors.length){ toast(errors[0],'err'); return; } try{ const payload={name:draft.name,inputs:draft.inputs,extraCosts:(draft.extraCosts||[]).filter((row)=>String(row.label||'').trim() || (parseFloat(row.amount||0)||0)>0),variants:draft.variants,rows:draft.rows.filter((row)=>!row.missingProduct).map((row)=>({crmProductId:row.crmProductId,productNameSnapshot:row.productNameSnapshot,robustaPct:row.robustaPct,arabicaPct:row.arabicaPct,chicoryPct:row.chicoryPct,enabled:row.enabled!==false}))}; const saved=draft.id?await api.put(`/api/pricing-calculator/profiles/${draft.id}`,payload):await api.post('/api/pricing-calculator/profiles',payload); S.pricingCalculatorProfiles=[saved,...(S.pricingCalculatorProfiles||[]).filter((row)=>row.id!==saved.id)].sort((a,b)=>(b.updatedAt||0)-(a.updatedAt||0)); PRICING_CALC_STATE.activeId=saved.id; PRICING_CALC_STATE.draft=pricingCalcMaterializeProfile(saved); toast('Pricing profile saved','ok'); rPricingCalculator(); }catch(e){ toast('Error: '+e.message,'err'); } }
+async function deletePricingCalcProfile(){ const draft=PRICING_CALC_STATE.draft; if(!draft?.id){ toast('No saved profile selected','err'); return; } if(!confirm('Delete this saved pricing profile?')) return; try{ await api.del(`/api/pricing-calculator/profiles/${draft.id}`); S.pricingCalculatorProfiles=(S.pricingCalculatorProfiles||[]).filter((row)=>row.id!==draft.id); PRICING_CALC_STATE.activeId=0; PRICING_CALC_STATE.draft=pricingCalcDefaultProfile(); toast('Pricing profile deleted','ok'); rPricingCalculator(); }catch(e){ toast('Error: '+e.message,'err'); } }
+async function publishPricingCalcToProducts(){
+  if(!canManagePricingCalculator()){ toast('Settings access is restricted','err'); return; }
+  const draft=pricingCalcMaterializeProfile(PRICING_CALC_STATE.draft);
+  const errors=pricingCalcValidation(draft);
+  if(errors.length){ toast(errors[0],'err'); return; }
+  try{
+    const payload={
+      name:draft.name,
+      inputs:draft.inputs,
+      extraCosts:(draft.extraCosts||[]).filter((row)=>String(row.label||'').trim() || (parseFloat(row.amount||0)||0)>0),
+      variants:draft.variants,
+      rows:draft.rows.filter((row)=>!row.missingProduct).map((row)=>({
+        crmProductId:row.crmProductId,
+        productNameSnapshot:row.productNameSnapshot,
+        robustaPct:row.robustaPct,
+        arabicaPct:row.arabicaPct,
+        chicoryPct:row.chicoryPct,
+        enabled:row.enabled!==false,
+      })),
+    };
+    const res=await api.post('/api/pricing-calculator/publish',payload);
+    const incoming=Array.isArray(res?.products)?res.products:[];
+    if(incoming.length){
+      const byId=new Map(incoming.map((product)=>[product.id,product]));
+      S.products=(S.products||[]).map((product)=>byId.get(product.id)||product);
+    }
+    const updatedCount=parseInt(res?.updatedCount||0,10)||0;
+    toast(updatedCount?`Updated ${updatedCount} product pricing record(s)`:'No matching product sizes were updated','ok');
+    if(activeViewId()==='settings') rSettings();
+    rPricingCalculator();
+  }catch(e){ toast('Error: '+e.message,'err'); }
+}
+document.addEventListener('click',(e)=>{
+  const btn=e.target instanceof Element ? e.target.closest('[data-pc-action]') : null;
+  if(!btn) return;
+  const host=g('view-pricing-calculator');
+  if(!host || !host.contains(btn)) return;
+  const action=String(btn.getAttribute('data-pc-action')||'').trim();
+  const idx=parseInt(btn.getAttribute('data-pc-index')||'-1',10);
+  if(action==='add-extra-cost') return void addPricingCalcExtraCost();
+  if(action==='remove-extra-cost' && idx>=0) return void removePricingCalcExtraCost(idx);
+  if(action==='add-variant') return void addPricingCalcVariant();
+  if(action==='remove-variant' && idx>=0) return void removePricingCalcVariant(idx);
+  if(action==='new-profile') return void newPricingCalcProfile();
+  if(action==='duplicate-profile') return void duplicatePricingCalcProfile();
+  if(action==='delete-profile') return void deletePricingCalcProfile();
+  if(action==='publish-products') return void publishPricingCalcToProducts();
+  if(action==='save-profile') return void savePricingCalcProfile();
+}, true);
+Object.assign(window,{addPricingCalcExtraCost,updatePricingCalcExtraCost,removePricingCalcExtraCost,addPricingCalcVariant,removePricingCalcVariant,updatePricingCalcVariant,newPricingCalcProfile,duplicatePricingCalcProfile,deletePricingCalcProfile,savePricingCalcProfile,publishPricingCalcToProducts,updatePricingCalcInput,updatePricingCalcName,updatePricingCalcRow,togglePricingCalcRow,loadPricingCalcProfile});
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 function g(id){ return document.getElementById(id); }

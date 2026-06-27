@@ -678,6 +678,7 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
 .orders-card .tbl td:nth-child(10) { white-space: nowrap; min-width: 100px; }
 .tbl tr:last-child td { border-bottom: none; }
 .tbl tbody tr:hover td { background: var(--surface-2); }
+.pc-row-disabled td { opacity: .55; }
 .dots-btn { font-size: 16px; line-height: 1; padding: 4px 10px; letter-spacing: 2px; min-height: 36px; }
 
 /* ─── ORDER CARDS (mobile) — hidden on desktop ──────────────────────────── */
@@ -1251,6 +1252,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     <div class="sb-sect">People</div>
     <button class="nb" onclick="nav('customers')"><span class="nb-ic">◉</span><span>Customers</span></button>
     <div class="sb-sect">Config</div>
+    <button class="nb" onclick="nav('pricing-calculator')"><span class="nb-ic">∑</span><span>Pricing</span></button>
     <button class="nb" onclick="nav('settings')"><span class="nb-ic">⚙</span><span>Settings</span></button>
   </nav>
 </aside>
@@ -1764,6 +1766,9 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
     <div class="cg" id="cg"></div>
   </div>
 
+  <!-- PRICING CALCULATOR -->
+  <div class="view" id="view-pricing-calculator"></div>
+
   <!-- SETTINGS -->
   <div class="view" id="view-settings">
     <div class="ph"><div><div class="ph-title">Settings</div><div class="ph-sub">Products, pricing, coupons & messages</div></div></div>
@@ -2186,6 +2191,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   <button class="bnav-item" id="bnav-customers" onclick="nav('customers')">
     <span class="bnav-icon">◉</span>
     <span>People</span>
+  </button>
+  <button class="bnav-item" id="bnav-pricing-calculator" onclick="nav('pricing-calculator')">
+    <span class="bnav-icon">∑</span>
+    <span>Pricing</span>
   </button>
   <button class="bnav-item" id="bnav-settings" onclick="nav('settings')">
     <span class="bnav-icon">⚙</span>

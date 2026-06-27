@@ -167,7 +167,7 @@ WEBSITE_METRICS_CACHE_LOCK = threading.RLock()
 WEBSITE_METRICS_CACHE: dict[str, Any] = {"expires_at": 0.0, "payload": None}
 DEFAULT_UI_PREFERENCES: dict[str, str] = {"theme": "light"}
 ALLOWED_THEMES = {"light", "dark", "nord", "solarized", "dracula"}
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 AUTH_COOKIE_NAME = "kudagu_crm_session"
 PASSWORD_HASH_ITERATIONS = 310_000
 AUTH_SESSION_TTL_SECONDS = max(1, int(getattr(app_config, "SESSION_TTL_HOURS", 12) or 12)) * 60 * 60
@@ -998,6 +998,7 @@ DEFAULT_DATA: dict = {
     "loyaltyBadgesCatalog": [],
     "loyaltySnapshots": {},
     "loyaltySync": {"status": "idle", "lastAttemptAt": 0, "lastSuccessAt": 0, "lastError": "", "totalSynced": 0},
+    "pricingCalculatorProfiles": [],
     "cid": 1,
     "oid": 1,
     "dbid": 1,
@@ -1005,6 +1006,7 @@ DEFAULT_DATA: dict = {
     "couponId": 1,
     "couponQuoteId": 1,
     "pid": 6,
+    "pricingCalculatorProfileId": 1,
     "uid": 1,
     "wuid": 1,
     "waDefaultTpl": (
@@ -1054,6 +1056,42 @@ DEFAULT_DATA: dict = {
         {"id": "p5", "name": "Instant Coffee Mix",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
     ],
 }
+
+PRICING_CALCULATOR_DEFAULT_INPUTS: dict[str, float] = {
+    "robustaCostPerKg": 560.0,
+    "arabicaCostPerKg": 790.0,
+    "chicoryCostPerKg": 180.0,
+    "processingCostPerKg": 100.0,
+    "bulkPackagingPerKg": 27.0,
+    "nonBulkPackagingPerKg": 80.0,
+    "bulkShippingPerKg": 65.0,
+    "nonBulkShippingPerKg": 110.0,
+    "baseTransportPerKg": 15.0,
+    "bulkMarginPct": 0.30,
+    "nonBulkMarginPct": 0.60,
+}
+
+PRICING_CALCULATOR_DEFAULT_VARIANTS: list[dict[str, Any]] = [
+    {"id": "base-250g", "label": "250g", "grams": 250.0, "discountPct": 0.0, "isBase": True},
+    {"id": "var-500g", "label": "500g", "grams": 500.0, "discountPct": 0.085, "isBase": False},
+    {"id": "var-1000g", "label": "1000g", "grams": 1000.0, "discountPct": 0.085, "isBase": False},
+]
+PRICING_CALC_COST_SCOPES = {"bulk", "nonBulk", "both"}
+
+
+def _mark_smallest_pricing_calc_variant_as_base(rows: list[dict]) -> list[dict]:
+    if not rows:
+        return rows
+    smallest_idx = 0
+    smallest_grams = _safe_float(rows[0].get("grams"))
+    for idx, row in enumerate(rows[1:], start=1):
+        grams = _safe_float(row.get("grams"))
+        if grams < smallest_grams:
+            smallest_idx = idx
+            smallest_grams = grams
+    for idx, row in enumerate(rows):
+        row["isBase"] = idx == smallest_idx
+    return rows
 
 
 def _auth_enabled() -> bool:
@@ -1146,6 +1184,327 @@ def _normalize_product_access(values: Any, known_products: list[dict]) -> list[s
         seen.add(pid)
         out.append(pid)
     return out
+
+
+def _normalize_pricing_calc_profile_name(value: Any, fallback: str = "Untitled Profile") -> str:
+    cleaned = re.sub(r"\s+", " ", str(value or "").strip())
+    return cleaned[:120] or fallback
+
+
+def _pricing_calc_product_map(products: list[dict] | None) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for product in products or []:
+        if not isinstance(product, dict):
+            continue
+        pid = str(product.get("id") or "").strip()
+        if pid:
+            out[pid] = product
+    return out
+
+
+def _default_pricing_calc_rows(products: list[dict] | None) -> list[dict]:
+    rows: list[dict] = []
+    for product in products or []:
+        if not isinstance(product, dict):
+            continue
+        pid = str(product.get("id") or "").strip()
+        if not pid:
+            continue
+        rows.append(
+            {
+                "crmProductId": pid,
+                "productNameSnapshot": str(product.get("name") or pid).strip() or pid,
+                "robustaPct": 100.0,
+                "arabicaPct": 0.0,
+                "chicoryPct": 0.0,
+                "enabled": True,
+            }
+        )
+    return rows
+
+
+def _normalize_pricing_calc_variants(
+    values: Any,
+    *,
+    allow_missing_products: bool = True,
+) -> list[dict]:
+    incoming = values if isinstance(values, list) else copy.deepcopy(PRICING_CALCULATOR_DEFAULT_VARIANTS)
+    rows: list[dict] = []
+    seen_ids: set[str] = set()
+    for idx, raw in enumerate(incoming, start=1):
+        row = raw if isinstance(raw, dict) else {}
+        variant_id = re.sub(r"[^a-zA-Z0-9_-]+", "-", str(row.get("id") or "").strip())[:80] or f"variant-{idx}"
+        if variant_id in seen_ids:
+            variant_id = f"{variant_id}-{idx}"
+        seen_ids.add(variant_id)
+        label = re.sub(r"\s+", " ", str(row.get("label") or "").strip())[:80] or f"Variant {idx}"
+        grams = _safe_float(row.get("grams"))
+        discount_pct = _safe_float(row.get("discountPct"))
+        rows.append(
+            {
+                "id": variant_id,
+                "label": label,
+                "grams": grams,
+                "discountPct": max(0.0, discount_pct),
+                "isBase": bool(row.get("isBase")),
+            }
+        )
+    if not rows:
+        rows = copy.deepcopy(PRICING_CALCULATOR_DEFAULT_VARIANTS)
+    rows = _mark_smallest_pricing_calc_variant_as_base(rows)
+    if not allow_missing_products:
+        for row in rows:
+            if _safe_float(row.get("grams")) <= 0:
+                raise HTTPException(status_code=400, detail="Each variant must have grams greater than 0.")
+            if _safe_float(row.get("discountPct")) < 0:
+                raise HTTPException(status_code=400, detail="Variant discount cannot be negative.")
+    return rows
+
+
+def _normalize_pricing_calc_inputs(values: Any) -> dict[str, float]:
+    incoming = values if isinstance(values, dict) else {}
+    normalized = copy.deepcopy(PRICING_CALCULATOR_DEFAULT_INPUTS)
+    for key, default_value in PRICING_CALCULATOR_DEFAULT_INPUTS.items():
+        if key in incoming:
+            normalized[key] = _safe_float(incoming.get(key))
+        if normalized[key] < 0:
+            normalized[key] = default_value
+    return normalized
+
+
+def _normalize_pricing_calc_extra_costs(values: Any) -> list[dict]:
+    incoming = values if isinstance(values, list) else []
+    rows: list[dict] = []
+    for idx, raw in enumerate(incoming, start=1):
+        row = raw if isinstance(raw, dict) else {}
+        label = re.sub(r"\s+", " ", str(row.get("label") or "").strip())[:80]
+        amount = max(0.0, _safe_float(row.get("amount")))
+        apply_to = str(row.get("applyTo") or "both").strip()
+        if apply_to not in PRICING_CALC_COST_SCOPES:
+            apply_to = "both"
+        if not label and amount <= 0:
+            continue
+        rows.append(
+            {
+                "id": re.sub(r"[^a-zA-Z0-9_-]+", "-", str(row.get("id") or "").strip())[:80] or f"extra-cost-{idx}",
+                "label": label or f"Extra Cost {idx}",
+                "amount": amount,
+                "applyTo": apply_to,
+            }
+        )
+    return rows
+
+
+def _normalize_pricing_calc_rows(
+    values: Any,
+    known_products: list[dict] | None,
+    *,
+    allow_missing_products: bool,
+) -> list[dict]:
+    product_map = _pricing_calc_product_map(known_products)
+    incoming = values if isinstance(values, list) else []
+    rows: list[dict] = []
+    seen: set[str] = set()
+    for raw in incoming:
+        row = raw if isinstance(raw, dict) else {}
+        product_id = str(row.get("crmProductId") or "").strip()
+        if not product_id or product_id in seen:
+            continue
+        product = product_map.get(product_id)
+        if product is None and not allow_missing_products:
+            raise HTTPException(status_code=400, detail=f"Calculator row references unknown CRM product: {product_id}")
+        robusta_pct = _safe_float(row.get("robustaPct"))
+        arabica_pct = _safe_float(row.get("arabicaPct"))
+        chicory_pct = _safe_float(row.get("chicoryPct"))
+        if not allow_missing_products:
+            if min(robusta_pct, arabica_pct, chicory_pct) < 0:
+                raise HTTPException(status_code=400, detail="Product blend percentages cannot be negative.")
+            total_pct = robusta_pct + arabica_pct + chicory_pct
+            if abs(total_pct - 100.0) > 0.01:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Blend percentages for {str((product or {}).get('name') or product_id)} must total 100%.",
+                )
+        rows.append(
+            {
+                "crmProductId": product_id,
+                "productNameSnapshot": str(
+                    (product or {}).get("name")
+                    or row.get("productNameSnapshot")
+                    or product_id
+                ).strip() or product_id,
+                "robustaPct": max(0.0, robusta_pct),
+                "arabicaPct": max(0.0, arabica_pct),
+                "chicoryPct": max(0.0, chicory_pct),
+                "enabled": bool(row.get("enabled", True)),
+            }
+        )
+        seen.add(product_id)
+    if not rows:
+        if allow_missing_products:
+            return []
+        return _default_pricing_calc_rows(known_products)
+    return rows
+
+
+def _pricing_calc_results(profile: dict) -> dict:
+    inputs = _normalize_pricing_calc_inputs(profile.get("inputs"))
+    variants = _normalize_pricing_calc_variants(profile.get("variants"))
+    rows = _normalize_pricing_calc_rows(profile.get("rows"), [], allow_missing_products=True)
+    extra_costs = _normalize_pricing_calc_extra_costs(profile.get("extraCosts"))
+    bulk_extra_cost = sum(row.get("amount", 0.0) for row in extra_costs if row.get("applyTo") in {"bulk", "both"})
+    non_bulk_extra_cost = sum(row.get("amount", 0.0) for row in extra_costs if row.get("applyTo") in {"nonBulk", "both"})
+    bulk_margin = inputs["bulkMarginPct"]
+    non_bulk_margin = inputs["nonBulkMarginPct"]
+    output_rows: list[dict] = []
+    for row in rows:
+        raw_coffee_cost = (
+            (row.get("robustaPct", 0.0) / 100.0) * inputs["robustaCostPerKg"]
+            + (row.get("arabicaPct", 0.0) / 100.0) * inputs["arabicaCostPerKg"]
+            + (row.get("chicoryPct", 0.0) / 100.0) * inputs["chicoryCostPerKg"]
+        )
+        non_bulk_cost_per_gram_before_margin = (
+            raw_coffee_cost
+            + inputs["processingCostPerKg"]
+            + inputs["nonBulkPackagingPerKg"]
+            + inputs["nonBulkShippingPerKg"]
+            + inputs["baseTransportPerKg"]
+            + non_bulk_extra_cost
+        ) / 1000.0
+        bulk_mrp_per_kg = (
+            raw_coffee_cost
+            + inputs["processingCostPerKg"]
+            + inputs["bulkPackagingPerKg"]
+            + inputs["bulkShippingPerKg"]
+            + bulk_extra_cost
+        ) * (1.0 + bulk_margin)
+        non_bulk_base_per_gram = (
+            raw_coffee_cost
+            + inputs["processingCostPerKg"]
+            + inputs["nonBulkPackagingPerKg"]
+            + inputs["nonBulkShippingPerKg"]
+            + inputs["baseTransportPerKg"]
+            + non_bulk_extra_cost
+        ) * (1.0 + non_bulk_margin) / 1000.0
+        variant_prices = []
+        for variant in variants:
+            grams = _safe_float(variant.get("grams"))
+            discount_pct = _safe_float(variant.get("discountPct"))
+            variant_prices.append(
+                {
+                    "id": str(variant.get("id") or ""),
+                    "label": str(variant.get("label") or ""),
+                    "grams": grams,
+                    "discountPct": discount_pct,
+                    "mrp": grams * non_bulk_base_per_gram * (1.0 - discount_pct),
+                    "marginRupees": (grams * non_bulk_base_per_gram * (1.0 - discount_pct)) - (grams * non_bulk_cost_per_gram_before_margin),
+                    "isBase": bool(variant.get("isBase")),
+                }
+            )
+        output_rows.append(
+            {
+                "crmProductId": row.get("crmProductId"),
+                "productNameSnapshot": row.get("productNameSnapshot"),
+                "enabled": bool(row.get("enabled", True)),
+                "rawCoffeeCostPerKg": raw_coffee_cost,
+                "bulkMrpPerKg": bulk_mrp_per_kg,
+                "nonBulkBasePerGram": non_bulk_base_per_gram,
+                "variants": variant_prices,
+            }
+        )
+    return {"rows": output_rows}
+
+
+def _normalize_pricing_calc_profile(
+    raw: Any,
+    known_products: list[dict] | None,
+    *,
+    profile_id: int | None = None,
+    allow_missing_products: bool,
+    fallback_name: str = "Untitled Profile",
+) -> dict:
+    incoming = raw if isinstance(raw, dict) else {}
+    normalized = {
+        "id": int(profile_id or _safe_float(incoming.get("id")) or 0),
+        "name": _normalize_pricing_calc_profile_name(incoming.get("name"), fallback=fallback_name),
+        "inputs": _normalize_pricing_calc_inputs(incoming.get("inputs")),
+        "extraCosts": _normalize_pricing_calc_extra_costs(incoming.get("extraCosts")),
+        "variants": _normalize_pricing_calc_variants(
+            incoming.get("variants"),
+            allow_missing_products=allow_missing_products,
+        ),
+        "rows": _normalize_pricing_calc_rows(
+            incoming.get("rows"),
+            known_products,
+            allow_missing_products=allow_missing_products,
+        ),
+        "createdAt": int(_safe_float(incoming.get("createdAt")) or 0),
+        "updatedAt": int(_safe_float(incoming.get("updatedAt")) or 0),
+    }
+    return normalized
+
+
+def _pricing_calc_profile_payload(profile: dict, products: list[dict] | None) -> dict:
+    product_map = _pricing_calc_product_map(products)
+    payload = copy.deepcopy(profile)
+    merged_rows: list[dict] = []
+    for row in payload.get("rows", []) or []:
+        product_id = str(row.get("crmProductId") or "").strip()
+        product = product_map.get(product_id)
+        merged = copy.deepcopy(row)
+        merged["productName"] = str((product or {}).get("name") or row.get("productNameSnapshot") or product_id).strip() or product_id
+        merged["missingProduct"] = product is None
+        merged_rows.append(merged)
+    payload["rows"] = merged_rows
+    payload["results"] = _pricing_calc_results(payload)
+    return payload
+
+
+def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[dict], int]:
+    computed = _pricing_calc_results(profile)
+    results_by_product = {
+        str(row.get("crmProductId") or ""): row
+        for row in computed.get("rows", []) or []
+        if (
+            isinstance(row, dict)
+            and str(row.get("crmProductId") or "")
+            and bool(row.get("enabled", True))
+        )
+    }
+    updated_products: list[dict] = []
+    updated_count = 0
+    for product in data.get("products", []) or []:
+        pid = str(product.get("id") or "").strip()
+        result = results_by_product.get(pid)
+        if not result:
+            continue
+        pricing = _normalize_product_pricing(product.get("pricing", {}), product.get("sizes", []))
+        bulk_mrp_per_kg = _safe_float(result.get("bulkMrpPerKg"))
+        variants = result.get("variants", []) if isinstance(result.get("variants"), list) else []
+        variant_by_grams = {}
+        for variant in variants:
+            grams = _safe_float(variant.get("grams"))
+            if grams > 0:
+                variant_by_grams[round(grams, 6)] = variant
+        changed = False
+        for size in product.get("sizes", []) or []:
+            grams = _variant_to_grams(str(size or ""))
+            if grams <= 0:
+                continue
+            variant = variant_by_grams.get(round(grams, 6))
+            if not isinstance(variant, dict):
+                continue
+            row = pricing.get(size) if isinstance(pricing.get(size), dict) else {}
+            next_row = copy.deepcopy(row)
+            next_row["mrp"] = _safe_float(variant.get("mrp"))
+            next_row["bulkPrice"] = bulk_mrp_per_kg * (grams / 1000.0)
+            pricing[size] = next_row
+            changed = True
+        if changed:
+            product["pricing"] = _normalize_product_pricing(pricing, product.get("sizes", []))
+            updated_products.append(product)
+            updated_count += 1
+    return updated_products, updated_count
 
 
 def _default_variant_cycle_days(variant: Any) -> int:
@@ -1646,8 +2005,9 @@ def _filtered_data_for_user(data: dict, user: dict | None) -> dict:
         safe["operationalExpenses"] = []
     elif not _user_can_view_page(user, "expenses"):
         safe["operationalExpenses"] = []
-    if not _user_can_view_page(user, "settings"):
+    if not _user_can_view_page(user, "settings") or not _has_financial_access(user):
         safe["coupons"] = []
+        safe["pricingCalculatorProfiles"] = []
     safe.pop("users", None)
     safe.pop("websiteUsers", None)
     safe.pop("authSessions", None)
@@ -1936,10 +2296,10 @@ def write_data(data: dict) -> None:
 def migrate(data: dict) -> dict:
     """Apply any schema migrations in-place and return the data."""
     # Ensure top-level lists exist
-    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons", "couponQuotes", "badgeCouponCompletions"):
+    for key in ("customers", "orders", "products", "distributorBatches", "operationalExpenses", "closedFollowUps", "users", "websiteUsers", "authSessions", "coupons", "couponQuotes", "badgeCouponCompletions", "pricingCalculatorProfiles"):
         if key not in data:
             data[key] = []
-    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid", "couponId", "couponQuoteId"):
+    for key in ("cid", "oid", "dbid", "uid", "wuid", "exid", "couponId", "couponQuoteId", "pricingCalculatorProfileId"):
         if key not in data:
             data[key] = 1
     if "pid" not in data:
@@ -2044,6 +2404,34 @@ def migrate(data: dict) -> dict:
             p["pricing"] = {}
         p["composition"] = _normalize_composition(p.get("composition", []))
         p["pricing"] = _normalize_product_pricing(p.get("pricing", {}), p.get("sizes", []))
+
+    normalized_profiles: list[dict] = []
+    next_profile_id = 1
+    for raw_profile in data.get("pricingCalculatorProfiles", []) or []:
+        try:
+            normalized = _normalize_pricing_calc_profile(
+                raw_profile,
+                data.get("products", []) or [],
+                allow_missing_products=True,
+                fallback_name="Saved Profile",
+            )
+        except Exception:
+            continue
+        profile_id = int(_safe_float(normalized.get("id")) or 0)
+        if profile_id <= 0:
+            profile_id = next_profile_id
+            normalized["id"] = profile_id
+        next_profile_id = max(next_profile_id, profile_id + 1)
+        normalized_profiles.append(normalized)
+    data["pricingCalculatorProfiles"] = sorted(
+        normalized_profiles,
+        key=lambda row: (int(row.get("updatedAt") or 0), int(row.get("id") or 0)),
+        reverse=True,
+    )
+    data["pricingCalculatorProfileId"] = max(
+        int(_safe_float(data.get("pricingCalculatorProfileId")) or 1),
+        next_profile_id,
+    )
 
     # Ensure all orders have required fields
     for o in data["orders"]:
@@ -7101,6 +7489,124 @@ async def delete_product(product_id: str, request: Request):
         raise HTTPException(status_code=404, detail="Product not found")
     write_data(data)
     return {"ok": True}
+
+
+@app.get("/api/pricing-calculator/profiles")
+async def pricing_calculator_profiles(request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    if not _has_financial_access(ctx.get("user")):
+        raise HTTPException(status_code=403, detail="Financial access required")
+    profiles = [
+        _pricing_calc_profile_payload(profile, data.get("products", []) or [])
+        for profile in data.get("pricingCalculatorProfiles", []) or []
+        if isinstance(profile, dict)
+    ]
+    return {"profiles": profiles, "nextId": int(_safe_float(data.get("pricingCalculatorProfileId")) or 1)}
+
+
+@app.post("/api/pricing-calculator/profiles")
+async def create_pricing_calculator_profile(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    if not _has_financial_access(ctx.get("user")):
+        raise HTTPException(status_code=403, detail="Financial access required")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    now_ms = int(time.time() * 1000)
+    profile_id = max(1, int(_safe_float(data.get("pricingCalculatorProfileId")) or 1))
+    profile = _normalize_pricing_calc_profile(
+        body,
+        data.get("products", []) or [],
+        profile_id=profile_id,
+        allow_missing_products=False,
+        fallback_name=f"Profile {profile_id}",
+    )
+    profile["createdAt"] = now_ms
+    profile["updatedAt"] = now_ms
+    data.setdefault("pricingCalculatorProfiles", []).append(profile)
+    data["pricingCalculatorProfileId"] = profile_id + 1
+    write_data(data)
+    return _pricing_calc_profile_payload(profile, data.get("products", []) or [])
+
+
+@app.put("/api/pricing-calculator/profiles/{profile_id}")
+async def update_pricing_calculator_profile(profile_id: int, request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    if not _has_financial_access(ctx.get("user")):
+        raise HTTPException(status_code=403, detail="Financial access required")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    idx = next(
+        (i for i, profile in enumerate(data.get("pricingCalculatorProfiles", []) or []) if int(profile.get("id") or 0) == int(profile_id)),
+        None,
+    )
+    if idx is None:
+        raise HTTPException(status_code=404, detail="Pricing calculator profile not found")
+    current = copy.deepcopy(data["pricingCalculatorProfiles"][idx])
+    profile = _normalize_pricing_calc_profile(
+        {**current, **body, "id": profile_id},
+        data.get("products", []) or [],
+        profile_id=profile_id,
+        allow_missing_products=False,
+        fallback_name=current.get("name") or f"Profile {profile_id}",
+    )
+    profile["createdAt"] = int(current.get("createdAt") or 0) or int(time.time() * 1000)
+    profile["updatedAt"] = int(time.time() * 1000)
+    data["pricingCalculatorProfiles"][idx] = profile
+    write_data(data)
+    return _pricing_calc_profile_payload(profile, data.get("products", []) or [])
+
+
+@app.delete("/api/pricing-calculator/profiles/{profile_id}")
+async def delete_pricing_calculator_profile(profile_id: int, request: Request):
+    data = read_data()
+    ctx = _require_signed_in(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    if not _has_financial_access(ctx.get("user")):
+        raise HTTPException(status_code=403, detail="Financial access required")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    before = len(data.get("pricingCalculatorProfiles", []) or [])
+    data["pricingCalculatorProfiles"] = [
+        profile
+        for profile in data.get("pricingCalculatorProfiles", []) or []
+        if int(profile.get("id") or 0) != int(profile_id)
+    ]
+    if len(data["pricingCalculatorProfiles"]) == before:
+        raise HTTPException(status_code=404, detail="Pricing calculator profile not found")
+    write_data(data)
+    return {"ok": True}
+
+
+@app.post("/api/pricing-calculator/publish")
+async def publish_pricing_calculator_to_products(request: Request):
+    body = await request.json()
+    data = read_data()
+    ctx = _require_admin(request, data)
+    _ensure_page_access(ctx.get("user"), "settings")
+    if not _has_financial_access(ctx.get("user")):
+        raise HTTPException(status_code=403, detail="Financial access required")
+    _ensure_action_access(ctx.get("user"), "settings", "manage")
+    _ensure_action_access(ctx.get("user"), "products", "edit")
+    profile = _normalize_pricing_calc_profile(
+        body,
+        data.get("products", []) or [],
+        allow_missing_products=False,
+        fallback_name="Publish Draft",
+    )
+    updated_products, updated_count = _pricing_calc_publish_to_products(data, profile)
+    if updated_count <= 0:
+        return {"ok": True, "updatedCount": 0, "products": []}
+    write_data(data)
+    return {
+        "ok": True,
+        "updatedCount": updated_count,
+        "products": [copy.deepcopy(prod) for prod in updated_products],
+    }
 
 
 # ── Coupons ────────────────────────────────────────────────────────────────
