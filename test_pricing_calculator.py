@@ -194,6 +194,7 @@ class PricingCalculatorTests(unittest.TestCase):
                     "id": "p1",
                     "name": "Coorg Filter Coffee",
                     "sizes": ["250g", "500g", "1kg"],
+                    "composition": [],
                     "pricing": {
                         "250g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 10, "website": 11, "whatsapp": 12}},
                         "500g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 20, "website": 21, "whatsapp": 22}},
@@ -223,6 +224,11 @@ class PricingCalculatorTests(unittest.TestCase):
                     "baseTransportPerKg": 15,
                     "bulkMarginPct": 0.30,
                     "nonBulkMarginPct": 0.60,
+                },
+                "ingredientSources": {
+                    "robusta": {"inventoryProductId": "inv-robusta", "inventoryProductName": "Robusta Beans"},
+                    "arabica": {"inventoryProductId": "inv-arabica", "inventoryProductName": "Arabica Beans"},
+                    "chicory": {"inventoryProductId": "inv-chicory", "inventoryProductName": "Chicory Powder"},
                 },
                 "variants": [
                     {"id": "v250", "label": "250g", "grams": 250, "discountPct": 0, "isBase": True},
@@ -261,6 +267,13 @@ class PricingCalculatorTests(unittest.TestCase):
         self.assertAlmostEqual(pricing["500g"]["salePrices"]["whatsapp"], 577.548, places=3)
         self.assertAlmostEqual(pricing["1kg"]["salePrices"]["website"], 1155.096, places=3)
         self.assertAlmostEqual(pricing["1kg"]["salePrices"]["whatsapp"], 1155.096, places=3)
+        self.assertEqual(
+            data["products"][0]["composition"],
+            [
+                {"inventoryProductId": "inv-robusta", "inventoryProductName": "Robusta Beans", "percentage": 80.0},
+                {"inventoryProductId": "inv-chicory", "inventoryProductName": "Chicory Powder", "percentage": 20.0},
+            ],
+        )
         self.assertEqual(data["products"][1]["pricing"]["250g"]["mrp"], 99)
 
     def test_publish_uses_rounded_prices_when_enabled(self):

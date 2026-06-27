@@ -1346,6 +1346,20 @@ def _normalize_pricing_calc_extra_costs(values: Any) -> list[dict]:
     return rows
 
 
+def _normalize_pricing_calc_ingredient_sources(values: Any) -> dict[str, dict]:
+    incoming = values if isinstance(values, dict) else {}
+    out: dict[str, dict] = {}
+    for key in ("robusta", "arabica", "chicory"):
+        row = incoming.get(key) if isinstance(incoming.get(key), dict) else {}
+        inventory_product_id = str(row.get("inventoryProductId") or "").strip()
+        inventory_product_name = str(row.get("inventoryProductName") or "").strip()
+        out[key] = {
+            "inventoryProductId": inventory_product_id,
+            "inventoryProductName": inventory_product_name,
+        }
+    return out
+
+
 def _normalize_pricing_calc_rows(
     values: Any,
     known_products: list[dict] | None,
@@ -1503,6 +1517,7 @@ def _normalize_pricing_calc_profile(
         "name": _normalize_pricing_calc_profile_name(incoming.get("name"), fallback=fallback_name),
         "inputs": _normalize_pricing_calc_inputs(incoming.get("inputs")),
         "extraCosts": _normalize_pricing_calc_extra_costs(incoming.get("extraCosts")),
+        "ingredientSources": _normalize_pricing_calc_ingredient_sources(incoming.get("ingredientSources")),
         "roundToFive": bool(incoming.get("roundToFive", False)),
         "nonBulkMarginMode": str(incoming.get("nonBulkMarginMode") or "markup").strip(),
         "variants": _normalize_pricing_calc_variants(
@@ -1540,6 +1555,12 @@ def _pricing_calc_profile_payload(profile: dict, products: list[dict] | None) ->
 
 def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[dict], int]:
     computed = _pricing_calc_results(profile)
+    ingredient_sources = _normalize_pricing_calc_ingredient_sources(profile.get("ingredientSources"))
+    profile_rows_by_product = {
+        str(row.get("crmProductId") or ""): row
+        for row in (profile.get("rows", []) or [])
+        if isinstance(row, dict) and str(row.get("crmProductId") or "")
+    }
     results_by_product = {
         str(row.get("crmProductId") or ""): row
         for row in computed.get("rows", []) or []
@@ -1594,6 +1615,23 @@ def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[d
             pricing[size] = next_row
             changed = True
         if changed:
+            profile_row = profile_rows_by_product.get(pid) if isinstance(profile_rows_by_product.get(pid), dict) else {}
+            next_composition: list[dict] = []
+            for comp_key, pct_key in (("robusta", "robustaPct"), ("arabica", "arabicaPct"), ("chicory", "chicoryPct")):
+                source = ingredient_sources.get(comp_key) if isinstance(ingredient_sources.get(comp_key), dict) else {}
+                pct = max(0.0, _safe_float(profile_row.get(pct_key)))
+                inventory_product_id = str(source.get("inventoryProductId") or "").strip()
+                if not inventory_product_id or pct <= 0:
+                    continue
+                next_composition.append(
+                    {
+                        "inventoryProductId": inventory_product_id,
+                        "inventoryProductName": str(source.get("inventoryProductName") or inventory_product_id).strip() or inventory_product_id,
+                        "percentage": pct,
+                    }
+                )
+            if next_composition:
+                product["composition"] = _normalize_composition(next_composition)
             product["pricing"] = _normalize_product_pricing(pricing, product.get("sizes", []))
             updated_products.append(product)
             updated_count += 1
