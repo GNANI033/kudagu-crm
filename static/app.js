@@ -6527,8 +6527,22 @@ function buildProdCard(p){
   const sp=p.sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
   const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
   const bulkMin=getBulkMinQty(p);
-  const sub=[p.sizes.map(s=>VL[s]||s).join(' · '), bulkMin?`Bulk from ${bulkMin} packs`:'Bulk: Not set', comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
-  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="sl-label" style="margin-bottom:10px">Bulk Order Rule</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Quantity Qualifies As Bulk</label><input type="number" id="bulk-min-${esc(p.id)}" value="${bulkMin||''}" min="0" step="1" placeholder="Optional"></div><button class="btn btn-p btn-sm" onclick="saveBulkMinQty('${esc(p.id)}')">Save Bulk Rule</button></div><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+  const category=normalizeProductCategory(p.category||productCategoryForPricing(p));
+  const categoryLabel=(PRODUCT_CATEGORY_OPTIONS.find((row)=>row.id===category)||{}).label||'Other';
+  const categoryOptions=PRODUCT_CATEGORY_OPTIONS.map((row)=>`<option value="${row.id}" ${category===row.id?'selected':''}>${row.label}</option>`).join('');
+  const sub=[`Category: ${categoryLabel}`, p.sizes.map(s=>VL[s]||s).join(' · '), bulkMin?`Bulk from ${bulkMin} packs`:'Bulk: Not set', comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
+  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▼</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Category</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Product Category</label><select id="prod-category-${esc(p.id)}">${categoryOptions}</select></div><button class="btn btn-p btn-sm" onclick="saveProductCategory('${esc(p.id)}')">Save Category</button></div><hr><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="sl-label" style="margin-bottom:10px">Bulk Order Rule</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Quantity Qualifies As Bulk</label><input type="number" id="bulk-min-${esc(p.id)}" value="${bulkMin||''}" min="0" step="1" placeholder="Optional"></div><button class="btn btn-p btn-sm" onclick="saveBulkMinQty('${esc(p.id)}')">Save Bulk Rule</button></div><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+}
+async function saveProductCategory(pid){
+  const prod=S.products.find((p)=>p.id===pid); if(!prod) return;
+  const category=normalizeProductCategory(g(`prod-category-${pid}`)?.value||'other');
+  try{
+    const updated=await api.put(`/api/products/${pid}`,{category});
+    const idx=S.products.findIndex((p)=>p.id===pid); if(idx>=0) S.products[idx]=updated;
+    syncPricingCalculatorState();
+    toast('Product category saved','ok');
+    rSettings();
+  }catch(e){ toast('Error: '+e.message,'err'); }
 }
 function inventoryProductOptions(selected=''){
   const base='<option value="">Select inventory product…</option>';
@@ -6696,6 +6710,7 @@ function refreshCompositionHint(){
 }
 async function addProduct(){
   const name=g('np-name').value.trim();if(!name){toast('Enter a product or service name','err');return;}
+  const category=normalizeProductCategory(g('np-category')?.value||'current-roasts');
   const sizes=buildProductVariantsFromForm();
   if(!sizes.length){toast('Add at least one variant or plan','err');return;}
   const rawRows=getCompositionRows().filter(r=>r.inventoryProductId||r.percentage>0);
@@ -6705,8 +6720,9 @@ async function addProduct(){
   if(Math.abs(totalPct-100)>0.01){toast('Composition total must be exactly 100%','err');return;}
   const composition=rawRows.map(r=>{const inv=inventorySnapshot.find(p=>p.id===r.inventoryProductId);return{inventoryProductId:r.inventoryProductId,inventoryProductName:inv?.name||r.inventoryProductId,percentage:r.percentage};});
   try{
-    const product=await api.post('/api/products',{name,sizes,waTpl:'',pricing:{},composition});
+    const product=await api.post('/api/products',{name,category,sizes,waTpl:'',pricing:{},composition});
     S.products.push(product);S.pid=parseInt(product.id.replace('p',''))+1;g('np-name').value='';
+    if(g('np-category')) g('np-category').value='current-roasts';
     if(g('np-variant-metric')) g('np-variant-metric').value='g';
     if(g('np-variant-values')) g('np-variant-values').value='100,250,500,1000';
     if(g('np-variant-custom')) g('np-variant-custom').value='';
@@ -7116,6 +7132,10 @@ const PRICING_CALC_DEFAULT_INPUTS = {
   bulkPackagingPerKg:27, nonBulkPackagingPerKg:80, bulkShippingPerKg:65, nonBulkShippingPerKg:110,
   baseTransportPerKg:15, bulkMarginPct:0.30, nonBulkMarginPct:0.60,
 };
+const PRODUCT_CATEGORY_OPTIONS = [
+  {id:'current-roasts',label:'Current Roasts'},
+  {id:'other',label:'Other'},
+];
 const PRICING_CALC_DEFAULT_VARIANTS = [
   {id:'base-250g',label:'250g',grams:250,discountPct:0,isBase:true},
   {id:'var-500g',label:'500g',grams:500,discountPct:0.085,isBase:false},
@@ -7126,6 +7146,30 @@ const PRICING_CALC_EXTRA_COST_SCOPES = [
   {id:'bulk',label:'Bulk'},
   {id:'nonBulk',label:'Non-bulk'},
 ];
+function normalizeProductCategory(value, fallback='other'){
+  const raw=String(value||'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-+|-+$/g,'');
+  if(['current-roast','current-roasts','current-roasts-products','coffee','coffee-roasts','roasts'].includes(raw)) return 'current-roasts';
+  if(['current-roasts','other'].includes(raw)) return raw;
+  return fallback;
+}
+function looksLikeCurrentRoastProduct(product){
+  const name=String(product?.name||'').toLowerCase();
+  if(['coffee','arabica','robusta','roast','chicory','blend','filter'].some((token)=>name.includes(token))) return true;
+  const sizes=Array.isArray(product?.sizes)?product.sizes.filter(Boolean):[];
+  if(sizes.length && sizes.every((size)=>variantToGrams(size)>0)){
+    const comp=Array.isArray(product?.composition)?product.composition:[];
+    if(comp.length) return true;
+  }
+  return false;
+}
+function productCategoryForPricing(product){
+  const explicit=normalizeProductCategory(product?.category,'');
+  if(explicit) return explicit;
+  return looksLikeCurrentRoastProduct(product)?'current-roasts':'other';
+}
+function pricingCalcEligibleProducts(){
+  return (S?.products||[]).filter((product)=>productCategoryForPricing(product)==='current-roasts');
+}
 function pricingCalcMarkSmallestVariantAsBase(variants){
   const rows=(Array.isArray(variants)?variants:[]).map((row)=>({...row}));
   if(!rows.length) return rows;
@@ -7140,15 +7184,17 @@ function pricingCalcMarkSmallestVariantAsBase(variants){
   });
   return rows.map((row,idx)=>({...row,isBase:idx===smallestIdx}));
 }
-function pricingCalcProductRows(){ return (S?.products||[]).map((p)=>({crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:100,arabicaPct:0,chicoryPct:0,enabled:true})); }
+function pricingCalcProductRows(){ return pricingCalcEligibleProducts().map((p)=>({crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:100,arabicaPct:0,chicoryPct:0,enabled:true})); }
 function pricingCalcDefaultProfile(name='Untitled Profile'){ return {id:0,name,inputs:{...PRICING_CALC_DEFAULT_INPUTS},extraCosts:[],variants:PRICING_CALC_DEFAULT_VARIANTS.map(v=>({...v})),rows:pricingCalcProductRows(),createdAt:0,updatedAt:0}; }
 function clonePricingCalcProfile(profile){ return JSON.parse(JSON.stringify(profile||pricingCalcDefaultProfile())); }
 function pricingCalcMaterializeProfile(profile){
   const base=clonePricingCalcProfile(profile||pricingCalcDefaultProfile());
   base.inputs={...PRICING_CALC_DEFAULT_INPUTS,...(base.inputs||{})};
   const rowsById=new Map((base.rows||[]).map((row)=>[row.crmProductId,{...row}]));
-  const mergedRows=(S?.products||[]).map((p)=>{ const ex=rowsById.get(p.id)||{}; rowsById.delete(p.id); return {crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:parseFloat(ex.robustaPct??100)||0,arabicaPct:parseFloat(ex.arabicaPct||0)||0,chicoryPct:parseFloat(ex.chicoryPct||0)||0,enabled:ex.enabled!==false}; });
-  rowsById.forEach((row,pid)=>mergedRows.push({crmProductId:pid,productNameSnapshot:row.productNameSnapshot||row.productName||pid,productName:row.productName||row.productNameSnapshot||pid,missingProduct:true,robustaPct:parseFloat(row.robustaPct||0)||0,arabicaPct:parseFloat(row.arabicaPct||0)||0,chicoryPct:parseFloat(row.chicoryPct||0)||0,enabled:row.enabled!==false}));
+  const eligible=pricingCalcEligibleProducts();
+  const eligibleIds=new Set(eligible.map((product)=>product.id));
+  const mergedRows=eligible.map((p)=>{ const ex=rowsById.get(p.id)||{}; rowsById.delete(p.id); return {crmProductId:p.id,productNameSnapshot:p.name,productName:p.name,missingProduct:false,robustaPct:parseFloat(ex.robustaPct??100)||0,arabicaPct:parseFloat(ex.arabicaPct||0)||0,chicoryPct:parseFloat(ex.chicoryPct||0)||0,enabled:ex.enabled!==false}; });
+  rowsById.forEach((row,pid)=>{ if(eligibleIds.has(pid)) mergedRows.push({crmProductId:pid,productNameSnapshot:row.productNameSnapshot||row.productName||pid,productName:row.productName||row.productNameSnapshot||pid,missingProduct:true,robustaPct:parseFloat(row.robustaPct||0)||0,arabicaPct:parseFloat(row.arabicaPct||0)||0,chicoryPct:parseFloat(row.chicoryPct||0)||0,enabled:row.enabled!==false}); });
   base.rows=mergedRows;
   base.extraCosts=(Array.isArray(base.extraCosts)?base.extraCosts:[]).map((row,idx)=>({id:String(row.id||`extra-cost-${idx+1}`),label:String(row.label||''),amount:parseFloat(row.amount||0)||0,applyTo:['both','bulk','nonBulk'].includes(String(row.applyTo||''))?String(row.applyTo):'both'}));
   base.variants=pricingCalcMarkSmallestVariantAsBase((Array.isArray(base.variants)&&base.variants.length?base.variants:PRICING_CALC_DEFAULT_VARIANTS).map((row,idx)=>({id:String(row.id||`variant-${idx+1}`),label:String(row.label||`Variant ${idx+1}`),grams:parseFloat(row.grams||0)||0,discountPct:parseFloat(row.discountPct||0)||0,isBase:!!row.isBase})));
@@ -7265,7 +7311,7 @@ document.addEventListener('click',(e)=>{
   if(action==='publish-products') return void publishPricingCalcToProducts();
   if(action==='save-profile') return void savePricingCalcProfile();
 }, true);
-Object.assign(window,{addPricingCalcExtraCost,updatePricingCalcExtraCost,removePricingCalcExtraCost,addPricingCalcVariant,removePricingCalcVariant,updatePricingCalcVariant,newPricingCalcProfile,duplicatePricingCalcProfile,deletePricingCalcProfile,savePricingCalcProfile,publishPricingCalcToProducts,updatePricingCalcInput,updatePricingCalcName,updatePricingCalcRow,togglePricingCalcRow,loadPricingCalcProfile});
+Object.assign(window,{addPricingCalcExtraCost,updatePricingCalcExtraCost,removePricingCalcExtraCost,addPricingCalcVariant,removePricingCalcVariant,updatePricingCalcVariant,newPricingCalcProfile,duplicatePricingCalcProfile,deletePricingCalcProfile,savePricingCalcProfile,publishPricingCalcToProducts,updatePricingCalcInput,updatePricingCalcName,updatePricingCalcRow,togglePricingCalcRow,loadPricingCalcProfile,saveProductCategory});
 
 // ─── UTILITIES ────────────────────────────────────────────────────────────────
 function g(id){ return document.getElementById(id); }

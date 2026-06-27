@@ -1844,10 +1844,17 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
           </div>
         </div>
         <div class="settings-panel" id="sp-new-product">
-          <div class="card">
+            <div class="card">
             <div class="ch"><div class="ct">Add New Product / Service</div></div>
             <div class="cb" style="display:flex;flex-direction:column;gap:14px">
               <div class="fg"><label>Product / Service Name <span class="req">*</span></label><input id="np-name" type="text" placeholder="e.g. Coorg Instant Mix or Coffee Tasting Session"></div>
+              <div class="fg">
+                <label>Product Category</label>
+                <select id="np-category">
+                  <option value="current-roasts">Current Roasts</option>
+                  <option value="other">Other</option>
+                </select>
+              </div>
               <div class="fg">
                 <label>Variants / Plans</label>
                 <div class="fr" style="margin-top:8px">

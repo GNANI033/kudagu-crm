@@ -94,6 +94,36 @@ python app.py
 
 Open: `http://localhost:8000`
 
+### 3a) Reset CRM admin password from terminal
+
+If you need to change an existing CRM admin login password without using the UI:
+
+```bash
+python3 set_admin_password.py --list-admins
+python3 set_admin_password.py <username>
+```
+
+Example:
+
+```bash
+python3 set_admin_password.py --list-admins
+python3 set_admin_password.py admin
+```
+
+Notes:
+
+- This script does not require the CRM app dependencies like `fastapi` or `uvicorn`.
+- The command prompts for the new password twice.
+- Minimum password length is `8`.
+- Existing login sessions for that user are invalidated after reset.
+
+If you already have the full CRM Python environment installed, this also works:
+
+```bash
+python app.py list-admin-users
+python app.py set-admin-password <username>
+```
+
 ### 4) Run inventory service (required)
 
 In a second terminal:

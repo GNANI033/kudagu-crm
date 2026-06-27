@@ -36,10 +36,12 @@ import hashlib
 import hmac
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from getpass import getpass
 from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Any
@@ -1049,13 +1051,17 @@ DEFAULT_DATA: dict = {
         ),
     },
     "products": [
-        {"id": "p1", "name": "Coorg Filter Coffee Powder", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
-        {"id": "p2", "name": "Coorg Pure Arabica",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
-        {"id": "p3", "name": "Coorg Dark Roast Blend",      "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
-        {"id": "p4", "name": "Chicory Blend",               "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
-        {"id": "p5", "name": "Instant Coffee Mix",          "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p1", "name": "Coorg Filter Coffee Powder", "category": "current-roasts", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p2", "name": "Coorg Pure Arabica",          "category": "current-roasts", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p3", "name": "Coorg Dark Roast Blend",      "category": "current-roasts", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p4", "name": "Chicory Blend",               "category": "current-roasts", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
+        {"id": "p5", "name": "Instant Coffee Mix",          "category": "current-roasts", "sizes": ["100g","250g","500g","1kg"], "waTpl": "", "pricing": {}},
     ],
 }
+
+PRODUCT_CATEGORY_CURRENT_ROASTS = "current-roasts"
+PRODUCT_CATEGORY_OTHER = "other"
+PRODUCT_CATEGORY_CHOICES = {PRODUCT_CATEGORY_CURRENT_ROASTS, PRODUCT_CATEGORY_OTHER}
 
 PRICING_CALCULATOR_DEFAULT_INPUTS: dict[str, float] = {
     "robustaCostPerKg": 560.0,
@@ -1191,9 +1197,45 @@ def _normalize_pricing_calc_profile_name(value: Any, fallback: str = "Untitled P
     return cleaned[:120] or fallback
 
 
+def _normalize_product_category(value: Any, *, fallback: str = PRODUCT_CATEGORY_OTHER) -> str:
+    raw = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower()).strip("-")
+    if raw in {"current-roast", "current-roasts", "current-roasts-products", "coffee", "coffee-roasts", "roasts"}:
+        return PRODUCT_CATEGORY_CURRENT_ROASTS
+    if raw in PRODUCT_CATEGORY_CHOICES:
+        return raw
+    return fallback
+
+
+def _looks_like_current_roast_product(product: dict) -> bool:
+    name = str((product or {}).get("name") or "").strip().lower()
+    if any(token in name for token in ("coffee", "arabica", "robusta", "roast", "chicory", "blend", "filter")):
+        return True
+    sizes = [str(size or "").strip().lower() for size in ((product or {}).get("sizes") or []) if str(size or "").strip()]
+    if sizes and all(_variant_to_grams(size) > 0 for size in sizes):
+        composition = _normalize_composition((product or {}).get("composition", []))
+        if composition:
+            return True
+    return False
+
+
+def _product_category_for_pricing(product: dict) -> str:
+    explicit = _normalize_product_category((product or {}).get("category"), fallback="")
+    if explicit:
+        return explicit
+    return PRODUCT_CATEGORY_CURRENT_ROASTS if _looks_like_current_roast_product(product) else PRODUCT_CATEGORY_OTHER
+
+
+def _pricing_calc_eligible_products(products: list[dict] | None) -> list[dict]:
+    return [
+        product
+        for product in (products or [])
+        if isinstance(product, dict) and _product_category_for_pricing(product) == PRODUCT_CATEGORY_CURRENT_ROASTS
+    ]
+
+
 def _pricing_calc_product_map(products: list[dict] | None) -> dict[str, dict]:
     out: dict[str, dict] = {}
-    for product in products or []:
+    for product in _pricing_calc_eligible_products(products):
         if not isinstance(product, dict):
             continue
         pid = str(product.get("id") or "").strip()
@@ -1204,7 +1246,7 @@ def _pricing_calc_product_map(products: list[dict] | None) -> dict[str, dict]:
 
 def _default_pricing_calc_rows(products: list[dict] | None) -> list[dict]:
     rows: list[dict] = []
-    for product in products or []:
+    for product in _pricing_calc_eligible_products(products):
         if not isinstance(product, dict):
             continue
         pid = str(product.get("id") or "").strip()
@@ -1734,6 +1776,79 @@ def _delete_session(data: dict, token: str) -> None:
 
 def _delete_sessions_for_user(data: dict, user_id: int) -> None:
     data["authSessions"] = [s for s in (data.get("authSessions", []) or []) if int(s.get("userId") or 0) != int(user_id)]
+
+
+def _cli_usage() -> int:
+    print("Usage:")
+    print("  python app.py")
+    print("  python app.py list-admin-users")
+    print("  python app.py set-admin-password <username>")
+    return 1
+
+
+def _cli_list_admin_users() -> int:
+    data = read_data()
+    admins = sorted(
+        dict.fromkeys(
+            _normalize_username(user.get("username"))
+            for user in (data.get("users", []) or [])
+            if isinstance(user, dict) and str(user.get("role") or "").strip().lower() == "admin"
+        )
+    )
+    admins = [username for username in admins if username]
+    if not admins:
+        print("No admin users found.")
+        return 1
+    print("Admin usernames:")
+    for username in admins:
+        print(f"- {username}")
+    return 0
+
+
+def _cli_set_admin_password(username: str) -> int:
+    normalized_username = _normalize_username(username)
+    if not normalized_username:
+        print("Username is required.")
+        return 1
+    password = getpass("New password: ")
+    confirm_password = getpass("Confirm password: ")
+    if password != confirm_password:
+        print("Passwords do not match.")
+        return 1
+    if len(password) < 8:
+        print("Password must be at least 8 characters.")
+        return 1
+
+    data = read_data()
+    user = _find_user_by_username(data, normalized_username)
+    if not user:
+        print(f"User '{normalized_username}' not found.")
+        return 1
+    if str(user.get("role") or "").strip().lower() != "admin":
+        print(f"User '{normalized_username}' is not an admin.")
+        return 1
+
+    user["passwordHash"] = _password_hash(password)
+    user["updatedAt"] = int(time.time() * 1000)
+    _delete_sessions_for_user(data, int(user.get("id") or 0))
+    write_data(data)
+    print(f"Password updated for admin user '{normalized_username}'. Existing sessions were signed out.")
+    return 0
+
+
+def _run_cli(argv: list[str]) -> int:
+    if len(argv) <= 1:
+        return -1
+    command = str(argv[1] or "").strip().lower()
+    if command == "list-admin-users":
+        if len(argv) != 2:
+            return _cli_usage()
+        return _cli_list_admin_users()
+    if command == "set-admin-password":
+        if len(argv) != 3:
+            return _cli_usage()
+        return _cli_set_admin_password(argv[2])
+    return _cli_usage()
 
 
 def _request_is_https(request: Request) -> bool:
@@ -2394,6 +2509,7 @@ def migrate(data: dict) -> dict:
     for p in data["products"]:
         if "waTpl" not in p:
             p["waTpl"] = ""
+        p["category"] = _product_category_for_pricing(p)
         try:
             p["bulkMinQty"] = int(float(p.get("bulkMinQty") or 0))
         except (TypeError, ValueError):
@@ -7384,6 +7500,7 @@ async def inventory_products_feed():
             {
                 "id": str(product.get("id") or ""),
                 "name": str(product.get("name") or "").strip(),
+                "category": _product_category_for_pricing(product),
                 "sizes": [str(size or "").strip() for size in (product.get("sizes") or []) if str(size or "").strip()],
                 "bulkMinQty": max(0, int(_safe_float(product.get("bulkMinQty")))),
                 "composition": _normalize_composition(product.get("composition", [])),
@@ -7427,6 +7544,7 @@ async def add_product(request: Request):
     product = {
         "id":      "p" + str(data["pid"]),
         "name":    body["name"],
+        "category": _normalize_product_category(body.get("category"), fallback=PRODUCT_CATEGORY_OTHER),
         "sizes":   body["sizes"],
         "waTpl":   body.get("waTpl", ""),
         "bulkMinQty": max(0, int(_safe_float(body.get("bulkMinQty")))),
@@ -7455,6 +7573,8 @@ async def update_product(product_id: str, request: Request):
     for key in ("name", "sizes", "waTpl"):
         if key in body:
             data["products"][idx][key] = body[key]
+    if "category" in body:
+        data["products"][idx]["category"] = _normalize_product_category(body.get("category"), fallback=PRODUCT_CATEGORY_OTHER)
     if "bulkMinQty" in body:
         data["products"][idx]["bulkMinQty"] = max(0, int(_safe_float(body.get("bulkMinQty"))))
     if "pricing" in body or "sizes" in body:
@@ -7953,6 +8073,9 @@ async def generate_marketing_template(request: Request):
 # ── Entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     _init_storage()
+    cli_exit = _run_cli(sys.argv)
+    if cli_exit >= 0:
+        raise SystemExit(cli_exit)
     print(f"[CRM] Using SQLite storage at {DB_FILE}")
     if LEGACY_DATA_FILE.exists():
         print(f"[CRM] Legacy JSON available for fallback/backup at {LEGACY_DATA_FILE}")
