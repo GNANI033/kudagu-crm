@@ -21,6 +21,7 @@ Reverse proxy (nginx example):
 import json
 import os
 import copy
+import math
 import time
 import asyncio
 import threading
@@ -1083,6 +1084,14 @@ PRICING_CALCULATOR_DEFAULT_VARIANTS: list[dict[str, Any]] = [
     {"id": "var-1000g", "label": "1000g", "grams": 1000.0, "discountPct": 0.085, "isBase": False},
 ]
 PRICING_CALC_COST_SCOPES = {"bulk", "nonBulk", "both"}
+PRICING_CALC_MARGIN_MODES = {"markup", "effective"}
+
+
+def _pricing_calc_round_up_to_five(value: Any) -> float:
+    amount = _safe_float(value)
+    if amount <= 0:
+        return 0.0
+    return float(math.ceil(amount / 5.0) * 5)
 
 
 def _mark_smallest_pricing_calc_variant_as_base(rows: list[dict]) -> list[dict]:
@@ -1394,6 +1403,10 @@ def _pricing_calc_results(profile: dict) -> dict:
     variants = _normalize_pricing_calc_variants(profile.get("variants"))
     rows = _normalize_pricing_calc_rows(profile.get("rows"), [], allow_missing_products=True)
     extra_costs = _normalize_pricing_calc_extra_costs(profile.get("extraCosts"))
+    round_to_five = bool(profile.get("roundToFive", False))
+    non_bulk_margin_mode = str(profile.get("nonBulkMarginMode") or "markup").strip()
+    if non_bulk_margin_mode not in PRICING_CALC_MARGIN_MODES:
+        non_bulk_margin_mode = "markup"
     bulk_extra_cost = sum(row.get("amount", 0.0) for row in extra_costs if row.get("applyTo") in {"bulk", "both"})
     non_bulk_extra_cost = sum(row.get("amount", 0.0) for row in extra_costs if row.get("applyTo") in {"nonBulk", "both"})
     bulk_margin = inputs["bulkMarginPct"]
@@ -1413,33 +1426,49 @@ def _pricing_calc_results(profile: dict) -> dict:
             + inputs["baseTransportPerKg"]
             + non_bulk_extra_cost
         ) / 1000.0
-        bulk_mrp_per_kg = (
+        bulk_cost_per_kg_before_margin = (
             raw_coffee_cost
             + inputs["processingCostPerKg"]
             + inputs["bulkPackagingPerKg"]
             + inputs["bulkShippingPerKg"]
             + bulk_extra_cost
-        ) * (1.0 + bulk_margin)
-        non_bulk_base_per_gram = (
+        )
+        bulk_mrp_per_kg = bulk_cost_per_kg_before_margin * (1.0 + bulk_margin)
+        if round_to_five:
+            bulk_mrp_per_kg = _pricing_calc_round_up_to_five(bulk_mrp_per_kg)
+        non_bulk_cost_per_kg_before_margin = (
             raw_coffee_cost
             + inputs["processingCostPerKg"]
             + inputs["nonBulkPackagingPerKg"]
             + inputs["nonBulkShippingPerKg"]
             + inputs["baseTransportPerKg"]
             + non_bulk_extra_cost
-        ) * (1.0 + non_bulk_margin) / 1000.0
+        )
+        if non_bulk_margin_mode == "effective":
+            divisor = max(0.000001, 1.0 - min(non_bulk_margin, 0.999999))
+            non_bulk_base_per_gram = (non_bulk_cost_per_kg_before_margin / divisor) / 1000.0
+        else:
+            non_bulk_base_per_gram = non_bulk_cost_per_kg_before_margin * (1.0 + non_bulk_margin) / 1000.0
         variant_prices = []
         for variant in variants:
             grams = _safe_float(variant.get("grams"))
             discount_pct = _safe_float(variant.get("discountPct"))
+            undiscounted_mrp = grams * non_bulk_base_per_gram
+            mrp = undiscounted_mrp * (1.0 - discount_pct)
+            if round_to_five:
+                undiscounted_mrp = _pricing_calc_round_up_to_five(undiscounted_mrp)
+            if round_to_five:
+                mrp = _pricing_calc_round_up_to_five(mrp)
             variant_prices.append(
                 {
                     "id": str(variant.get("id") or ""),
                     "label": str(variant.get("label") or ""),
                     "grams": grams,
                     "discountPct": discount_pct,
-                    "mrp": grams * non_bulk_base_per_gram * (1.0 - discount_pct),
-                    "marginRupees": (grams * non_bulk_base_per_gram * (1.0 - discount_pct)) - (grams * non_bulk_cost_per_gram_before_margin),
+                    "undiscountedMrp": undiscounted_mrp,
+                    "mrp": mrp,
+                    "costPerPack": grams * non_bulk_cost_per_gram_before_margin,
+                    "marginRupees": mrp - (grams * non_bulk_cost_per_gram_before_margin),
                     "isBase": bool(variant.get("isBase")),
                 }
             )
@@ -1449,7 +1478,10 @@ def _pricing_calc_results(profile: dict) -> dict:
                 "productNameSnapshot": row.get("productNameSnapshot"),
                 "enabled": bool(row.get("enabled", True)),
                 "rawCoffeeCostPerKg": raw_coffee_cost,
+                "bulkCostPerKg": bulk_cost_per_kg_before_margin,
                 "bulkMrpPerKg": bulk_mrp_per_kg,
+                "bulkMarginRupees": bulk_mrp_per_kg - bulk_cost_per_kg_before_margin,
+                "bulkEffectiveMarginPct": ((bulk_mrp_per_kg - bulk_cost_per_kg_before_margin) / bulk_mrp_per_kg * 100.0) if bulk_mrp_per_kg > 0 else 0.0,
                 "nonBulkBasePerGram": non_bulk_base_per_gram,
                 "variants": variant_prices,
             }
@@ -1471,6 +1503,8 @@ def _normalize_pricing_calc_profile(
         "name": _normalize_pricing_calc_profile_name(incoming.get("name"), fallback=fallback_name),
         "inputs": _normalize_pricing_calc_inputs(incoming.get("inputs")),
         "extraCosts": _normalize_pricing_calc_extra_costs(incoming.get("extraCosts")),
+        "roundToFive": bool(incoming.get("roundToFive", False)),
+        "nonBulkMarginMode": str(incoming.get("nonBulkMarginMode") or "markup").strip(),
         "variants": _normalize_pricing_calc_variants(
             incoming.get("variants"),
             allow_missing_products=allow_missing_products,
@@ -1483,6 +1517,8 @@ def _normalize_pricing_calc_profile(
         "createdAt": int(_safe_float(incoming.get("createdAt")) or 0),
         "updatedAt": int(_safe_float(incoming.get("updatedAt")) or 0),
     }
+    if normalized["nonBulkMarginMode"] not in PRICING_CALC_MARGIN_MODES:
+        normalized["nonBulkMarginMode"] = "markup"
     return normalized
 
 
@@ -1538,8 +1574,23 @@ def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[d
                 continue
             row = pricing.get(size) if isinstance(pricing.get(size), dict) else {}
             next_row = copy.deepcopy(row)
-            next_row["mrp"] = _safe_float(variant.get("mrp"))
+            next_row["mrp"] = _safe_float(variant.get("undiscountedMrp"))
             next_row["bulkPrice"] = bulk_mrp_per_kg * (grams / 1000.0)
+            sale_prices = next_row.get("salePrices") if isinstance(next_row.get("salePrices"), dict) else {}
+            next_row["salePrices"] = {
+                "retail": _safe_float(sale_prices.get("retail")),
+                "website": _safe_float(variant.get("mrp")),
+                "whatsapp": _safe_float(variant.get("mrp")),
+            }
+            pricing_calculator_cost = _safe_float(variant.get("costPerPack"))
+            existing_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
+            next_row["expensesByChannel"] = {
+                "retail": copy.deepcopy(existing_by_channel.get("retail") or []),
+                "website": [{"name": "Pricing calculator cost", "cost": pricing_calculator_cost}],
+                "whatsapp": [{"name": "Pricing calculator cost", "cost": pricing_calculator_cost}],
+            }
+            next_row["expenses"] = copy.deepcopy(next_row["expensesByChannel"]["retail"])
+            next_row["calculatorManagedChannels"] = ["website", "whatsapp"]
             pricing[size] = next_row
             changed = True
         if changed:
@@ -1620,6 +1671,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             "bulkPrice": _safe_float(row.get("bulkPrice")),
             "expenses": [],
             "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
+            "calculatorManagedChannels": [],
             "reorderCycleDays": _default_variant_cycle_days(key),
         }
         expenses = row.get("expenses") or []
@@ -1649,6 +1701,13 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             else:
                 normalized_channel_expenses = copy.deepcopy(normalized_expenses)
             normalized_row["expensesByChannel"][channel] = normalized_channel_expenses
+        managed_channels = row.get("calculatorManagedChannels")
+        if isinstance(managed_channels, list):
+            normalized_row["calculatorManagedChannels"] = [
+                channel
+                for channel in managed_channels
+                if channel in {"retail", "website", "whatsapp"}
+            ]
         reorder_cycle_days = row.get("reorderCycleDays")
         try:
             reorder_cycle_days = int(float(reorder_cycle_days))
@@ -1665,6 +1724,7 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
                 "bulkPrice": 0.0,
                 "expenses": [],
                 "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
+                "calculatorManagedChannels": [],
                 "reorderCycleDays": _default_variant_cycle_days(size),
             },
         )
