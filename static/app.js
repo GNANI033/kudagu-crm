@@ -436,6 +436,18 @@ function orderProfit(o){
   const comm=orderCommissionBreakup(o).total;
   return rev-cost+shipping.deliveryCharge-(parseFloat(o.discount||0))-comm-shipping.variance;
 }
+function orderInvoiceTotal(o){
+  const rev=orderRevenue(o);
+  const shipping=orderShippingFinancials(o);
+  const disc=parseFloat(o?.discount||0)||0;
+  return Math.max(0, rev + shipping.deliveryCharge - disc);
+}
+function orderEffectiveMarginPct(o){
+  const prof=orderProfit(o);
+  const total=orderInvoiceTotal(o);
+  if(prof===null || !(total>0)) return null;
+  return (prof / total) * 100;
+}
 // Only completed orders count toward revenue/profit
 function isCompleted(o){ return o.status==='completed'; }
 
@@ -489,6 +501,11 @@ function pCls(v){ return v==null?'neutral':v>=0?'up':'down'; }
 function pArr(v){ return v==null?'':v>=0?' ↑':' ↓'; }
 function todayISO(){ const n=new Date(); return`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; }
 function chBadge(ch){ const normalized=String(ch||'').trim()==='whatsapp'?'website':String(ch||''); const l={retail:'Retail',website:'Website'}; return`<span class="ch-badge ch-badge--${normalized}">${l[normalized]||normalized}</span>`; }
+function channelToneClass(ch, isBulk=false){
+  if(isBulk) return 'bulk';
+  const normalized=String(ch||'').trim()==='whatsapp'?'website':String(ch||'');
+  return normalized==='website'?'website':'retail';
+}
 function stBadge(st){ return`<span class="status-badge ${STATUS_CLS[st]||''}">${STATUS_LABEL[st]||st}</span>`; }
 function variantToGrams(v){
   if(SIZE_GRAMS[v]) return SIZE_GRAMS[v];
@@ -3659,17 +3676,31 @@ function billingControlsHTML(orders){
   const custom=ORDER_BILL_FILTER.range==='custom';
   return `<div class="orders-toolbar">
     <div class="orders-toolbar-row">
-      <div class="orders-toolbar-title">Billing Range</div>
-      <select class="range-select" id="bill-range" onchange="setBillRange(this.value)" aria-label="Billing range"><option value="all" ${ORDER_BILL_FILTER.range==='all'?'selected':''}>All unbilled</option><option value="m1" ${ORDER_BILL_FILTER.range==='m1'?'selected':''}>Last 1 month</option><option value="m3" ${ORDER_BILL_FILTER.range==='m3'?'selected':''}>Last 3 months</option><option value="m6" ${ORDER_BILL_FILTER.range==='m6'?'selected':''}>Last 6 months</option><option value="y1" ${ORDER_BILL_FILTER.range==='y1'?'selected':''}>Last 1 year</option><option value="custom" ${custom?'selected':''}>Custom</option></select>
-      <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-start" value="${esc(ORDER_BILL_FILTER.startDate||'')}" onchange="setBillCustomDates()" aria-label="Billing start date">
-      <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-end" value="${esc(ORDER_BILL_FILTER.endDate||'')}" onchange="setBillCustomDates()" aria-label="Billing end date">
-      <button class="btn btn-p" onclick="markRangeBilled()" ${orders.length?'':'disabled'}>Save Range as Billed</button>
-      <button class="btn btn-s" onclick="markSelectedBilled()" ${selectedCount?'':'disabled'}>Save Selected (${selectedCount})</button>
-      <button class="btn btn-s" onclick="downloadSelectedInvoices([...ORDER_SELECTED])" ${selectedCount?'':'disabled'}>Download Invoices (${selectedCount})</button>
-      <div class="orders-toolbar-spacer"></div>
-      <button class="btn btn-s" onclick="openOrdersExportModal()">Export</button>
+      <div class="orders-toolbar-range">
+        <div class="orders-toolbar-title">Billing Range</div>
+        <select class="range-select" id="bill-range" onchange="setBillRange(this.value)" aria-label="Billing range"><option value="all" ${ORDER_BILL_FILTER.range==='all'?'selected':''}>All unbilled</option><option value="m1" ${ORDER_BILL_FILTER.range==='m1'?'selected':''}>Last 1 month</option><option value="m3" ${ORDER_BILL_FILTER.range==='m3'?'selected':''}>Last 3 months</option><option value="m6" ${ORDER_BILL_FILTER.range==='m6'?'selected':''}>Last 6 months</option><option value="y1" ${ORDER_BILL_FILTER.range==='y1'?'selected':''}>Last 1 year</option><option value="custom" ${custom?'selected':''}>Custom</option></select>
+        <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-start" value="${esc(ORDER_BILL_FILTER.startDate||'')}" onchange="setBillCustomDates()" aria-label="Billing start date">
+        <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-end" value="${esc(ORDER_BILL_FILTER.endDate||'')}" onchange="setBillCustomDates()" aria-label="Billing end date">
+      </div>
+      <div class="orders-toolbar-actions">
+        <button class="btn btn-p" onclick="markRangeBilled()" ${orders.length?'':'disabled'}>Save Range as Billed</button>
+        <button class="btn btn-s" onclick="markSelectedBilled()" ${selectedCount?'':'disabled'}>Save Selected (${selectedCount})</button>
+        <button class="btn btn-s" onclick="downloadSelectedInvoices([...ORDER_SELECTED])" ${selectedCount?'':'disabled'}>Download Invoices (${selectedCount})</button>
+        <button class="btn btn-s" onclick="openOrdersExportModal()">Export</button>
+      </div>
     </div>
-    <div class="orders-toolbar-note">${orders.length} unbilled order${orders.length!==1?'s':''} in current range. Billed orders are excluded from date-range results.</div>
+    <div class="orders-toolbar-meta">
+      <div class="orders-toolbar-note">${orders.length} unbilled order${orders.length!==1?'s':''} in current range. Billed orders are excluded from date-range results.</div>
+      ${orderLegendHTML()}
+    </div>
+  </div>`;
+}
+function orderLegendHTML(){
+  return `<div class="orders-legend">
+    <span class="orders-legend-label">Color Code</span>
+    <span class="orders-legend-chip orders-legend-chip--retail">Retail</span>
+    <span class="orders-legend-chip orders-legend-chip--website">Website</span>
+    <span class="orders-legend-chip orders-legend-chip--bulk">Bulk</span>
   </div>`;
 }
 function setBillRange(range){ ORDER_BILL_FILTER.range=range; ORDER_SELECTED.clear(); rOrders(); }
@@ -3743,7 +3774,7 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th><span class="order-id-head">${selectionMode?`<input class="order-id-check" type="checkbox" ${allPageSelected?'checked':''} onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''}<span>#</span></span></th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Channel</th><th>Status</th><th>Revenue</th><th>Profit</th><th>Date</th><th></th></tr></thead>
+    <thead><tr><th><span class="order-id-head">${selectionMode?`<input class="order-id-check" type="checkbox" ${allPageSelected?'checked':''} onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''}<span>#</span></span></th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Status</th><th>Revenue</th><th>Profit | Margin</th><th></th></tr></thead>
     <tbody>${pageOrders.map(o=>orderRow(o,selectionMode)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
@@ -4111,14 +4142,17 @@ function rSubscriptions(){
 
 function orderRow(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
+  const effectiveMargin=orderEffectiveMarginPct(o);
   const shipping=orderShippingFinancials(o);
   const disc=parseFloat(o.discount||0);
   const comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
+  const bulkOn=qualifiesForBulk(o.prodId,o.variant,o.qty);
+  const tone=channelToneClass(o.channel||'retail', bulkOn);
   const isDist=isDistributorOrder(o);
   const distName=isDist?String(o.distribution.distributorName||'').trim():'';
   const customerTitle=isDist?'Distributor Channel':o.cname;
-  const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):o.carea;
+  const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):`Ordered ${fd(o.at)}`;
   const subTagRaw=(o.subscriptionTag||o.subscription?.tag||o.notes||'').toString().trim();
   const subTag=subTagRaw?`<div style="font-size:11px;color:var(--text-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subTagRaw)}</div>`:'';
   const statusBtn=`<div class="status-dropdown-wrap">
@@ -4133,7 +4167,7 @@ function orderRow(o,selectionMode=''){
   }else if(selectionMode==='unbill'){
     selectBox=`<input class="order-id-check order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
   }
-  return`<tr>
+  return`<tr class="order-row--${tone}">
     <td><span class="order-id-cell">${selectBox}<span class="pill pn order-id-pill">#${o.id}</span></span></td>
     <td>
       <div style="font-weight:600">${esc(customerTitle)}</div>
@@ -4145,15 +4179,14 @@ function orderRow(o,selectionMode=''){
     </td>
     <td><span class="pill pn">${VL[o.variant]||o.variant}</span></td>
     <td style="font-weight:600">${o.qty}</td>
-    <td>${chBadge(o.channel||'retail')}</td>
     <td>${statusBtn}</td>
     <td style="font-weight:600">${rev>0&&isCompleted(o)?'₹'+rev.toFixed(0):'<span style="color:var(--text-3)">—</span>'}</td>
     <td>
-      <div style="font-weight:600;color:${prof===null?'var(--text-3)':prof>=0?'var(--green)':'var(--red)'}">${prof===null||!isCompleted(o)?'—':'₹'+prof.toFixed(0)}</div>
-      ${isCompleted(o)&&prof!==null&&shipping.provisional?`<div style="font-size:10.5px;color:var(--amber);margin-top:1px">Provisional shipping</div>`:''}
-      ${disc>0||comm.total>0?`<div style="font-size:10.5px;color:var(--text-3);margin-top:1px">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</div>`:''}
+      <div class="order-profit-main" style="color:${prof===null?'var(--text-3)':prof>=0?'var(--green)':'var(--red)'}">${prof===null||!isCompleted(o)?'—':'₹'+prof.toFixed(0)}</div>
+      ${isCompleted(o)&&effectiveMargin!==null?`<div class="order-profit-sub ${effectiveMargin>=0?'margin-pos':'margin-neg'}">${effectiveMargin.toFixed(1)}% effective margin</div>`:''}
+      ${isCompleted(o)&&prof!==null&&shipping.provisional?`<div class="order-profit-sub provisional">Provisional shipping</div>`:''}
+      ${disc>0||comm.total>0?`<div class="order-profit-sub">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</div>`:''}
     </td>
-    <td style="color:var(--text-3)">${fd(o.at)}</td>
     <td><button class="btn btn-g btn-xs dots-btn" onclick="openOrderMenu(${o.id},this)" title="More options">⋯</button></td>
   </tr>`;
 }
@@ -4169,28 +4202,33 @@ function toggleSection(id){
 // Mobile order card — compact single-card layout for small screens
 function orderMobileCard(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
+  const effectiveMargin=orderEffectiveMarginPct(o);
   const shipping=orderShippingFinancials(o);
   const disc=parseFloat(o.discount||0),comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
+  const bulkOn=qualifiesForBulk(o.prodId,o.variant,o.qty);
+  const tone=channelToneClass(o.channel||'retail', bulkOn);
   const isDist=isDistributorOrder(o);
   const distName=isDist?String(o.distribution.distributorName||'').trim():'';
   const customerTitle=isDist?'Distributor Channel':o.cname;
   const subTagRaw=(o.subscriptionTag||o.subscription?.tag||o.notes||'').toString().trim();
   const subTag=subTagRaw?` · ${esc(subTagRaw)}`:'';
-  const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
+  const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`Ordered ${fd(o.at)}`;
+  const productMeta=`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
-  const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit${shipping.provisional?' · provisional':''}</span>`:'';
+  const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
   let selectBox='';
   if(selectionMode==='bill'){
     selectBox=`<input class="order-id-check order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
   }else if(selectionMode==='unbill'){
     selectBox=`<input class="order-id-check order-unbill-check" type="checkbox" value="${o.id}" ${BILLED_ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleBilledOrderSelection(${o.id},this.checked)">`;
   }
-  return`<div class="order-card">
+  return`<div class="order-card order-card--${tone}">
     <div class="order-card-top">
       <div>
         <div class="order-card-name">${selectBox}<span class="pill pn order-id-pill">#${o.id}</span>${esc(customerTitle)}</div>
         <div class="order-card-prod">${customerSub}</div>
+        <div class="order-card-prod">${productMeta}</div>
         ${isDist?`<div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>`:''}
       </div>
       <div class="order-card-right">
@@ -4202,9 +4240,10 @@ function orderMobileCard(o,selectionMode=''){
       </div>
     </div>
     <div class="order-card-meta">
-      ${chBadge(o.channel||'retail')}
       ${stSel}
       ${profLine}
+      ${isCompleted(o)&&effectiveMargin!==null?`<span class="order-profit-sub ${effectiveMargin>=0?'margin-pos':'margin-neg'}">${effectiveMargin.toFixed(1)}% margin</span>`:''}
+      ${isCompleted(o)&&prof!==null&&shipping.provisional?`<span class="order-profit-sub provisional">Provisional shipping</span>`:''}
       ${disc>0||comm.total>0?`<span style="font-size:11px;color:var(--text-3)">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</span>`:''}
     </div>
   </div>`;
