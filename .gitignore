@@ -25,6 +25,8 @@ ui_helper/.env.inventory
 __pycache__/
 inventory/__pycache__/
 ui_helper/__pycache__/
+*.pyc
+*.pyo
 *.py[cod]
 *$py.class
 

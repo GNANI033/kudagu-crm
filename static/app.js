@@ -3774,7 +3774,7 @@ function buildOrderTable(orders,title,collapsible,bucket,selectionMode=''){
   </div>`;
   // Desktop table
   const desktopTable=`<div class="tbl-wrap"><table class="tbl">
-    <thead><tr><th><span class="order-id-head">${selectionMode?`<input class="order-id-check" type="checkbox" ${allPageSelected?'checked':''} onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''}<span>#</span></span></th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Status</th><th>Revenue</th><th>Profit | Margin</th><th></th></tr></thead>
+    <thead><tr><th><span class="order-id-head">${selectionMode?`<input class="order-id-check" type="checkbox" ${allPageSelected?'checked':''} onchange="toggleVisibleOrderSelection('${selectionMode}',this.checked)">`:''}<span>#</span></span></th><th>Customer</th><th>Product / Service</th><th>Size</th><th>Qty</th><th>Status</th><th>Financials</th><th></th></tr></thead>
     <tbody>${pageOrders.map(o=>orderRow(o,selectionMode)).join('')}</tbody>
   </table></div>`;
   // Mobile card list
@@ -4155,6 +4155,12 @@ function orderRow(o,selectionMode=''){
   const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):`Ordered ${fd(o.at)}`;
   const subTagRaw=(o.subscriptionTag||o.subscription?.tag||o.notes||'').toString().trim();
   const subTag=subTagRaw?`<div style="font-size:11px;color:var(--text-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subTagRaw)}</div>`:'';
+  const adjustmentBits=[
+    disc>0?`-₹${disc}d`:'',
+    comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',
+    comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:'',
+    shipping.hasActual&&Math.abs(shipping.variance)>0.009?`${shipping.variance>0?'-':'+'}₹${Math.abs(shipping.variance).toFixed(0)}del`:'',
+  ].filter(Boolean);
   const statusBtn=`<div class="status-dropdown-wrap">
     <button class="status-badge ${STATUS_CLS[o.status||'pending']} status-clickable" onclick="toggleStatusDropdown(${o.id},this)">${STATUS_LABEL[o.status]||o.status} ▾</button>
     <div class="status-dropdown" id="sdrop-${o.id}">
@@ -4180,12 +4186,12 @@ function orderRow(o,selectionMode=''){
     <td><span class="pill pn">${VL[o.variant]||o.variant}</span></td>
     <td style="font-weight:600">${o.qty}</td>
     <td>${statusBtn}</td>
-    <td style="font-weight:600">${rev>0&&isCompleted(o)?'₹'+rev.toFixed(0):'<span style="color:var(--text-3)">—</span>'}</td>
     <td>
-      <div class="order-profit-main" style="color:${prof===null?'var(--text-3)':prof>=0?'var(--green)':'var(--red)'}">${prof===null||!isCompleted(o)?'—':'₹'+prof.toFixed(0)}</div>
+      <div class="order-fin-main">${rev>0&&isCompleted(o)?`₹${rev.toFixed(0)} <span class="order-fin-sub" style="display:inline;color:var(--text-3);margin-left:4px">Invoice total</span>`:'<span style="color:var(--text-3)">—</span>'}</div>
+      <div class="order-profit-main" style="color:${prof===null?'var(--text-3)':prof>=0?'var(--green)':'var(--red)'};margin-top:${isCompleted(o)&&rev>0?'6px':'0'}">${prof===null||!isCompleted(o)?'—':'₹'+prof.toFixed(0)}</div>
       ${isCompleted(o)&&effectiveMargin!==null?`<div class="order-profit-sub ${effectiveMargin>=0?'margin-pos':'margin-neg'}">${effectiveMargin.toFixed(1)}% effective margin</div>`:''}
       ${isCompleted(o)&&prof!==null&&shipping.provisional?`<div class="order-profit-sub provisional">Provisional shipping</div>`:''}
-      ${disc>0||comm.total>0?`<div class="order-profit-sub">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</div>`:''}
+      ${adjustmentBits.length?`<div class="order-profit-sub">${adjustmentBits.join(' ')}</div>`:''}
     </td>
     <td><button class="btn btn-g btn-xs dots-btn" onclick="openOrderMenu(${o.id},this)" title="More options">⋯</button></td>
   </tr>`;
@@ -4216,7 +4222,14 @@ function orderMobileCard(o,selectionMode=''){
   const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`Ordered ${fd(o.at)}`;
   const productMeta=`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
+  const revenueLine=isCompleted(o)&&rev>0?`<span class="order-fin-main">₹${rev.toFixed(0)} <span class="order-fin-sub" style="display:inline;color:var(--text-3);margin-left:4px">Invoice total</span></span>`:'';
   const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
+  const adjustmentBits=[
+    disc>0?`-₹${disc}d`:'',
+    comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',
+    comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:'',
+    shipping.hasActual&&Math.abs(shipping.variance)>0.009?`${shipping.variance>0?'-':'+'}₹${Math.abs(shipping.variance).toFixed(0)}del`:'',
+  ].filter(Boolean);
   let selectBox='';
   if(selectionMode==='bill'){
     selectBox=`<input class="order-id-check order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
@@ -4241,10 +4254,11 @@ function orderMobileCard(o,selectionMode=''){
     </div>
     <div class="order-card-meta">
       ${stSel}
+      ${revenueLine}
       ${profLine}
       ${isCompleted(o)&&effectiveMargin!==null?`<span class="order-profit-sub ${effectiveMargin>=0?'margin-pos':'margin-neg'}">${effectiveMargin.toFixed(1)}% margin</span>`:''}
       ${isCompleted(o)&&prof!==null&&shipping.provisional?`<span class="order-profit-sub provisional">Provisional shipping</span>`:''}
-      ${disc>0||comm.total>0?`<span style="font-size:11px;color:var(--text-3)">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</span>`:''}
+      ${adjustmentBits.length?`<span style="font-size:11px;color:var(--text-3)">${adjustmentBits.join(' ')}</span>`:''}
     </div>
   </div>`;
 }

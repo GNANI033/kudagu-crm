@@ -436,15 +436,15 @@ html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
 .orders-card { overflow: visible; }
 .orders-card .tbl-wrap { overflow-x: auto; overflow-y: visible; -webkit-overflow-scrolling: touch; }
 .orders-toolbar{padding:14px 16px;border-bottom:1px solid var(--border);display:flex;flex-direction:column;gap:12px}
-.orders-toolbar-row{display:grid;grid-template-columns:auto minmax(180px,220px) 1fr;gap:12px;align-items:center}
-.orders-toolbar-range{display:flex;align-items:center;gap:10px;min-width:0}
-.orders-toolbar-actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.orders-toolbar-row{display:flex;gap:14px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.orders-toolbar-range{display:flex;align-items:center;gap:10px;min-width:0;flex:1 1 320px;flex-wrap:wrap}
+.orders-toolbar-actions{display:flex;gap:10px;align-items:center;justify-content:flex-end;flex:2 1 680px;flex-wrap:wrap}
 .orders-toolbar-meta{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .orders-toolbar-title{font-size:13px;font-weight:800;color:var(--text-2);white-space:nowrap}
 .orders-toolbar .fg{margin:0}
 .orders-toolbar select,.orders-toolbar input,.orders-toolbar .btn{height:38px;min-height:38px}
 .orders-toolbar .btn{padding:8px 14px;font-size:13px}
-.orders-toolbar .range-select{width:100%;min-width:0}
+.orders-toolbar .range-select{width:min(260px,100%);min-width:180px}
 .orders-toolbar .date-input{width:138px}
 .orders-toolbar-spacer{flex:1 1 auto}
 .orders-toolbar-note{font-size:12px;color:var(--text-3)}
@@ -682,17 +682,15 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
 .orders-card .tbl th:first-child,
 .orders-card .tbl td:first-child { width: 86px; min-width: 86px; }
 .orders-card .tbl th:nth-child(7),
-.orders-card .tbl td:nth-child(7) { min-width: 150px; }
-.orders-card .tbl th:nth-child(8),
-.orders-card .tbl td:nth-child(8) { min-width: 180px; }
+.orders-card .tbl td:nth-child(7) { min-width: 240px; }
 .order-id-head,
 .order-id-cell { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .order-id-check { width: 16px; height: 16px; margin: 0; flex: 0 0 16px; accent-color: var(--text); }
 .order-id-pill { font-size: 10.5px; font-family: monospace; min-width: 38px; justify-content: center; }
 .order-card-name .order-id-check { margin-right: 7px; vertical-align: -2px; }
 .order-card-name .order-id-pill { margin-right: 8px; }
-.orders-card .tbl th:nth-child(8),
-.orders-card .tbl td:nth-child(8) { white-space: nowrap; }
+.orders-card .tbl th:nth-child(7),
+.orders-card .tbl td:nth-child(7) { white-space: nowrap; }
 .tbl tr:last-child td { border-bottom: none; }
 .order-row--retail td:first-child,
 .order-row--website td:first-child,
@@ -710,6 +708,8 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
 .order-row--website .order-id-pill { background: #e8f6ee; border-color: #bfe4cd; color: #2f7d58; }
 .order-row--bulk .order-id-pill { background: #e9eefb; border-color: #bfd0f2; color: #34568f; }
 .order-profit-main { font-weight: 700; }
+.order-fin-main { font-weight: 700; color: var(--text); }
+.order-fin-sub { font-size: 10.5px; color: var(--text-3); margin-top: 1px; }
 .order-profit-sub { font-size: 10.5px; color: var(--text-3); margin-top: 1px; }
 .order-profit-sub.provisional { color: var(--amber); }
 .order-profit-sub.margin-pos { color: var(--green); }
@@ -749,8 +749,7 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
   justify-content: center;
 }
 @media (max-width: 1180px){
-  .orders-toolbar-row{grid-template-columns:1fr}
-  .orders-toolbar-range{flex-wrap:wrap}
+  .orders-toolbar-row{align-items:flex-start}
   .orders-toolbar-actions{justify-content:flex-start}
 }
 
