@@ -14,7 +14,6 @@ const SIZE_GRAMS = {'100g':100,'250g':250,'500g':500,'1kg':1000};
 const CHANNELS = [
   {id:'retail',   label:'Retail',   sub:'In-store / offline'},
   {id:'website',  label:'Website',  sub:'Online store'},
-  {id:'whatsapp', label:'WhatsApp', sub:'Direct message'},
 ];
 const CHANNEL_MAP = Object.fromEntries(CHANNELS.map(c=>[c.id,c]));
 
@@ -337,18 +336,54 @@ function getSalePrice(pid,sz,ch,qty=1){ return qualifiesForBulk(pid,sz,qty)?getB
 function pricingExpensesByChannel(pr){
   const by=pr&&typeof pr==='object'&&pr.expensesByChannel&&typeof pr.expensesByChannel==='object'?pr.expensesByChannel:{};
   const legacy=Array.isArray(pr?.expenses)?pr.expenses:[];
-  const out={retail:[],website:[],whatsapp:[]};
+  const out={retail:[],website:[]};
   CHANNELS.forEach(c=>{ out[c.id]=Array.isArray(by[c.id])?by[c.id]:legacy; });
   return out;
 }
 function pricingCalculatorManagedChannels(pr){
   const values=Array.isArray(pr?.calculatorManagedChannels)?pr.calculatorManagedChannels:[];
-  return new Set(values.filter((value)=>['retail','website','whatsapp'].includes(String(value||''))));
+  return new Set(values.map((value)=>String(value||'').trim()==='whatsapp'?'website':String(value||'')).filter((value)=>['retail','website'].includes(String(value||''))));
 }
 function getTotalCost(pid,sz,ch='retail'){
   const pr=getPricing(pid,sz); if(!pr) return 0;
   const expenses=pricingExpensesByChannel(pr)[ch]||[];
-  return expenses.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
+  const expenseTotal=expenses.reduce((s,e)=>s+(parseFloat(e.cost)||0),0);
+  const shippingEstimate=getShippingEstimateForPricing(pid,sz,ch);
+  const managed=pricingCalculatorManagedChannels(pr);
+  return managed.has(ch)?expenseTotal:(expenseTotal+shippingEstimate);
+}
+function getShippingEstimateForPricing(pid,sz,ch='retail'){
+  const pr=getPricing(pid,sz); if(!pr) return 0;
+  const by=pr&&typeof pr==='object'&&pr.shippingCostsByChannel&&typeof pr.shippingCostsByChannel==='object'?pr.shippingCostsByChannel:{};
+  return Math.max(0, parseFloat(by[ch]||0)||0);
+}
+function normalizedOrderShipping(o){
+  const ship=o&&typeof o.shipping==='object'&&o.shipping?o.shipping:{};
+  const deliveryMethod=String(o?.deliveryMethod||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
+  let estimated=Math.max(0,parseFloat(ship.estimatedCost)||0);
+  const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
+  const snapEstimated=Math.max(0,parseFloat(snap?.estimatedShippingCost)||0);
+  if(!(estimated>0) && snapEstimated>0) estimated=snapEstimated;
+  if(!(estimated>0) && deliveryMethod==='delivery') estimated=getShippingEstimateForPricing(o?.prodId,o?.variant,o?.channel||'retail');
+  const rawActual=ship.actualCost;
+  const hasActual=rawActual!==null && rawActual!==undefined && String(rawActual).trim()!=='';
+  const actual=deliveryMethod==='pickup'?0:(hasActual?Math.max(0,parseFloat(rawActual)||0):0);
+  return { ...ship, deliveryMethod, estimatedCost:deliveryMethod==='pickup'?0:estimated, actualCost:actual, hasActual:deliveryMethod==='pickup'?true:hasActual };
+}
+function orderShippingFinancials(o, overrides={}){
+  const deliveryMethodSource = overrides.deliveryMethod ?? o?.deliveryMethod ?? 'delivery';
+  const deliveryChargeSource = overrides.deliveryCharge ?? o?.deliveryCharge ?? 0;
+  const deliveryMethod=(String(deliveryMethodSource).trim().toLowerCase()==='pickup')?'pickup':'delivery';
+  const deliveryCharge=Math.max(0,parseFloat(deliveryChargeSource)||0);
+  const base=normalizedOrderShipping(o||{});
+  let estimated=Math.max(0,parseFloat((overrides.estimatedCost ?? base.estimatedCost ?? 0))||0);
+  const hasActualInput=Object.prototype.hasOwnProperty.call(overrides,'actualCost');
+  const rawActual=hasActualInput?overrides.actualCost:base.hasActual?base.actualCost:null;
+  const hasActual=deliveryMethod==='pickup'?true:(rawActual!==null && rawActual!==undefined && String(rawActual).trim()!=='');
+  const actual=deliveryMethod==='pickup'?0:(hasActual?Math.max(0,parseFloat(rawActual)||0):0);
+  if(deliveryMethod==='pickup') estimated=0;
+  const variance=hasActual?(actual-estimated):0;
+  return { deliveryMethod, deliveryCharge, estimatedCost:estimated, actualCost:actual, hasActual, variance, provisional:deliveryMethod==='delivery'&&!hasActual };
 }
 function orderRevenue(o){
   const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
@@ -370,8 +405,9 @@ function websiteGatewayCommission(amount, channel, discount=0){
 }
 function orderCommissionBreakup(o){
   const rev=orderRevenue(o);
+  const shipping=orderShippingFinancials(o);
   const manual=parseFloat(o.commission||0)||0;
-  const gateway=websiteGatewayCommission(rev,o.channel||'retail',o.discount||0);
+  const gateway=websiteGatewayCommission(rev+shipping.deliveryCharge,o.channel||'retail',o.discount||0);
   return {manual,gateway,total:manual+gateway};
 }
 function orderProfit(o){
@@ -380,8 +416,9 @@ function orderProfit(o){
   const snapCost=parseFloat(snap?.unitCost);
   const cost=(Number.isFinite(snapCost)&&snapCost>0?snapCost:getTotalCost(o.prodId,o.variant,o.channel||'retail'))*(o.qty||1);
   if(!(rev>0) && !(cost>0)) return null;
+  const shipping=orderShippingFinancials(o);
   const comm=orderCommissionBreakup(o).total;
-  return rev-cost-(parseFloat(o.discount||0))-comm;
+  return rev-cost+shipping.deliveryCharge-(parseFloat(o.discount||0))-comm-shipping.variance;
 }
 // Only completed orders count toward revenue/profit
 function isCompleted(o){ return o.status==='completed'; }
@@ -435,7 +472,7 @@ function fPct(v){ if(v==null)return'—';return(v>=0?'+':'')+v.toFixed(1)+'%'; }
 function pCls(v){ return v==null?'neutral':v>=0?'up':'down'; }
 function pArr(v){ return v==null?'':v>=0?' ↑':' ↓'; }
 function todayISO(){ const n=new Date(); return`${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`; }
-function chBadge(ch){ const l={retail:'Retail',website:'Website',whatsapp:'WhatsApp'}; return`<span class="ch-badge ch-badge--${ch}">${l[ch]||ch}</span>`; }
+function chBadge(ch){ const normalized=String(ch||'').trim()==='whatsapp'?'website':String(ch||''); const l={retail:'Retail',website:'Website'}; return`<span class="ch-badge ch-badge--${normalized}">${l[normalized]||normalized}</span>`; }
 function stBadge(st){ return`<span class="status-badge ${STATUS_CLS[st]||''}">${STATUS_LABEL[st]||st}</span>`; }
 function variantToGrams(v){
   if(SIZE_GRAMS[v]) return SIZE_GRAMS[v];
@@ -1111,7 +1148,7 @@ function openOrderMenu(oid, btnEl){
   // close any open menu first
   closeOrderMenu();
   const ord=S.orders.find(o=>o.id===oid);
-  const canShip=!!ord && (ord.channel==='website' || ord.channel==='whatsapp');
+  const canShip=!!ord && ord.channel==='website';
   const canEdit=hasActionAccess('orders','edit');
   const canDelete=hasActionAccess('orders','delete');
   const canShipLabel=hasActionAccess('shipping','labels');
@@ -1331,7 +1368,7 @@ function buildAwbInputHtml(awb='', oid=null, from='orders'){
 }
 function openShippedStatusPopup(oid, from='orders'){
   const order=S.orders.find(o=>o.id===oid); if(!order){ toast('Order not found','err'); return; }
-  const ship=order.shipping||{};
+  const ship=normalizedOrderShipping(order);
   const courierVal=(ship.courier||'').trim();
   openModal(`
     <div class="modal-title">Mark as Shipped</div>
@@ -1349,6 +1386,10 @@ function openShippedStatusPopup(oid, from='orders'){
           <button class="btn btn-s" onclick="copyTrackingLinkFromModal()">Copy</button>
         </div>
         <div id="ship-track-note" style="font-size:11.5px;color:var(--text-3);margin-top:4px">No template configured for this courier. Set it in Settings → Shipping.</div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input id="ship-estimated-cost" type="number" min="0" step="0.01" value="${ship.estimatedCost||0}"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Preset shipping already included in this product's cost.</div></div>
+        <div class="fg"><label>Actual Courier Cost (₹)</label><div class="input-prefix"><span>₹</span><input id="ship-actual-cost" type="number" min="0" step="0.01" value="${ship.hasActual?ship.actualCost:''}"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Leave blank if the courier bill is not known yet.</div></div>
       </div>
       <div style="font-size:11.5px;color:var(--text-3)">AWB code format is auto-picked from courier settings (QR/Barcode).</div>
       <div class="toggle-row">
@@ -1374,10 +1415,13 @@ async function submitShippedStatus(oid, from='orders'){
   const shipDate=(g('ship-date')?.value||'').trim();
   const awb=(g('ship-awb')?.value||'').trim();
   const courier=(g('ship-courier')?.value||'').trim();
+  const estimatedCost=Math.max(0,parseFloat(g('ship-estimated-cost')?.value||0)||0);
+  const actualRaw=(g('ship-actual-cost')?.value||'').trim();
+  const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   if(!shipDate || !awb || !courier){ toast('Shipped date, AWB and courier are required','err'); return; }
   const doWa=!!g('ship-wa-toggle')?.checked;
   try{
-    await saveOrderAsShipped(oid, {shipDate,awb,courier}, doWa);
+    await saveOrderAsShipped(oid, {shipDate,awb,courier,estimatedCost,actualCost}, doWa);
     closeModal();
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
@@ -1525,7 +1569,12 @@ async function saveOrderAsShipped(oid, shipping, notifyWhatsApp=false, opts={}){
     shipDate:String(shipping?.shipDate||'').trim(),
     awb:String(shipping?.awb||'').trim(),
     courier:String(shipping?.courier||'').trim(),
+    estimatedCost:Math.max(0,parseFloat(shipping?.estimatedCost||0)||0),
   };
+  const rawActual=shipping?.actualCost;
+  if(rawActual!==null && rawActual!==undefined && String(rawActual).trim()!==''){
+    cleanShipping.actualCost=Math.max(0,parseFloat(rawActual)||0);
+  }
   if(!cleanShipping.shipDate || !cleanShipping.awb || !cleanShipping.courier){
     toast('Shipped date, AWB and courier are required','err');
     return null;
@@ -1761,7 +1810,7 @@ async function submitShippingLabel(oid, action){
 }
 function shippingLabel(oid,action){
   const order=S.orders.find(o=>o.id===oid); if(!order){toast('Order not found','err');return;}
-  if(!(order.channel==='website' || order.channel==='whatsapp')){
+  if(order.channel!=='website'){
     toast('Label - Not Valid','err');
     return;
   }
@@ -1994,7 +2043,7 @@ function avgGapDaysForCustomer(cid){
 function preferredChannelForCustomer(cid){
   const orders=getCustomerOrders(cid);
   if(!orders.length) return '';
-  const m={retail:0,whatsapp:0,website:0};
+  const m={retail:0,website:0};
   orders.forEach(o=>{ const ch=String(o.channel||'').toLowerCase(); if(m[ch]!==undefined) m[ch]+=1; });
   return Object.entries(m).sort((a,b)=>b[1]-a[1])[0][0]||'';
 }
@@ -3476,20 +3525,22 @@ function refreshSum(){
     const deliveryLabel=deliveryMethod==='pickup'?'Pickup':'Delivery';
     const customerTotal=Math.max(0,rev+deliveryCharge-disc);
     const pgComm=websiteGatewayCommission(rev+deliveryCharge,selCh,disc);
-    const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm;
+    const shipping=orderShippingFinancials({prodId:pid,variant:selV,channel:selCh,deliveryMethod,deliveryCharge},{deliveryMethod,deliveryCharge});
+    const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm-shipping.variance;
     priceRows=`<hr class="sdiv">
       <div class="sr"><span class="sk">${bulkOn?'Bulk price / pack':'Sale price / pack'}</span><span class="sval">₹${sp.toFixed(0)}</span></div>
       ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Normal price / pack</span><span class="sval" style="color:var(--text-3)">₹${normalSp.toFixed(0)}</span></div>`:''}
       ${bulkMin>0&&!bulkOn?`<div class="sr"><span class="sk">Bulk starts at</span><span class="sval">${bulkMin} packs</span></div>`:''}
       <div class="sr"><span class="sk">Revenue</span><span class="sval">₹${rev.toFixed(0)}</span></div>
       <div class="sr"><span class="sk">Delivery</span><span class="sval">${esc(deliveryLabel)}${deliveryCharge>0?` · ₹${deliveryCharge.toFixed(0)}`:''}</span></div>
+      ${shipping.deliveryMethod==='delivery'?`<div class="sr"><span class="sk">Estimated shipping in cost</span><span class="sval">₹${shipping.estimatedCost.toFixed(0)}</span></div>`:''}
       <div class="sr"><span class="sk">Invoice total</span><span class="sval">₹${customerTotal.toFixed(0)}</span></div>
       ${bulkOn&&normalSp>sp?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${((normalSp-sp)*qty).toFixed(0)} (${(((normalSp-sp)/normalSp)*100).toFixed(1)}%)</span></div>`:''}
       ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
       ${discountReason?`<div class="sr"><span class="sk">Discount reason</span><span class="sval">${esc(discountReason)}</span></div>`:''}
       ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
       ${pgComm>0?`<div class="sr"><span class="sk">Gateway commission (${paymentGatewayCommissionPct().toFixed(2)}%)</span><span class="sval" style="color:var(--amber)">−₹${pgComm.toFixed(0)}</span></div>`:''}
-      <div class="sr"><span class="sk">Net profit</span><span class="sval" style="color:${net>=0?'var(--green)':'var(--red)'}">₹${net.toFixed(0)}</span></div>`;
+      <div class="sr"><span class="sk">Net profit${shipping.provisional?' (Provisional)':''}</span><span class="sval" style="color:${net>=0?'var(--green)':'var(--red)'}">₹${net.toFixed(0)}</span></div>`;
   } else {
     priceRows=`<hr class="sdiv"><div class="sr"><span class="sk" style="color:var(--amber)">⚠ No price set for this channel</span></div>`;
   }
@@ -4044,6 +4095,7 @@ function rSubscriptions(){
 
 function orderRow(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
+  const shipping=orderShippingFinancials(o);
   const disc=parseFloat(o.discount||0);
   const comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
@@ -4082,6 +4134,7 @@ function orderRow(o,selectionMode=''){
     <td style="font-weight:600">${rev>0&&isCompleted(o)?'₹'+rev.toFixed(0):'<span style="color:var(--text-3)">—</span>'}</td>
     <td>
       <div style="font-weight:600;color:${prof===null?'var(--text-3)':prof>=0?'var(--green)':'var(--red)'}">${prof===null||!isCompleted(o)?'—':'₹'+prof.toFixed(0)}</div>
+      ${isCompleted(o)&&prof!==null&&shipping.provisional?`<div style="font-size:10.5px;color:var(--amber);margin-top:1px">Provisional shipping</div>`:''}
       ${disc>0||comm.total>0?`<div style="font-size:10.5px;color:var(--text-3);margin-top:1px">${[disc>0?`-₹${disc}d`:'',comm.manual>0?`-₹${comm.manual.toFixed(0)}mc`:'',comm.gateway>0?`-₹${comm.gateway.toFixed(0)}pg`:''].filter(Boolean).join(' ')}</div>`:''}
     </td>
     <td style="color:var(--text-3)">${fd(o.at)}</td>
@@ -4100,6 +4153,7 @@ function toggleSection(id){
 // Mobile order card — compact single-card layout for small screens
 function orderMobileCard(o,selectionMode=''){
   const rev=orderRevenue(o),prof=orderProfit(o);
+  const shipping=orderShippingFinancials(o);
   const disc=parseFloat(o.discount||0),comm=orderCommissionBreakup(o);
   const opts=statusOpts(o.channel||'retail');
   const isDist=isDistributorOrder(o);
@@ -4109,7 +4163,7 @@ function orderMobileCard(o,selectionMode=''){
   const subTag=subTagRaw?` · ${esc(subTagRaw)}`:'';
   const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
-  const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit</span>`:'';
+  const profLine=isCompleted(o)&&prof!==null?`<span style="font-size:12px;font-weight:700;color:${prof>=0?'var(--green)':'var(--red)'}">₹${prof.toFixed(0)} profit${shipping.provisional?' · provisional':''}</span>`:'';
   let selectBox='';
   if(selectionMode==='bill'){
     selectBox=`<input class="order-id-check order-bill-check" type="checkbox" value="${o.id}" ${ORDER_SELECTED.has(Number(o.id))?'checked':''} onchange="toggleOrderSelection(${o.id},this.checked)">`;
@@ -4249,8 +4303,8 @@ async function quickStatus(oid, newStatus, btnEl){
 function showShippedStatusGuard(oid){
   const o=S.orders.find(x=>x.id===oid);
   if(!o) return;
-  if(!(o.channel==='website' || o.channel==='whatsapp')){
-    toast('Shipped status is for Website/WhatsApp orders','err');
+  if(o.channel!=='website'){
+    toast('Shipped status is for website orders','err');
     return;
   }
   if(_openDrop){resetOpenDrop(_openDrop);_openDrop=null;}
@@ -4269,7 +4323,8 @@ function showWebsitePendingConfirmPopup(oid,newStatus,from='orders'){
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
   const rev=orderRevenue(o);
   const pgPct=paymentGatewayCommissionPct();
-  const pgAmt=websiteGatewayCommission(rev,'website',o.discount||0);
+  const shipping=orderShippingFinancials(o);
+  const pgAmt=websiteGatewayCommission(rev+shipping.deliveryCharge,'website',o.discount||0);
   const actionLabel=newStatus==='shipped'?'Confirm & Continue to Shipping':(newStatus==='completed'?'Confirm & Complete':'Confirm & Mark Confirmed');
   openModal(`
     <div style="text-align:center;margin-bottom:6px">
@@ -4360,6 +4415,7 @@ function syncOrder(updated){
 // ─── EDIT ORDER (full modal) ──────────────────────────────────────────────────
 function openEditOrder(oid){
   const o=S.orders.find(x=>x.id===oid); if(!o) return;
+  const ship=normalizedOrderShipping(o);
   const opts=statusOpts(o.channel||'retail');
   const stOpts=opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('');
   const pmOpts=PAYMENT_METHODS.map(m=>`<option value="${m}" ${o.paymentMethod===m?'selected':''}>${m}</option>`).join('');
@@ -4380,6 +4436,10 @@ function openEditOrder(oid){
       <div class="fr">
         <div class="fg"><label>Delivery</label><select id="eo-delivery-method" onchange="eoPreview(${oid})"><option value="delivery" ${(o.deliveryMethod||'delivery')==='delivery'?'selected':''}>Delivery</option><option value="pickup" ${o.deliveryMethod==='pickup'?'selected':''}>Pickup</option></select></div>
         <div class="fg"><label>Delivery Charge (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-delivery-charge" value="${o.deliveryCharge||0}" min="0" step="0.01" oninput="eoPreview(${oid})"></div></div>
+      </div>
+      <div class="fr">
+        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-ship-estimated-cost" value="${ship.estimatedCost||0}" min="0" step="0.01" oninput="eoPreview(${oid})"></div></div>
+        <div class="fg"><label>Actual Courier Cost (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-ship-actual-cost" value="${ship.hasActual?ship.actualCost:''}" min="0" step="0.01" oninput="eoPreview(${oid})"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Leave blank to keep profit provisional for delivery.</div></div>
       </div>
       <div class="fr">
         <div class="fg"><label>Status</label><select id="eo-status">${stOpts}</select></div>
@@ -4427,11 +4487,15 @@ function eoPreview(oid){
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
   const deliveryMethod=(g('eo-delivery-method')?.value||o.deliveryMethod||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
   const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||o.deliveryCharge||0)||0);
+  const estimatedCost=Math.max(0,parseFloat(g('eo-ship-estimated-cost')?.value||0)||0);
+  const actualRaw=(g('eo-ship-actual-cost')?.value||'').trim();
+  const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   const discountReason=(g('eo-discount-reason')?.value||o.discountReason||'').trim();
   if(!sp){prev.innerHTML=`<span style="color:var(--text-3);font-size:12.5px">No pricing set for this channel</span>`;return;}
   const rev=sp*qty;
+  const shipping=orderShippingFinancials(o,{deliveryMethod,deliveryCharge,estimatedCost,actualCost});
   const pgComm=websiteGatewayCommission(rev+deliveryCharge,o.channel||'retail',disc);
-  const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm;
+  const gross=(sp-cost)*qty+deliveryCharge,net=gross-disc-comm-pgComm-shipping.variance;
   const bulkOn=qualifiesForBulk(o.prodId,sz,qty),bulkSavings=bulkOn&&normalSp>sp?(normalSp-sp)*qty:0;
   prev.innerHTML=`
     ${bulkOn?`<div class="sr"><span class="sk">Bulk price applied</span><span class="sval">₹${sp.toFixed(0)} / pack</span></div>`:''}
@@ -4440,12 +4504,15 @@ function eoPreview(oid){
     <div class="sr"><span class="sk">Invoice total</span><span class="sval">₹${Math.max(0,rev+deliveryCharge-disc).toFixed(0)}</span></div>
     ${bulkSavings>0?`<div class="sr"><span class="sk">Bulk savings</span><span class="sval" style="color:var(--green)">₹${bulkSavings.toFixed(0)} (${((bulkSavings/(normalSp*qty))*100).toFixed(1)}%)</span></div>`:''}
     <div class="sr"><span class="sk">Gross profit</span><span class="sval">₹${gross.toFixed(0)}</span></div>
+    <div class="sr"><span class="sk">Estimated shipping in cost</span><span class="sval">₹${shipping.estimatedCost.toFixed(0)}</span></div>
+    ${shipping.hasActual?`<div class="sr"><span class="sk">Actual courier cost</span><span class="sval">₹${shipping.actualCost.toFixed(0)}</span></div>`:`<div class="sr"><span class="sk">Actual courier cost</span><span class="sval" style="color:var(--amber)">Not entered</span></div>`}
+    ${shipping.hasActual&&Math.abs(shipping.variance)>0.009?`<div class="sr"><span class="sk">Shipping variance</span><span class="sval" style="color:${shipping.variance>0?'var(--red)':'var(--green)'}">${shipping.variance>0?'-':'+'}₹${Math.abs(shipping.variance).toFixed(0)}</span></div>`:''}
     ${disc>0?`<div class="sr"><span class="sk">Discount</span><span class="sval" style="color:var(--amber)">−₹${disc.toFixed(0)}</span></div>`:''}
     ${discountReason?`<div class="sr"><span class="sk">Discount reason</span><span class="sval">${esc(discountReason)}</span></div>`:''}
     ${comm>0?`<div class="sr"><span class="sk">Manual commission</span><span class="sval" style="color:var(--amber)">−₹${comm.toFixed(0)}</span></div>`:''}
     ${pgComm>0?`<div class="sr"><span class="sk">Gateway commission (${paymentGatewayCommissionPct().toFixed(2)}%)</span><span class="sval" style="color:var(--amber)">−₹${pgComm.toFixed(0)}</span></div>`:''}
     <hr class="sdiv">
-    <div class="sr"><span class="sk">Net profit</span><span class="sval" style="color:${net>=0?'var(--green)':'var(--red)'};font-size:14px">₹${net.toFixed(0)}</span></div>`;
+    <div class="sr"><span class="sk">Net profit${shipping.provisional?' (Provisional)':''}</span><span class="sval" style="color:${net>=0?'var(--green)':'var(--red)'};font-size:14px">₹${net.toFixed(0)}</span></div>`;
 }
 
 async function submitEditOrder(oid){
@@ -4457,6 +4524,9 @@ async function submitEditOrder(oid){
   const variant=g('eo-var').value;
   const deliveryMethod=(g('eo-delivery-method')?.value||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
   const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||0)||0);
+  const estimatedCost=Math.max(0,parseFloat(g('eo-ship-estimated-cost')?.value||0)||0);
+  const actualRaw=(g('eo-ship-actual-cost')?.value||'').trim();
+  const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   const discountReason=(g('eo-discount-reason')?.value||'').trim();
   const invoicePaymentStatus=g('eo-invoice-payment')?.value||'prepaid';
   const invoiceDueDate=(g('eo-due-date')?.value||'').trim();
@@ -4477,14 +4547,17 @@ async function submitEditOrder(oid){
   }
   if(status==='shipped'){
     const o=S.orders.find(x=>x.id===oid);
-    if(o && (o.channel==='website' || o.channel==='whatsapp')){
+    if(o && o.channel==='website'){
       closeModal();
       openShippedStatusPopup(oid,'edit');
       return;
     }
   }
   try{
-    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,deliveryMethod,deliveryCharge,discountReason,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag});
+    const current=S.orders.find(x=>x.id===oid);
+    const currentShipping=normalizedOrderShipping(current||{});
+    const shipping={...currentShipping,estimatedCost,actualCost:deliveryMethod==='pickup'?0:actualCost};
+    const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,deliveryMethod,deliveryCharge,discountReason,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag,shipping});
     syncOrder(updated); closeModal();
     rOrders(); rDash(); if(activeViewId()==='subscriptions') rSubscriptions(); updBadge();
     toast('Order updated','ok');
@@ -6157,8 +6230,8 @@ async function dashQuickStatus(oid,sel){
   if(newStatus==='shipped'){
     const o=S.orders.find(x=>x.id===oid);
     if(o) sel.value=o.status;
-    if(o && !(o.channel==='website' || o.channel==='whatsapp')){
-      toast('Shipped status is for Website/WhatsApp orders','err');
+    if(o && o.channel!=='website'){
+      toast('Shipped status is for website orders','err');
       return;
     }
     openShippedStatusPopup(oid,'dashboard');
@@ -6624,18 +6697,20 @@ async function saveBulkMinQty(pid){
 }
 function buildSizePanel(p,sz,isActive){
   const tk=variantIdToken(sz);
-  const pr=(p.pricing&&p.pricing[sz])||{mrp:0,salePrices:{retail:0,website:0,whatsapp:0},expenses:[],expensesByChannel:{retail:[],website:[],whatsapp:[]},calculatorManagedChannels:[]};
+  const pr=(p.pricing&&p.pricing[sz])||{mrp:0,salePrices:{retail:0,website:0},expenses:[],expensesByChannel:{retail:[],website:[]},shippingCostsByChannel:{retail:0,website:0},calculatorManagedChannels:[]};
   const mrp=parseFloat(pr.mrp||0)||0;
   const bulkPrice=parseFloat(pr.bulkPrice||0)||0;
-  const sp=pr.salePrices||{retail:0,website:0,whatsapp:0};
+  const sp=pr.salePrices||{retail:0,website:0};
   const managedChannels=pricingCalculatorManagedChannels(pr);
   const expByChannel=pricingExpensesByChannel(pr);
+  const shipByChannel=pr&&typeof pr.shippingCostsByChannel==='object'?pr.shippingCostsByChannel:{retail:0,website:0};
   const expRows=buildExpenseMatrixRows(expByChannel);
   const reorderCycleDays=parseInt(pr.reorderCycleDays,10)>0?parseInt(pr.reorderCycleDays,10):defaultVariantCycleDays(sz);
   const exRows=expRows.map((row,i)=>buildExpRow(p.id,sz,i,row,managedChannels)).join('');
-  const tc={}; CHANNELS.forEach(c=>{ tc[c.id]=expRows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0); });
+  const tc={}; CHANNELS.forEach(c=>{ const expenseTotal=expRows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0); const shipCost=Math.max(0,parseFloat(shipByChannel[c.id]||0)||0); tc[c.id]=managedChannels.has(c.id)?expenseTotal:(expenseTotal+shipCost); });
   const ci=CHANNELS.map(c=>`<div class="fg"><label>${c.label}</label><div class="input-prefix"><span>₹</span><input type="number" id="sp-${c.id}-${p.id}-${tk}" value="${sp[c.id]||0}" min="0" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div></div>`).join('');
-  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Pricing — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:12px"><div class="fg"><label>MRP</label><div class="input-prefix"><span>₹</span><input type="number" id="mrp-${p.id}-${tk}" value="${mrp}" min="0" placeholder="0"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Original/list price for strike-through display on website.</div></div><div class="fg"><label>Bulk Price</label><div class="input-prefix"><span>₹</span><input type="number" id="bp-${p.id}-${tk}" value="${bulkPrice||''}" min="0" placeholder="Optional" oninput="calcMargin('${p.id}','${sz}')"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used when order quantity meets this product's bulk rule.</div></div><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label" style="margin-bottom:10px">Sale Prices</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Expense</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}<div></div></div><div id="expenses-matrix-${p.id}-${tk}">${exRows}</div></div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button>${managedChannels.size?`<div style="margin-top:8px;font-size:11.5px;color:var(--text-3)">Website and WhatsApp costs for this size are managed from Pricing Calculator.</div>`:''}<div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
+  const shippingInputs=CHANNELS.map(c=>managedChannels.has(c.id)?`<div><input type="hidden" id="sc-${c.id}-${p.id}-${tk}" value="${Math.max(0,parseFloat(shipByChannel[c.id]||0)||0)}"><button type="button" class="btn btn-g btn-xs" style="width:100%;min-height:42px" onclick="openPricingCalculatorFromSettings()">Managed from Pricing</button></div>`:`<div class="input-prefix"><span>₹</span><input type="number" id="sc-${c.id}-${p.id}-${tk}" value="${Math.max(0,parseFloat(shipByChannel[c.id]||0)||0)||''}" min="0" step="0.01" placeholder="0" oninput="calcMargin('${p.id}','${sz}')"></div>`).join('');
+  return`<div class="size-panel ${isActive?'active':''}" id="sp-${p.id}-${tk}"><div class="sl-label" style="margin-bottom:10px">Pricing — ${VL[sz]||sz}</div><div class="fr3" style="margin-bottom:12px"><div class="fg"><label>MRP</label><div class="input-prefix"><span>₹</span><input type="number" id="mrp-${p.id}-${tk}" value="${mrp}" min="0" placeholder="0"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Original/list price for strike-through display on website.</div></div><div class="fg"><label>Bulk Price</label><div class="input-prefix"><span>₹</span><input type="number" id="bp-${p.id}-${tk}" value="${bulkPrice||''}" min="0" placeholder="Optional" oninput="calcMargin('${p.id}','${sz}')"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used when order quantity meets this product's bulk rule.</div></div><div class="fg"><label>Reorder Alert Cycle</label><div class="input-prefix"><span>d</span><input type="number" id="rcd-${p.id}-${tk}" value="${reorderCycleDays}" min="1" placeholder="10"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Used for cycle hint and fallback reorder alerts for this variant.</div></div></div><div class="sl-label" style="margin-bottom:10px">Sale Prices</div><div class="fr3" style="margin-bottom:18px">${ci}</div><div class="sl-label">Cost / Expenses per pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Expense</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}<div></div></div><div id="expenses-matrix-${p.id}-${tk}">${exRows}</div></div><button class="btn btn-s btn-sm mt8" onclick="addExpRow('${p.id}','${sz}')">＋ Add Expense</button><div class="sl-label" style="margin:14px 0 8px">Estimated Shipping Per Pack</div><div class="expense-matrix"><div class="expense-matrix-head"><div>Preset</div>${CHANNELS.map(c=>`<div>${c.label}</div>`).join('')}</div><div class="expense-matrix-row"><input type="text" value="Estimated shipping" disabled>${shippingInputs}</div></div><div style="margin-top:8px;font-size:11.5px;color:var(--text-3)">Use this for manual-priced products. Do not add the same shipping amount again as a normal expense row.</div>${managedChannels.size?`<div style="margin-top:8px;font-size:11.5px;color:var(--text-3)">Website shipping for calculator-managed sizes comes from Pricing Calculator.</div>`:''}<div class="margin-display mt12" id="margin-display-${p.id}-${tk}">${buildMarginHTML(p.id,sz,tc,sp)}</div><div style="margin-top:14px"><button class="btn btn-p btn-sm" onclick="saveSizePricing('${p.id}','${sz}')">Save ${VL[sz]||sz} Pricing</button></div></div>`;
 }
 function buildMarginHTML(pid,sz,tcMap,sp){
   const rows=CHANNELS.map(c=>{const price=parseFloat(sp[c.id])||0,cost=parseFloat(tcMap?.[c.id])||0;if(!price)return'';const margin=price-cost,mpct=price>0?(margin/price*100):0;return`<div class="margin-row"><span class="margin-key">${c.label} (Cost ₹${cost.toFixed(0)})</span><span class="margin-val ${margin>=0?'pos':'neg'}">₹${margin.toFixed(0)} <span style="font-size:11px">(${mpct.toFixed(1)}%)</span></span></div>`;}).filter(Boolean).join('');
@@ -6650,7 +6725,7 @@ function buildExpenseMatrixRows(expByChannel){
       const key=name.toLowerCase();
       const mapKey=key||`__unnamed_${order.length}`;
       if(!map[mapKey]){
-        map[mapKey]={name,costs:{retail:0,website:0,whatsapp:0}};
+        map[mapKey]={name,costs:{retail:0,website:0}};
         order.push(mapKey);
       }
       map[mapKey].name=map[mapKey].name||name;
@@ -6658,21 +6733,22 @@ function buildExpenseMatrixRows(expByChannel){
     });
   });
   const rows=order.map(k=>map[k]).filter(Boolean);
-  return rows.length?rows:[{name:'',costs:{retail:0,website:0,whatsapp:0}}];
+  return rows.length?rows:[{name:'',costs:{retail:0,website:0}}];
 }
 function openPricingCalculatorFromSettings(){ nav('pricing-calculator'); }
 function buildManagedExpenseCell(pid,sz,idx,channel,cost){
   const tk=variantIdToken(sz);
   return`<div><input type="hidden" value="${parseFloat(cost||0)||0}" id="ec-${channel}-${pid}-${tk}-${idx}"><button type="button" class="btn btn-g btn-xs" style="width:100%;min-height:42px" onclick="openPricingCalculatorFromSettings()">Check on Pricing Calculator</button></div>`;
 }
-function buildExpRow(pid,sz,idx,row,managedChannels){ const tk=variantIdToken(sz); const r=row||{name:'',costs:{retail:0,website:0,whatsapp:0}}; const managed=managedChannels instanceof Set?managedChannels:new Set(); return`<div class="expense-matrix-row" id="er-${pid}-${tk}-${idx}"><input type="text" value="${esc(String(r.name||''))}" placeholder="Expense name" id="en-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')">${CHANNELS.map(c=>managed.has(c.id)?buildManagedExpenseCell(pid,sz,idx,c.id,r.costs?.[c.id]):`<div class="input-prefix"><span>₹</span><input type="number" value="${parseFloat(r.costs?.[c.id]||0)||''}" placeholder="0" min="0" id="ec-${c.id}-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div>`).join('')}<button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
+function buildExpRow(pid,sz,idx,row,managedChannels){ const tk=variantIdToken(sz); const r=row||{name:'',costs:{retail:0,website:0}}; const managed=managedChannels instanceof Set?managedChannels:new Set(); return`<div class="expense-matrix-row" id="er-${pid}-${tk}-${idx}"><input type="text" value="${esc(String(r.name||''))}" placeholder="Expense name" id="en-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')">${CHANNELS.map(c=>managed.has(c.id)?buildManagedExpenseCell(pid,sz,idx,c.id,r.costs?.[c.id]):`<div class="input-prefix"><span>₹</span><input type="number" value="${parseFloat(r.costs?.[c.id]||0)||''}" placeholder="0" min="0" id="ec-${c.id}-${pid}-${tk}-${idx}" oninput="calcMargin('${pid}','${sz}')"></div>`).join('')}<button class="del-btn" onclick="removeExpRow('${pid}','${sz}',${idx})">✕</button></div>`; }
 function toggleProdCard(pid){ const b=g('pcard-body-'+pid),c=g('pcard-chevron-'+pid);b.classList.toggle('collapsed');c.textContent=b.classList.contains('collapsed')?'▶':'▼'; }
 function switchSizeTab(pid,sz){ const prod=S.products.find(p=>p.id===pid);(prod.sizes||DEFAULT_SIZES).forEach(s=>{const t=g(`tab-${pid}-${variantIdToken(s)}`),p=g(`sp-${pid}-${variantIdToken(s)}`);if(t)t.classList.remove('active');if(p)p.classList.remove('active');});const t=g(`tab-${pid}-${variantIdToken(sz)}`),p=g(`sp-${pid}-${variantIdToken(sz)}`);if(t)t.classList.add('active');if(p)p.classList.add('active'); }
 function getExpMatrixRows(pid,sz){ const tk=variantIdToken(sz);const rows=[];let i=0;while(g(`er-${pid}-${tk}-${i}`)){const name=(g(`en-${pid}-${tk}-${i}`)?.value||'').trim();const costs={};CHANNELS.forEach(c=>{costs[c.id]=parseFloat((g(`ec-${c.id}-${pid}-${tk}-${i}`)?.value||0))||0;});if(name||Object.values(costs).some(v=>v>0))rows.push({name,costs});i++;}return rows; }
-function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const rows=getExpMatrixRows(pid,sz);const tcMap={};CHANNELS.forEach(c=>{tcMap[c.id]=rows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0);});const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tcMap,sp); }
-function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-matrix-${pid}-${tk}`);if(!c)return;const managedChannels=pricingCalculatorManagedChannels(getPricing(pid,sz));const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,{name:'',costs:{retail:0,website:0,whatsapp:0}},managedChannels);c.appendChild(d.firstChild);calcMargin(pid,sz); }
+function getShippingPresetCosts(pid,sz){ const tk=variantIdToken(sz); const out={retail:0,website:0}; CHANNELS.forEach(c=>{ out[c.id]=Math.max(0,parseFloat((g(`sc-${c.id}-${pid}-${tk}`)?.value||0))||0); }); return out; }
+function calcMargin(pid,sz){ const tk=variantIdToken(sz);const disp=g(`margin-display-${pid}-${tk}`);if(!disp)return;const rows=getExpMatrixRows(pid,sz);const pr=getPricing(pid,sz)||{};const managedChannels=pricingCalculatorManagedChannels(pr);const shippingCosts=getShippingPresetCosts(pid,sz);const tcMap={};CHANNELS.forEach(c=>{const expenseTotal=rows.reduce((s,row)=>s+(parseFloat(row.costs?.[c.id])||0),0);tcMap[c.id]=managedChannels.has(c.id)?expenseTotal:(expenseTotal+(parseFloat(shippingCosts[c.id])||0));});const sp={};CHANNELS.forEach(c=>{sp[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});disp.innerHTML=buildMarginHTML(pid,sz,tcMap,sp); }
+function addExpRow(pid,sz){ const tk=variantIdToken(sz);let i=0;while(g(`er-${pid}-${tk}-${i}`))i++;const c=g(`expenses-matrix-${pid}-${tk}`);if(!c)return;const managedChannels=pricingCalculatorManagedChannels(getPricing(pid,sz));const d=document.createElement('div');d.innerHTML=buildExpRow(pid,sz,i,{name:'',costs:{retail:0,website:0}},managedChannels);c.appendChild(d.firstChild);calcMargin(pid,sz); }
 function removeExpRow(pid,sz,idx){ const tk=variantIdToken(sz);const el=g(`er-${pid}-${tk}-${idx}`);if(el){el.remove();calcMargin(pid,sz);} }
-async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const currentPr=(prod.pricing&&prod.pricing[sz])||{};const managedChannels=pricingCalculatorManagedChannels(currentPr);const mrp=parseFloat((g(`mrp-${pid}-${tk}`)||{}).value||0)||0;if(mrp<0){toast('MRP cannot be negative','err');return;}const bulkPrice=parseFloat((g(`bp-${pid}-${tk}`)||{}).value||0)||0;if(bulkPrice<0){toast('Bulk price cannot be negative','err');return;}const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}const matrixRows=getExpMatrixRows(pid,sz);const expensesByChannel={retail:[],website:[],whatsapp:[]};matrixRows.forEach(row=>{const name=row.name||'';CHANNELS.forEach(c=>{const cost=parseFloat(row.costs?.[c.id]||0)||0;if(name||cost>0) expensesByChannel[c.id].push({name,cost});});});prod.pricing[sz]={mrp,bulkPrice,salePrices,expensesByChannel,expenses:expensesByChannel.retail||[],calculatorManagedChannels:Array.from(managedChannels),reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
+async function saveSizePricing(pid,sz){ const tk=variantIdToken(sz);const prod=S.products.find(p=>p.id===pid);if(!prod.pricing)prod.pricing={};const currentPr=(prod.pricing&&prod.pricing[sz])||{};const managedChannels=pricingCalculatorManagedChannels(currentPr);const mrp=parseFloat((g(`mrp-${pid}-${tk}`)||{}).value||0)||0;if(mrp<0){toast('MRP cannot be negative','err');return;}const bulkPrice=parseFloat((g(`bp-${pid}-${tk}`)||{}).value||0)||0;if(bulkPrice<0){toast('Bulk price cannot be negative','err');return;}const salePrices={};CHANNELS.forEach(c=>{salePrices[c.id]=parseFloat((g(`sp-${c.id}-${pid}-${tk}`)||{}).value||0)||0;});if(!Object.values(salePrices).some(v=>v>0)){toast('Set at least one sale price','err');return;}const reorderCycleDays=parseInt((g(`rcd-${pid}-${tk}`)||{}).value||0,10);if(!Number.isFinite(reorderCycleDays)||reorderCycleDays<=0){toast('Set a valid reorder alert cycle in days','err');return;}const matrixRows=getExpMatrixRows(pid,sz);const expensesByChannel={retail:[],website:[]};matrixRows.forEach(row=>{const name=row.name||'';CHANNELS.forEach(c=>{const cost=parseFloat(row.costs?.[c.id]||0)||0;if(name||cost>0) expensesByChannel[c.id].push({name,cost});});});const rawShippingCosts=getShippingPresetCosts(pid,sz);prod.pricing[sz]={mrp,bulkPrice,salePrices,expensesByChannel,expenses:expensesByChannel.retail||[],shippingCostsByChannel:{retail:Math.max(0,parseFloat(rawShippingCosts.retail)||0),website:Math.max(0,parseFloat(rawShippingCosts.website)||0)},calculatorManagedChannels:Array.from(managedChannels),reorderCycleDays};try{const updated=await api.put(`/api/products/${pid}`,{pricing:prod.pricing});const idx=S.products.findIndex(p=>p.id===pid);if(idx>=0)S.products[idx]=updated;toast(`Saved ${updated.name} — ${VL[sz]||sz}`,'ok');calcMargin(pid,sz);}catch(e){toast('Error: '+e.message,'err');} }
 function getCompositionRows(){
   const rows=[];
   document.querySelectorAll('#np-comp-rows .comp-row').forEach((row)=>{

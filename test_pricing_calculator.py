@@ -196,16 +196,16 @@ class PricingCalculatorTests(unittest.TestCase):
                     "sizes": ["250g", "500g", "1kg"],
                     "composition": [],
                     "pricing": {
-                        "250g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 10, "website": 11, "whatsapp": 12}},
-                        "500g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 20, "website": 21, "whatsapp": 22}},
-                        "1kg": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 30, "website": 31, "whatsapp": 32}},
+                        "250g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 10, "website": 11}},
+                        "500g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 20, "website": 21}},
+                        "1kg": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 30, "website": 31}},
                     },
                 },
                 {
                     "id": "p2",
                     "name": "Disabled Product",
                     "sizes": ["250g"],
-                    "pricing": {"250g": {"mrp": 99, "bulkPrice": 88, "salePrices": {"retail": 1, "website": 2, "whatsapp": 3}}},
+                    "pricing": {"250g": {"mrp": 99, "bulkPrice": 88, "salePrices": {"retail": 1, "website": 2}}},
                 },
             ],
         }
@@ -255,18 +255,14 @@ class PricingCalculatorTests(unittest.TestCase):
         self.assertAlmostEqual(pricing["250g"]["bulkPrice"], 219.7, places=3)
         self.assertAlmostEqual(pricing["500g"]["bulkPrice"], 439.4, places=3)
         self.assertAlmostEqual(pricing["1kg"]["bulkPrice"], 878.8, places=3)
-        self.assertEqual(pricing["250g"]["calculatorManagedChannels"], ["website", "whatsapp"])
+        self.assertEqual(pricing["250g"]["calculatorManagedChannels"], ["website"])
         self.assertEqual(pricing["250g"]["salePrices"]["retail"], 10)
         self.assertAlmostEqual(pricing["250g"]["salePrices"]["website"], 315.6, places=3)
-        self.assertAlmostEqual(pricing["250g"]["salePrices"]["whatsapp"], 315.6, places=3)
         self.assertAlmostEqual(pricing["250g"]["expensesByChannel"]["website"][0]["cost"], 197.25, places=3)
-        self.assertAlmostEqual(pricing["250g"]["expensesByChannel"]["whatsapp"][0]["cost"], 197.25, places=3)
         self.assertAlmostEqual(pricing["500g"]["expensesByChannel"]["website"][0]["cost"], 394.5, places=3)
         self.assertAlmostEqual(pricing["1kg"]["expensesByChannel"]["website"][0]["cost"], 789.0, places=3)
         self.assertAlmostEqual(pricing["500g"]["salePrices"]["website"], 577.548, places=3)
-        self.assertAlmostEqual(pricing["500g"]["salePrices"]["whatsapp"], 577.548, places=3)
         self.assertAlmostEqual(pricing["1kg"]["salePrices"]["website"], 1155.096, places=3)
-        self.assertAlmostEqual(pricing["1kg"]["salePrices"]["whatsapp"], 1155.096, places=3)
         self.assertEqual(
             data["products"][0]["composition"],
             [
@@ -284,9 +280,9 @@ class PricingCalculatorTests(unittest.TestCase):
                     "name": "Coorg Filter Coffee",
                     "sizes": ["250g", "500g", "1kg"],
                     "pricing": {
-                        "250g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 10, "website": 11, "whatsapp": 12}},
-                        "500g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 20, "website": 21, "whatsapp": 22}},
-                        "1kg": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 30, "website": 31, "whatsapp": 32}},
+                        "250g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 10, "website": 11}},
+                        "500g": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 20, "website": 21}},
+                        "1kg": {"mrp": 0, "bulkPrice": 0, "salePrices": {"retail": 30, "website": 31}},
                     },
                 },
             ],
@@ -333,16 +329,13 @@ class PricingCalculatorTests(unittest.TestCase):
         self.assertAlmostEqual(pricing["250g"]["bulkPrice"], 220.0, places=3)
         self.assertAlmostEqual(pricing["500g"]["bulkPrice"], 440.0, places=3)
         self.assertAlmostEqual(pricing["1kg"]["bulkPrice"], 880.0, places=3)
-        self.assertEqual(pricing["500g"]["calculatorManagedChannels"], ["website", "whatsapp"])
+        self.assertEqual(pricing["500g"]["calculatorManagedChannels"], ["website"])
         self.assertAlmostEqual(pricing["250g"]["salePrices"]["website"], 320.0, places=3)
-        self.assertAlmostEqual(pricing["250g"]["salePrices"]["whatsapp"], 320.0, places=3)
         self.assertAlmostEqual(pricing["250g"]["expensesByChannel"]["website"][0]["cost"], 216.25, places=3)
         self.assertAlmostEqual(pricing["500g"]["expensesByChannel"]["website"][0]["cost"], 432.5, places=3)
         self.assertAlmostEqual(pricing["1kg"]["expensesByChannel"]["website"][0]["cost"], 865.0, places=3)
         self.assertAlmostEqual(pricing["500g"]["salePrices"]["website"], 580.0, places=3)
-        self.assertAlmostEqual(pricing["500g"]["salePrices"]["whatsapp"], 580.0, places=3)
         self.assertAlmostEqual(pricing["1kg"]["salePrices"]["website"], 1160.0, places=3)
-        self.assertAlmostEqual(pricing["1kg"]["salePrices"]["whatsapp"], 1160.0, places=3)
 
 
 if __name__ == "__main__":

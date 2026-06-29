@@ -1063,6 +1063,10 @@ DEFAULT_DATA: dict = {
 PRODUCT_CATEGORY_CURRENT_ROASTS = "current-roasts"
 PRODUCT_CATEGORY_OTHER = "other"
 PRODUCT_CATEGORY_CHOICES = {PRODUCT_CATEGORY_CURRENT_ROASTS, PRODUCT_CATEGORY_OTHER}
+SALES_CHANNEL_RETAIL = "retail"
+SALES_CHANNEL_WEBSITE = "website"
+LEGACY_SALES_CHANNEL_ALIASES = {"whatsapp": SALES_CHANNEL_WEBSITE}
+SALES_CHANNELS = (SALES_CHANNEL_RETAIL, SALES_CHANNEL_WEBSITE)
 
 PRICING_CALCULATOR_DEFAULT_INPUTS: dict[str, float] = {
     "robustaCostPerKg": 560.0,
@@ -1599,19 +1603,26 @@ def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[d
             next_row["bulkPrice"] = bulk_mrp_per_kg * (grams / 1000.0)
             sale_prices = next_row.get("salePrices") if isinstance(next_row.get("salePrices"), dict) else {}
             next_row["salePrices"] = {
-                "retail": _safe_float(sale_prices.get("retail")),
-                "website": _safe_float(variant.get("mrp")),
-                "whatsapp": _safe_float(variant.get("mrp")),
+                SALES_CHANNEL_RETAIL: _safe_float(sale_prices.get(SALES_CHANNEL_RETAIL)),
+                SALES_CHANNEL_WEBSITE: _safe_float(variant.get("mrp")),
             }
             pricing_calculator_cost = _safe_float(variant.get("costPerPack"))
+            pricing_calculator_shipping = (
+                (_safe_float(profile.get("inputs", {}).get("nonBulkShippingPerKg")) + _safe_float(profile.get("inputs", {}).get("baseTransportPerKg")))
+                * (grams / 1000.0)
+            )
             existing_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
             next_row["expensesByChannel"] = {
-                "retail": copy.deepcopy(existing_by_channel.get("retail") or []),
-                "website": [{"name": "Pricing calculator cost", "cost": pricing_calculator_cost}],
-                "whatsapp": [{"name": "Pricing calculator cost", "cost": pricing_calculator_cost}],
+                SALES_CHANNEL_RETAIL: copy.deepcopy(existing_by_channel.get(SALES_CHANNEL_RETAIL) or []),
+                SALES_CHANNEL_WEBSITE: [{"name": "Pricing calculator cost", "cost": pricing_calculator_cost}],
             }
-            next_row["expenses"] = copy.deepcopy(next_row["expensesByChannel"]["retail"])
-            next_row["calculatorManagedChannels"] = ["website", "whatsapp"]
+            existing_shipping_by_channel = row.get("shippingCostsByChannel") if isinstance(row.get("shippingCostsByChannel"), dict) else {}
+            next_row["shippingCostsByChannel"] = {
+                SALES_CHANNEL_RETAIL: max(0.0, _safe_float(existing_shipping_by_channel.get(SALES_CHANNEL_RETAIL))),
+                SALES_CHANNEL_WEBSITE: max(0.0, pricing_calculator_shipping),
+            }
+            next_row["expenses"] = copy.deepcopy(next_row["expensesByChannel"][SALES_CHANNEL_RETAIL])
+            next_row["calculatorManagedChannels"] = [SALES_CHANNEL_WEBSITE]
             pricing[size] = next_row
             changed = True
         if changed:
@@ -1685,6 +1696,12 @@ def _default_variant_cycle_days(variant: Any) -> int:
     return 10
 
 
+def _normalize_sales_channel(value: Any) -> str:
+    channel = str(value or SALES_CHANNEL_RETAIL).strip().lower() or SALES_CHANNEL_RETAIL
+    channel = LEGACY_SALES_CHANNEL_ALIASES.get(channel, channel)
+    return channel if channel in SALES_CHANNELS else SALES_CHANNEL_RETAIL
+
+
 def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> dict:
     if not isinstance(pricing, dict):
         pricing = {}
@@ -1698,17 +1715,19 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
         sale_prices = row.get("salePrices") or {}
         if "salePrice" in row and "salePrices" not in row:
             old = row.get("salePrice")
-            sale_prices = {"retail": old, "website": old, "whatsapp": old}
+            sale_prices = {SALES_CHANNEL_RETAIL: old, SALES_CHANNEL_WEBSITE: old}
+        website_sale_price = _safe_float((sale_prices or {}).get(SALES_CHANNEL_WEBSITE))
+        legacy_whatsapp_sale_price = _safe_float((sale_prices or {}).get("whatsapp"))
         normalized_row = {
             "mrp": _safe_float(row.get("mrp")),
             "salePrices": {
-                "retail": _safe_float((sale_prices or {}).get("retail")),
-                "website": _safe_float((sale_prices or {}).get("website")),
-                "whatsapp": _safe_float((sale_prices or {}).get("whatsapp")),
+                SALES_CHANNEL_RETAIL: _safe_float((sale_prices or {}).get(SALES_CHANNEL_RETAIL)),
+                SALES_CHANNEL_WEBSITE: website_sale_price if website_sale_price > 0 else legacy_whatsapp_sale_price,
             },
             "bulkPrice": _safe_float(row.get("bulkPrice")),
             "expenses": [],
-            "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
+            "expensesByChannel": {SALES_CHANNEL_RETAIL: [], SALES_CHANNEL_WEBSITE: []},
+            "shippingCostsByChannel": {SALES_CHANNEL_RETAIL: 0.0, SALES_CHANNEL_WEBSITE: 0.0},
             "calculatorManagedChannels": [],
             "reorderCycleDays": _default_variant_cycle_days(key),
         }
@@ -1725,8 +1744,10 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             ]
         normalized_row["expenses"] = normalized_expenses
         expenses_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
-        for channel in ("retail", "website", "whatsapp"):
+        for channel in SALES_CHANNELS:
             channel_expenses = expenses_by_channel.get(channel)
+            if channel == SALES_CHANNEL_WEBSITE and not isinstance(channel_expenses, list):
+                channel_expenses = expenses_by_channel.get("whatsapp")
             if isinstance(channel_expenses, list):
                 normalized_channel_expenses = [
                     {
@@ -1739,13 +1760,23 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             else:
                 normalized_channel_expenses = copy.deepcopy(normalized_expenses)
             normalized_row["expensesByChannel"][channel] = normalized_channel_expenses
+        shipping_costs_by_channel = row.get("shippingCostsByChannel") if isinstance(row.get("shippingCostsByChannel"), dict) else {}
+        for channel in SALES_CHANNELS:
+            source_value = shipping_costs_by_channel.get(channel)
+            if channel == SALES_CHANNEL_WEBSITE and _safe_float(source_value) <= 0:
+                source_value = shipping_costs_by_channel.get("whatsapp")
+            normalized_row["shippingCostsByChannel"][channel] = max(
+                0.0,
+                _safe_float(source_value),
+            )
         managed_channels = row.get("calculatorManagedChannels")
         if isinstance(managed_channels, list):
             normalized_row["calculatorManagedChannels"] = [
-                channel
+                _normalize_sales_channel(channel)
                 for channel in managed_channels
-                if channel in {"retail", "website", "whatsapp"}
+                if _normalize_sales_channel(channel) in SALES_CHANNELS
             ]
+            normalized_row["calculatorManagedChannels"] = list(dict.fromkeys(normalized_row["calculatorManagedChannels"]))
         reorder_cycle_days = row.get("reorderCycleDays")
         try:
             reorder_cycle_days = int(float(reorder_cycle_days))
@@ -1758,10 +1789,11 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             size,
             {
                 "mrp": 0.0,
-                "salePrices": {"retail": 0.0, "website": 0.0, "whatsapp": 0.0},
+                "salePrices": {SALES_CHANNEL_RETAIL: 0.0, SALES_CHANNEL_WEBSITE: 0.0},
                 "bulkPrice": 0.0,
                 "expenses": [],
-                "expensesByChannel": {"retail": [], "website": [], "whatsapp": []},
+                "expensesByChannel": {SALES_CHANNEL_RETAIL: [], SALES_CHANNEL_WEBSITE: []},
+                "shippingCostsByChannel": {SALES_CHANNEL_RETAIL: 0.0, SALES_CHANNEL_WEBSITE: 0.0},
                 "calculatorManagedChannels": [],
                 "reorderCycleDays": _default_variant_cycle_days(size),
             },
@@ -2647,12 +2679,19 @@ def migrate(data: dict) -> dict:
         next_profile_id,
     )
 
+    products_by_id = {
+        str(product.get("id") or ""): product
+        for product in (data.get("products", []) or [])
+        if isinstance(product, dict) and str(product.get("id") or "")
+    }
+
     # Ensure all orders have required fields
     for o in data["orders"]:
         if "channel" not in o:
-            o["channel"] = "retail"
+            o["channel"] = SALES_CHANNEL_RETAIL
+        o["channel"] = _normalize_sales_channel(o.get("channel"))
         if "status" not in o:
-            o["status"] = "pending" if o.get("channel") in ("website", "whatsapp") else "confirmed"
+            o["status"] = "pending" if o.get("channel") == SALES_CHANNEL_WEBSITE else "confirmed"
         if "discount" not in o:
             o["discount"] = 0
         if "commission" not in o:
@@ -2671,6 +2710,7 @@ def migrate(data: dict) -> dict:
             o["inventorySyncedAt"] = None
         if "shipping" not in o or not isinstance(o.get("shipping"), dict):
             o["shipping"] = {}
+        o["shipping"] = _normalize_order_shipping(o.get("shipping"), order=o, products_by_id=products_by_id)
         if "realizedRevenue" not in o:
             o["realizedRevenue"] = None
         if "distribution" not in o or not isinstance(o.get("distribution"), dict):
@@ -3552,10 +3592,11 @@ def _normal_unit_price_for_product(product: dict, variant: str, channel: str = "
     pricing = product.get("pricing") or {}
     row = pricing.get(variant) or {}
     sale_prices = row.get("salePrices") or {}
-    val = _safe_float(sale_prices.get(str(channel or "retail")))
+    normalized_channel = _normalize_sales_channel(channel)
+    val = _safe_float(sale_prices.get(normalized_channel))
     if val > 0:
         return val
-    return _safe_float(sale_prices.get("retail"))
+    return _safe_float(sale_prices.get(SALES_CHANNEL_RETAIL))
 
 
 def _effective_unit_price_for_product(product: dict, variant: str, qty: Any, channel: str = "retail") -> float:
@@ -3874,13 +3915,108 @@ def _payment_gateway_commission_pct(data: dict) -> float:
     return pct if pct >= 0 else 3.0
 
 
+def _coerce_timestamp_ms(value: Any) -> int:
+    amount = _safe_float(value)
+    if amount <= 0:
+        return 0
+    if amount > 10_000_000_000_000:
+        amount = amount / 1000.0
+    elif amount < 10_000_000_000:
+        amount = amount * 1000.0
+    return int(amount)
+
+
+def _shipping_costs_for_order(products_by_id: dict, order: dict) -> dict[str, Any]:
+    delivery_method = str(order.get("deliveryMethod") or "delivery").strip().lower() or "delivery"
+    if delivery_method == "pickup":
+        return {"estimated": 0.0, "actual": 0.0, "hasActual": True, "variance": 0.0, "provisional": False}
+    shipping = order.get("shipping") if isinstance(order.get("shipping"), dict) else {}
+    estimated = max(0.0, _safe_float(shipping.get("estimatedCost")))
+    if estimated <= 0:
+        snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
+        estimated = max(0.0, _safe_float(snapshot.get("estimatedShippingCost")))
+    if estimated <= 0:
+        product = products_by_id.get(order.get("prodId")) or {}
+        pricing = product.get("pricing") if isinstance(product.get("pricing"), dict) else {}
+        row = pricing.get(order.get("variant")) if isinstance(pricing.get(order.get("variant")), dict) else {}
+        shipping_costs_by_channel = row.get("shippingCostsByChannel") if isinstance(row.get("shippingCostsByChannel"), dict) else {}
+        estimated = max(0.0, _safe_float(shipping_costs_by_channel.get(_normalize_sales_channel(order.get("channel")))))
+    raw_actual = shipping.get("actualCost")
+    has_actual = raw_actual is not None and str(raw_actual).strip() != ""
+    actual = max(0.0, _safe_float(raw_actual)) if has_actual else 0.0
+    variance = actual - estimated if has_actual else 0.0
+    return {
+        "estimated": round(estimated, 2),
+        "actual": round(actual, 2),
+        "hasActual": has_actual,
+        "variance": round(variance, 2),
+        "provisional": not has_actual,
+    }
+
+
+def _pricing_row_total_cost(row: dict, channel: str) -> float:
+    if not isinstance(row, dict):
+        return 0.0
+    normalized_channel = _normalize_sales_channel(channel)
+    expenses_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
+    if isinstance(expenses_by_channel.get(normalized_channel), list):
+        expenses = expenses_by_channel.get(normalized_channel) or []
+    else:
+        expenses = row.get("expenses") or []
+    expense_total = sum(_safe_float(e.get("cost")) for e in expenses if isinstance(e, dict))
+    shipping_costs_by_channel = row.get("shippingCostsByChannel") if isinstance(row.get("shippingCostsByChannel"), dict) else {}
+    shipping_total = max(0.0, _safe_float(shipping_costs_by_channel.get(normalized_channel)))
+    managed_channels = {
+        str(value or "").strip()
+        for value in (row.get("calculatorManagedChannels") or [])
+        if str(value or "").strip()
+    }
+    return expense_total if normalized_channel in managed_channels else expense_total + shipping_total
+
+
+def _normalize_order_shipping(
+    shipping: Any,
+    *,
+    order: dict | None = None,
+    products_by_id: dict | None = None,
+) -> dict:
+    row = shipping if isinstance(shipping, dict) else {}
+    order = order if isinstance(order, dict) else {}
+    products_by_id = products_by_id if isinstance(products_by_id, dict) else {}
+    normalized = {
+        "shipDate": str(row.get("shipDate") or "").strip(),
+        "awb": str(row.get("awb") or "").strip(),
+        "courier": str(row.get("courier") or "").strip(),
+        "codeType": str(row.get("codeType") or "").strip(),
+        "trackingUrl": str(row.get("trackingUrl") or "").strip(),
+        "updatedAt": _coerce_timestamp_ms(row.get("updatedAt")),
+        "estimatedCost": max(0.0, _safe_float(row.get("estimatedCost"))),
+        "actualCost": None,
+        "costCapturedAt": _coerce_timestamp_ms(row.get("costCapturedAt")),
+    }
+    raw_actual = row.get("actualCost")
+    if raw_actual is not None and str(raw_actual).strip() != "":
+        normalized["actualCost"] = max(0.0, _safe_float(raw_actual))
+    delivery_method = str(order.get("deliveryMethod") or "delivery").strip().lower() or "delivery"
+    if delivery_method == "pickup":
+        normalized["estimatedCost"] = 0.0
+        normalized["actualCost"] = 0.0
+        return normalized
+    if normalized["estimatedCost"] <= 0:
+        inferred = _shipping_costs_for_order(products_by_id, {**order, "shipping": normalized})
+        normalized["estimatedCost"] = inferred["estimated"]
+    if normalized["actualCost"] is not None and normalized["costCapturedAt"] <= 0:
+        normalized["costCapturedAt"] = int(time.time() * 1000)
+    return normalized
+
+
 def _sale_price_for_order(products_by_id: dict, order: dict) -> float:
     snapshot = order.get("billingSnapshot") if isinstance(order.get("billingSnapshot"), dict) else {}
     snap_unit = _safe_float(snapshot.get("unitPrice"))
     if snap_unit > 0:
         return snap_unit
     product = products_by_id.get(order.get("prodId")) or {}
-    channel = str(order.get("channel") or "retail")
+    channel = _normalize_sales_channel(order.get("channel"))
     return _effective_unit_price_for_product(product, order.get("variant"), order.get("qty"), channel)
 
 
@@ -3892,8 +4028,7 @@ def _total_cost_for_order(products_by_id: dict, order: dict) -> float:
     product = products_by_id.get(order.get("prodId")) or {}
     pricing = product.get("pricing") or {}
     row = pricing.get(order.get("variant")) or {}
-    expenses = row.get("expenses") or []
-    return sum(_safe_float(e.get("cost")) for e in expenses if isinstance(e, dict))
+    return _pricing_row_total_cost(row, _normalize_sales_channel(order.get("channel")))
 
 
 def _order_revenue(products_by_id: dict, order: dict) -> float:
@@ -3915,22 +4050,24 @@ def _order_profit(products_by_id: dict, order: dict, gateway_pct: float) -> floa
     qty = _safe_float(order.get("qty")) or 1.0
     revenue = _order_revenue(products_by_id, order)
     unit_cost = _total_cost_for_order(products_by_id, order)
-    gross = revenue - (unit_cost * qty)
+    shipping_costs = _shipping_costs_for_order(products_by_id, order)
+    delivery_charge = round(max(0.0, _safe_float(order.get("deliveryCharge"))), 2)
+    gross = revenue - (unit_cost * qty) + delivery_charge
     if revenue <= 0 and unit_cost <= 0:
         return None
     discount = _safe_float(order.get("discount"))
     manual_comm = _safe_float(order.get("commission"))
     gateway_comm = 0.0
-    if str(order.get("channel") or "").strip().lower() == "website":
-        gateway_base = max(0.0, revenue - discount)
+    if _normalize_sales_channel(order.get("channel")) == SALES_CHANNEL_WEBSITE:
+        gateway_base = max(0.0, revenue + delivery_charge - discount)
         gateway_comm = gateway_base * (gateway_pct / 100.0)
-    return gross - discount - manual_comm - gateway_comm
+    return gross - discount - manual_comm - gateway_comm - shipping_costs["variance"]
 
 
 def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
     qty = _safe_float(order.get("qty")) or 1.0
     product = products_by_id.get(order.get("prodId")) or {}
-    channel = str(order.get("channel") or "retail")
+    channel = _normalize_sales_channel(order.get("channel"))
     variant = order.get("variant")
     normal_unit = _normal_unit_price_for_product(product, variant, channel)
     unit_price = _effective_unit_price_for_product(product, variant, qty, channel)
@@ -3939,6 +4076,7 @@ def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
     normal_subtotal = round(normal_unit * qty, 2)
     discount = round(_safe_float(order.get("discount")), 2)
     delivery_charge = round(max(0.0, _safe_float(order.get("deliveryCharge"))), 2)
+    shipping_costs = _shipping_costs_for_order(products_by_id, order)
     payable = round(max(0.0, subtotal + delivery_charge - discount), 2)
     return {
         "qty": qty,
@@ -3950,6 +4088,10 @@ def _billing_snapshot_for_order(products_by_id: dict, order: dict) -> dict:
         "discount": discount,
         "deliveryCharge": delivery_charge,
         "deliveryMethod": str(order.get("deliveryMethod") or "delivery").strip().lower() or "delivery",
+        "estimatedShippingCost": shipping_costs["estimated"],
+        "actualShippingCost": shipping_costs["actual"] if shipping_costs["hasActual"] else None,
+        "shippingVariance": shipping_costs["variance"],
+        "shippingProfitProvisional": shipping_costs["provisional"],
         "discountReason": str(order.get("discountReason") or "").strip(),
         "payable": payable,
         "couponCode": _normalize_coupon_code(order.get("couponCode")),
@@ -6687,8 +6829,8 @@ async def add_order(request: Request):
         customer_id = 0
     if customer_id > 0:
         _ensure_customer_scope(ctx.get("user"), data, customer_id)
-    channel = body["channel"]
-    default_status = "pending" if channel in ("website", "whatsapp") else "confirmed"
+    channel = _normalize_sales_channel(body["channel"])
+    default_status = "pending" if channel == SALES_CHANNEL_WEBSITE else "confirmed"
     subscription_frequency = _normalize_subscription_value(body.get("subscriptionFrequency"), max_len=80)
     subscription_duration = _normalize_subscription_value(body.get("subscriptionDuration"), max_len=80)
     subscription_tag = _normalize_subscription_value(body.get("subscriptionTag"), max_len=140)
@@ -6733,6 +6875,12 @@ async def add_order(request: Request):
         "subscriptionDuration": subscription_duration,
         "subscriptionTag": subscription_tag,
     }
+    products_by_id = {
+        str(product.get("id") or ""): product
+        for product in (data.get("products", []) or [])
+        if isinstance(product, dict) and str(product.get("id") or "")
+    }
+    order["shipping"] = _normalize_order_shipping(order.get("shipping"), order=order, products_by_id=products_by_id)
     data["orders"].insert(0, order)
     data["oid"] += 1
     _reconcile_order_inventory(data, 0, prev_order=None, force=True)
@@ -7054,6 +7202,8 @@ async def update_order(order_id: int, request: Request):
     for key in ("status", "discount", "commission", "deliveryMethod", "deliveryCharge", "discountReason", "paymentMethod", "qty", "variant", "prodId", "prod", "channel", "at", "cid", "cname", "cphone", "carea", "shipping", "realizedRevenue", "distribution", "notes", "websiteStatusOriginal", "invoiceDueDate", "invoiceAdditionalDetails", "invoiceTerms"):
         if key in body:
             data["orders"][idx][key] = body[key]
+    if "channel" in body:
+        data["orders"][idx]["channel"] = _normalize_sales_channel(body.get("channel"))
     if "deliveryMethod" in body:
         data["orders"][idx]["deliveryMethod"] = "pickup" if str(body.get("deliveryMethod") or "").strip().lower() == "pickup" else "delivery"
     if "deliveryCharge" in body:
@@ -7076,6 +7226,16 @@ async def update_order(order_id: int, request: Request):
         data["orders"][idx]["subscriptionFrequency"] = sub_frequency
         data["orders"][idx]["subscriptionDuration"] = sub_duration
         data["orders"][idx]["subscriptionTag"] = sub_tag
+    products_by_id = {
+        str(product.get("id") or ""): product
+        for product in (data.get("products", []) or [])
+        if isinstance(product, dict) and str(product.get("id") or "")
+    }
+    data["orders"][idx]["shipping"] = _normalize_order_shipping(
+        data["orders"][idx].get("shipping"),
+        order=data["orders"][idx],
+        products_by_id=products_by_id,
+    )
     _reconcile_order_inventory(data, idx, prev_order=prev)
     write_data(data)
     return _filtered_order_response(data, ctx.get("user"), order_id)
@@ -8090,7 +8250,7 @@ async def generate_marketing_template(request: Request):
         "{{last_order_date}}": "Date of customer's last order. This is historical data, not campaign validity date.",
         "{{last_product_name}}": "Name of last product ordered.",
         "{{last_variant}}": "Variant/size of last order (example: 250g).",
-        "{{preferred_channel}}": "Most frequent purchase channel (retail/whatsapp/website).",
+        "{{preferred_channel}}": "Most frequent purchase channel (retail/website).",
     }
     token_help_lines = []
     for tok in allowed_tokens:
