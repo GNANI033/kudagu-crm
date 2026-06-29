@@ -89,13 +89,14 @@ class OrderShippingProfitTests(unittest.TestCase):
         order = {
             "prodId": "p1",
             "variant": "250g",
+            "qty": 2,
             "channel": "website",
             "deliveryMethod": "delivery",
         }
 
         shipping = _normalize_order_shipping({}, order=order, products_by_id=self.products_by_id)
 
-        self.assertEqual(shipping["estimatedCost"], 80)
+        self.assertEqual(shipping["estimatedCost"], 160)
         self.assertIsNone(shipping["actualCost"])
 
     def test_pickup_orders_zero_out_shipping_costs(self):

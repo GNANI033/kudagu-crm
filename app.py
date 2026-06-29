@@ -3930,6 +3930,7 @@ def _shipping_costs_for_order(products_by_id: dict, order: dict) -> dict[str, An
     delivery_method = str(order.get("deliveryMethod") or "delivery").strip().lower() or "delivery"
     if delivery_method == "pickup":
         return {"estimated": 0.0, "actual": 0.0, "hasActual": True, "variance": 0.0, "provisional": False}
+    qty = max(1.0, _safe_float(order.get("qty")) or 1.0)
     shipping = order.get("shipping") if isinstance(order.get("shipping"), dict) else {}
     estimated = max(0.0, _safe_float(shipping.get("estimatedCost")))
     if estimated <= 0:
@@ -3940,7 +3941,8 @@ def _shipping_costs_for_order(products_by_id: dict, order: dict) -> dict[str, An
         pricing = product.get("pricing") if isinstance(product.get("pricing"), dict) else {}
         row = pricing.get(order.get("variant")) if isinstance(pricing.get(order.get("variant")), dict) else {}
         shipping_costs_by_channel = row.get("shippingCostsByChannel") if isinstance(row.get("shippingCostsByChannel"), dict) else {}
-        estimated = max(0.0, _safe_float(shipping_costs_by_channel.get(_normalize_sales_channel(order.get("channel")))))
+        per_pack_estimate = max(0.0, _safe_float(shipping_costs_by_channel.get(_normalize_sales_channel(order.get("channel")))))
+        estimated = per_pack_estimate * qty
     raw_actual = shipping.get("actualCost")
     has_actual = raw_actual is not None and str(raw_actual).strip() != ""
     actual = max(0.0, _safe_float(raw_actual)) if has_actual else 0.0

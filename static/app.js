@@ -357,14 +357,30 @@ function getShippingEstimateForPricing(pid,sz,ch='retail'){
   const by=pr&&typeof pr==='object'&&pr.shippingCostsByChannel&&typeof pr.shippingCostsByChannel==='object'?pr.shippingCostsByChannel:{};
   return Math.max(0, parseFloat(by[ch]||0)||0);
 }
+function getOrderShippingEstimateForPricing(pid,sz,ch='retail',qty=1){
+  const perPack=getShippingEstimateForPricing(pid,sz,ch);
+  const safeQty=Math.max(1, parseFloat(qty||0)||1);
+  return perPack * safeQty;
+}
+function resolvedOrderEstimatedShipping(o, overrides={}){
+  const deliveryMethodSource = overrides.deliveryMethod ?? o?.deliveryMethod ?? 'delivery';
+  const deliveryMethod=(String(deliveryMethodSource).trim().toLowerCase()==='pickup')?'pickup':'delivery';
+  if(deliveryMethod==='pickup') return 0;
+  const qty=overrides.qty ?? o?.qty ?? 1;
+  const variant=overrides.variant ?? o?.variant;
+  const channel=overrides.channel ?? o?.channel ?? 'retail';
+  const derived=getOrderShippingEstimateForPricing(o?.prodId, variant, channel, qty);
+  if(derived>0) return derived;
+  const ship=o&&typeof o.shipping==='object'&&o.shipping?o.shipping:{};
+  const saved=Math.max(0,parseFloat(ship.estimatedCost)||0);
+  if(saved>0) return saved;
+  const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
+  return Math.max(0,parseFloat(snap?.estimatedShippingCost)||0);
+}
 function normalizedOrderShipping(o){
   const ship=o&&typeof o.shipping==='object'&&o.shipping?o.shipping:{};
   const deliveryMethod=String(o?.deliveryMethod||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
-  let estimated=Math.max(0,parseFloat(ship.estimatedCost)||0);
-  const snap=o?.billingSnapshot&&typeof o.billingSnapshot==='object'?o.billingSnapshot:null;
-  const snapEstimated=Math.max(0,parseFloat(snap?.estimatedShippingCost)||0);
-  if(!(estimated>0) && snapEstimated>0) estimated=snapEstimated;
-  if(!(estimated>0) && deliveryMethod==='delivery') estimated=getShippingEstimateForPricing(o?.prodId,o?.variant,o?.channel||'retail');
+  let estimated=resolvedOrderEstimatedShipping(o);
   const rawActual=ship.actualCost;
   const hasActual=rawActual!==null && rawActual!==undefined && String(rawActual).trim()!=='';
   const actual=deliveryMethod==='pickup'?0:(hasActual?Math.max(0,parseFloat(rawActual)||0):0);
@@ -1388,7 +1404,7 @@ function openShippedStatusPopup(oid, from='orders'){
         <div id="ship-track-note" style="font-size:11.5px;color:var(--text-3);margin-top:4px">No template configured for this courier. Set it in Settings → Shipping.</div>
       </div>
       <div class="fr">
-        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input id="ship-estimated-cost" type="number" min="0" step="0.01" value="${ship.estimatedCost||0}"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Preset shipping already included in this product's cost.</div></div>
+        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input id="ship-estimated-cost" type="number" min="0" step="0.01" value="${ship.estimatedCost||0}" disabled></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Preset shipping already included in this product's cost.</div></div>
         <div class="fg"><label>Actual Courier Cost (₹)</label><div class="input-prefix"><span>₹</span><input id="ship-actual-cost" type="number" min="0" step="0.01" value="${ship.hasActual?ship.actualCost:''}"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Leave blank if the courier bill is not known yet.</div></div>
       </div>
       <div style="font-size:11.5px;color:var(--text-3)">AWB code format is auto-picked from courier settings (QR/Barcode).</div>
@@ -1415,7 +1431,7 @@ async function submitShippedStatus(oid, from='orders'){
   const shipDate=(g('ship-date')?.value||'').trim();
   const awb=(g('ship-awb')?.value||'').trim();
   const courier=(g('ship-courier')?.value||'').trim();
-  const estimatedCost=Math.max(0,parseFloat(g('ship-estimated-cost')?.value||0)||0);
+  const estimatedCost=resolvedOrderEstimatedShipping(order);
   const actualRaw=(g('ship-actual-cost')?.value||'').trim();
   const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   if(!shipDate || !awb || !courier){ toast('Shipped date, AWB and courier are required','err'); return; }
@@ -4438,7 +4454,7 @@ function openEditOrder(oid){
         <div class="fg"><label>Delivery Charge (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-delivery-charge" value="${o.deliveryCharge||0}" min="0" step="0.01" oninput="eoPreview(${oid})"></div></div>
       </div>
       <div class="fr">
-        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-ship-estimated-cost" value="${ship.estimatedCost||0}" min="0" step="0.01" oninput="eoPreview(${oid})"></div></div>
+        <div class="fg"><label>Estimated Shipping in Product Cost (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-ship-estimated-cost" value="${ship.estimatedCost||0}" min="0" step="0.01" disabled></div></div>
         <div class="fg"><label>Actual Courier Cost (₹)</label><div class="input-prefix"><span>₹</span><input type="number" id="eo-ship-actual-cost" value="${ship.hasActual?ship.actualCost:''}" min="0" step="0.01" oninput="eoPreview(${oid})"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Leave blank to keep profit provisional for delivery.</div></div>
       </div>
       <div class="fr">
@@ -4487,7 +4503,9 @@ function eoPreview(oid){
   const comm=parseFloat(g('eo-comm')?.value||0)||0;
   const deliveryMethod=(g('eo-delivery-method')?.value||o.deliveryMethod||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
   const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||o.deliveryCharge||0)||0);
-  const estimatedCost=Math.max(0,parseFloat(g('eo-ship-estimated-cost')?.value||0)||0);
+  const estimatedCost=resolvedOrderEstimatedShipping(o,{variant:sz,qty,deliveryMethod});
+  const estimatedEl=g('eo-ship-estimated-cost');
+  if(estimatedEl) estimatedEl.value=String(estimatedCost);
   const actualRaw=(g('eo-ship-actual-cost')?.value||'').trim();
   const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   const discountReason=(g('eo-discount-reason')?.value||o.discountReason||'').trim();
@@ -4524,7 +4542,8 @@ async function submitEditOrder(oid){
   const variant=g('eo-var').value;
   const deliveryMethod=(g('eo-delivery-method')?.value||'delivery').trim().toLowerCase()==='pickup'?'pickup':'delivery';
   const deliveryCharge=Math.max(0,parseFloat(g('eo-delivery-charge')?.value||0)||0);
-  const estimatedCost=Math.max(0,parseFloat(g('eo-ship-estimated-cost')?.value||0)||0);
+  const current=S.orders.find(x=>x.id===oid);
+  const estimatedCost=resolvedOrderEstimatedShipping(current,{variant,qty,deliveryMethod});
   const actualRaw=(g('eo-ship-actual-cost')?.value||'').trim();
   const actualCost=actualRaw===''?null:Math.max(0,parseFloat(actualRaw)||0);
   const discountReason=(g('eo-discount-reason')?.value||'').trim();
@@ -4554,7 +4573,6 @@ async function submitEditOrder(oid){
     }
   }
   try{
-    const current=S.orders.find(x=>x.id===oid);
     const currentShipping=normalizedOrderShipping(current||{});
     const shipping={...currentShipping,estimatedCost,actualCost:deliveryMethod==='pickup'?0:actualCost};
     const updated=await api.put(`/api/orders/${oid}`,{status,discount,commission,paymentMethod:pm,qty,variant,at,deliveryMethod,deliveryCharge,discountReason,invoicePaymentStatus,invoiceDueDate,invoiceAdditionalDetails,invoiceTerms,subscriptionFrequency,subscriptionDuration,subscriptionTag,shipping});
