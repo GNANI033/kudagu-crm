@@ -2735,6 +2735,10 @@ def migrate(data: dict) -> dict:
             o["billedAt"] = None
         if "billingBatchId" not in o:
             o["billingBatchId"] = ""
+        if "billingTag" not in o:
+            o["billingTag"] = ""
+        if "billingRemark" not in o:
+            o["billingRemark"] = ""
         if "billingSnapshot" not in o or not isinstance(o.get("billingSnapshot"), dict):
             o["billingSnapshot"] = {}
         if "subscriptionFrequency" not in o:
@@ -6970,6 +6974,11 @@ async def export_completed_orders(request: Request):
     else:
         matching_orders = [o for o in all_orders if not _order_is_completed(o)]
 
+    if group_key == "billed":
+        billing_tag = str((body or {}).get("billingTag") or "").strip().lower()
+        if billing_tag and billing_tag != "all":
+            matching_orders = [o for o in matching_orders if str(o.get("billingTag") or "").strip().lower() == billing_tag]
+
     range_key = str((body or {}).get("range") or "last_7_days").strip().lower()
     aliases = {
         "last 7 days": "last_7_days",
@@ -7025,6 +7034,8 @@ async def export_completed_orders(request: Request):
             "Revenue",
             "Profit",
             "Status",
+            "Billing Tag",
+            "Billing Remark",
         ]
     )
     for order in rows:
@@ -7052,6 +7063,8 @@ async def export_completed_orders(request: Request):
                 round(revenue, 2),
                 "" if profit is None else round(profit, 2),
                 str(order.get("status") or "").strip(),
+                str(order.get("billingTag") or "").strip(),
+                str(order.get("billingRemark") or "").strip(),
             ]
         )
 
@@ -7079,6 +7092,8 @@ async def mark_orders_billed(request: Request):
             order_ids.add(oid)
     if not order_ids:
         raise HTTPException(status_code=400, detail="No valid order IDs provided.")
+    billing_tag = str(body.get("billingTag") or body.get("tag") or "").strip()[:80]
+    billing_remark = str(body.get("billingRemark") or body.get("remark") or "").strip()[:500]
 
     data = read_data()
     ctx = _require_signed_in(request, data)
@@ -7110,6 +7125,8 @@ async def mark_orders_billed(request: Request):
         order["billingSnapshot"] = _billing_snapshot_for_order(products_by_id, order)
         order["billedAt"] = now_ms
         order["billingBatchId"] = batch_id
+        order["billingTag"] = billing_tag
+        order["billingRemark"] = billing_remark
         updated_orders.append(order)
 
     if not updated_orders:
@@ -7166,6 +7183,8 @@ async def unmark_orders_billed(request: Request):
             continue
         order["billedAt"] = None
         order["billingBatchId"] = ""
+        order["billingTag"] = ""
+        order["billingRemark"] = ""
         order["billingSnapshot"] = {}
         updated_orders.append(order)
 

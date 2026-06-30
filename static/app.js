@@ -62,13 +62,15 @@ let S = null;
 let FULL_DATA_READY = false;
 let FULL_DATA_PROMISE = null;
 let DASH_BOOTSTRAP_METRICS = null;
+let DASH_CHANNEL_FILTER = 'all';
 let FEATURE_CONFIG = { usernamePasswordAuthEnabled:false, roleBasedAccessEnabled:false, serverAwbBarcodeDecodeEnabled:false };
 let AUTH_STATE = { enabled:false, roleModelEnabled:false, setupRequired:false, authenticated:true, user:null };
 let WEBSITE_ACTIVITY_RANGE = 'week';
 let ORDER_PAGES = { active: 1, completed: 1, billed: 1 };
 let ORDER_SELECTED = new Set();
 let BILLED_ORDER_SELECTED = new Set();
-let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '' };
+let ORDER_BILL_FILTER = { range: 'all', startDate: '', endDate: '', billedTag: 'all' };
+let BILLING_PENDING_ORDER_IDS = [];
 let SUBS_MONTH = new Date();
 let SUBS_SELECTED_DATE = dateToISO(Date.now());
 let CUSTOMER_PAGE = 1;
@@ -456,14 +458,25 @@ function mRange(off=0){ const n=new Date(),y=n.getFullYear(),m=n.getMonth()+off;
 function yRange(off=0){ const y=new Date().getFullYear()+off; return{s:new Date(y,0,1).getTime(),e:new Date(y+1,0,1).getTime()}; }
 function sumRev(os){ return os.filter(isCompleted).reduce((s,o)=>s+orderRevenue(o),0); }
 function sumProf(os){ return os.filter(isCompleted).reduce((s,o)=>{const p=orderProfit(o);return s+(p??0);},0); }
+function normalizedOrderChannel(o){
+  const channel=String(o?.channel||'retail').trim().toLowerCase();
+  return channel==='whatsapp'?'website':channel;
+}
+function orderMatchesDashChannel(o){
+  const filter=String(DASH_CHANNEL_FILTER||'all').trim().toLowerCase();
+  return filter==='all' || normalizedOrderChannel(o)===filter;
+}
+function dashFilteredOrders(){
+  return (S.orders||[]).filter(orderMatchesDashChannel);
+}
 function calcFin(){
-  if(!FULL_DATA_READY && DASH_BOOTSTRAP_METRICS){
+  if(DASH_CHANNEL_FILTER==='all' && !FULL_DATA_READY && DASH_BOOTSTRAP_METRICS){
     return DASH_BOOTSTRAP_METRICS;
   }
   const cm=mRange(0),pm=mRange(-1),cy=yRange(0),py=yRange(-1);
   const todayStart=new Date().setHours(0,0,0,0);
   let revAll=0,profAll=0,revM=0,profM=0,revPM=0,revY=0,revPY=0,activeCount=0,completedToday=0;
-  (S.orders||[]).forEach((o)=>{
+  dashFilteredOrders().forEach((o)=>{
     const completed=isCompleted(o);
     if(!completed && o.status!=='cancelled' && o.status!=='returned') activeCount+=1;
     if(!completed) return;
@@ -2995,11 +3008,18 @@ function openOrdersExportModal(){
     <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
       <div class="fg">
         <label>Order Group</label>
-        <select id="orders-export-group">
+        <select id="orders-export-group" onchange="onOrdersExportGroupChange()">
           <option value="completed">Completed orders</option>
           <option value="bulk">Bulk orders</option>
           <option value="billed">Billed for orders</option>
           <option value="open">Yet to complete orders</option>
+        </select>
+      </div>
+      <div class="fg" id="orders-export-billing-tag-row" style="display:none">
+        <label>Billed Tag</label>
+        <select id="orders-export-billing-tag">
+          <option value="all">All billed tags</option>
+          ${billingTags().map(tag=>`<option value="${esc(tag)}">${esc(tag)}</option>`).join('')}
         </select>
       </div>
       <div class="fg">
@@ -3029,6 +3049,11 @@ function openOrdersExportModal(){
     </div>
   `,'lg');
 }
+function onOrdersExportGroupChange(){
+  const group=g('orders-export-group')?.value||'completed';
+  const row=g('orders-export-billing-tag-row');
+  if(row) row.style.display=group==='billed'?'block':'none';
+}
 function onCompletedOrdersExportRangeChange(){
   const range=g('orders-export-range')?.value||'last_7_days';
   const row=g('orders-export-custom-row');
@@ -3040,6 +3065,7 @@ async function downloadOrdersExport(){
   const group=(g('orders-export-group')?.value||'completed');
   const range=(g('orders-export-range')?.value||'last_7_days');
   const payload={range,group};
+  if(group==='billed') payload.billingTag=g('orders-export-billing-tag')?.value||'all';
   if(range==='custom'){
     const startDate=(g('orders-export-start')?.value||'').trim();
     const endDate=(g('orders-export-end')?.value||'').trim();
@@ -3636,7 +3662,8 @@ async function recSale(){
 
 // ─── ORDERS ──────────────────────────────────────────────────────────────────
 function rOrders(){
-  const billed=S.orders.filter(isBilledOrder);
+  const billedAll=S.orders.filter(isBilledOrder);
+  const billed=billedAll.filter(orderMatchesBilledTagFilter);
   const unbilledInRange=S.orders.filter(o=>!isBilledOrder(o)&&orderInBillRange(o));
   const active=unbilledInRange.filter(o=>!isCompleted(o));
   const done=unbilledInRange.filter(isCompleted);
@@ -3644,7 +3671,7 @@ function rOrders(){
   const billedIds=new Set(billed.map(o=>Number(o.id)));
   ORDER_SELECTED=new Set([...ORDER_SELECTED].filter(id=>visibleIds.has(Number(id))));
   BILLED_ORDER_SELECTED=new Set([...BILLED_ORDER_SELECTED].filter(id=>billedIds.has(Number(id))));
-  g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed · '+billed.length+' billed';
+  g('os').textContent=S.orders.length+' total · '+active.length+' active · '+done.length+' completed · '+billedAll.length+' billed';
   const body=g('ob');
   if(!S.orders.length){body.innerHTML=`<div class="empty"><div class="ei">📋</div><div class="et">No orders yet</div><div class="es">Record your first sale</div></div>`;return;}
   body.innerHTML=`
@@ -3653,6 +3680,15 @@ function rOrders(){
 }
 
 function isBilledOrder(o){ return !!(o&&o.billedAt); }
+function billingTagValue(o){ return String(o?.billingTag||'').trim(); }
+function billingRemarkValue(o){ return String(o?.billingRemark||'').trim(); }
+function orderMatchesBilledTagFilter(o){
+  const tag=String(ORDER_BILL_FILTER.billedTag||'all').trim().toLowerCase();
+  return !tag || tag==='all' || billingTagValue(o).toLowerCase()===tag;
+}
+function billingTags(){
+  return Array.from(new Set((S.orders||[]).filter(isBilledOrder).map(billingTagValue).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+}
 function billRangeBounds(){
   const now=new Date();
   const end=new Date(now.getFullYear(),now.getMonth(),now.getDate()+1).getTime();
@@ -3674,6 +3710,7 @@ function orderInBillRange(o){
 function billingControlsHTML(orders){
   const selectedCount=ORDER_SELECTED.size;
   const custom=ORDER_BILL_FILTER.range==='custom';
+  const tags=billingTags();
   return `<div class="orders-toolbar">
     <div class="orders-toolbar-row">
       <div class="orders-toolbar-range">
@@ -3681,6 +3718,10 @@ function billingControlsHTML(orders){
         <select class="range-select" id="bill-range" onchange="setBillRange(this.value)" aria-label="Billing range"><option value="all" ${ORDER_BILL_FILTER.range==='all'?'selected':''}>All unbilled</option><option value="m1" ${ORDER_BILL_FILTER.range==='m1'?'selected':''}>Last 1 month</option><option value="m3" ${ORDER_BILL_FILTER.range==='m3'?'selected':''}>Last 3 months</option><option value="m6" ${ORDER_BILL_FILTER.range==='m6'?'selected':''}>Last 6 months</option><option value="y1" ${ORDER_BILL_FILTER.range==='y1'?'selected':''}>Last 1 year</option><option value="custom" ${custom?'selected':''}>Custom</option></select>
         <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-start" value="${esc(ORDER_BILL_FILTER.startDate||'')}" onchange="setBillCustomDates()" aria-label="Billing start date">
         <input class="date-input" style="display:${custom?'block':'none'}" type="date" id="bill-end" value="${esc(ORDER_BILL_FILTER.endDate||'')}" onchange="setBillCustomDates()" aria-label="Billing end date">
+      </div>
+      <div class="orders-toolbar-range">
+        <div class="orders-toolbar-title">Billed Tag</div>
+        <select class="range-select" id="billed-tag-filter" onchange="setBilledTagFilter(this.value)" aria-label="Billed tag filter"><option value="all" ${ORDER_BILL_FILTER.billedTag==='all'?'selected':''}>All billed tags</option>${tags.map(tag=>`<option value="${esc(tag)}" ${ORDER_BILL_FILTER.billedTag===tag?'selected':''}>${esc(tag)}</option>`).join('')}</select>
       </div>
       <div class="orders-toolbar-actions">
         <button class="btn btn-p" onclick="markRangeBilled()" ${orders.length?'':'disabled'}>Save Range as Billed</button>
@@ -3705,6 +3746,7 @@ function orderLegendHTML(){
 }
 function setBillRange(range){ ORDER_BILL_FILTER.range=range; ORDER_SELECTED.clear(); rOrders(); }
 function setBillCustomDates(){ ORDER_BILL_FILTER.startDate=g('bill-start')?.value||''; ORDER_BILL_FILTER.endDate=g('bill-end')?.value||''; ORDER_SELECTED.clear(); rOrders(); }
+function setBilledTagFilter(tag){ ORDER_BILL_FILTER.billedTag=tag||'all'; BILLED_ORDER_SELECTED.clear(); ORDER_PAGES.billed=1; rOrders(); }
 function toggleOrderSelection(oid,checked){ if(checked) ORDER_SELECTED.add(Number(oid)); else ORDER_SELECTED.delete(Number(oid)); rOrders(); }
 function toggleBilledOrderSelection(oid,checked){ if(checked) BILLED_ORDER_SELECTED.add(Number(oid)); else BILLED_ORDER_SELECTED.delete(Number(oid)); rOrders(); }
 function toggleVisibleOrderSelection(mode,checked){
@@ -3716,27 +3758,58 @@ function toggleVisibleOrderSelection(mode,checked){
   });
   rOrders();
 }
-async function markOrdersBilled(orderIds){
+function openMarkOrdersBilledModal(orderIds,label){
+  const ids=(orderIds||[]).map(id=>Number(id)).filter(Boolean);
+  if(!ids.length){ toast('No orders selected','err'); return; }
+  BILLING_PENDING_ORDER_IDS=ids;
+  const tags=billingTags();
+  openModal(`
+    <div class="modal-title">${esc(label||'Save Orders as Billed')}</div>
+    <div style="display:flex;flex-direction:column;gap:14px;margin-top:16px">
+      <div style="font-size:12.5px;color:var(--text-2)">Saving ${ids.length} order${ids.length!==1?'s':''} as billed/accounted for.</div>
+      <div class="fg">
+        <label>Tag</label>
+        <input id="billing-tag-input" list="billing-tag-options" maxlength="80" placeholder="Example: June wholesale batch">
+        <datalist id="billing-tag-options">${tags.map(tag=>`<option value="${esc(tag)}"></option>`).join('')}</datalist>
+      </div>
+      <div class="fg">
+        <label>Remark</label>
+        <textarea id="billing-remark-input" maxlength="500" rows="3" placeholder="Optional note for this billing batch"></textarea>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:4px">
+        <button class="btn btn-p" style="flex:1" onclick="submitMarkOrdersBilled()">Save as Billed</button>
+        <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      </div>
+    </div>
+  `,'lg');
+  setTimeout(()=>g('billing-tag-input')?.focus(),0);
+}
+function submitMarkOrdersBilled(){
+  const tag=(g('billing-tag-input')?.value||'').trim();
+  const remark=(g('billing-remark-input')?.value||'').trim();
+  markOrdersBilled(BILLING_PENDING_ORDER_IDS,{billingTag:tag,billingRemark:remark});
+}
+async function markOrdersBilled(orderIds,meta={}){
   if(!orderIds.length){ toast('No orders selected','err'); return; }
   try{
-    const res=await api.post('/api/orders/mark-billed',{orderIds});
+    const res=await api.post('/api/orders/mark-billed',{orderIds,...meta});
     (res.orders||[]).forEach(syncOrder);
     ORDER_SELECTED.clear();
+    BILLING_PENDING_ORDER_IDS=[];
+    if(modalOpen()) closeModal();
     rOrders(); rDash(); updBadge();
-    toast(`Saved ${res.updated||orderIds.length} order${(res.updated||orderIds.length)!==1?'s':''} as billed`,'ok');
+    toast(`Saved ${res.updated||orderIds.length} order${(res.updated||orderIds.length)!==1?'s':''} as billed${meta.billingTag?` · ${meta.billingTag}`:''}`,'ok');
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
 function markRangeBilled(){
   const ids=S.orders.filter(o=>!isBilledOrder(o)&&orderInBillRange(o)).map(o=>o.id);
   if(!ids.length){ toast('No unbilled orders in range','err'); return; }
-  if(!confirm(`Save ${ids.length} order${ids.length!==1?'s':''} as billed/accounted for?`)) return;
-  markOrdersBilled(ids);
+  openMarkOrdersBilledModal(ids,'Save Range as Billed');
 }
 function markSelectedBilled(){
   const ids=[...ORDER_SELECTED];
   if(!ids.length){ toast('No orders selected','err'); return; }
-  if(!confirm(`Save ${ids.length} selected order${ids.length!==1?'s':''} as billed/accounted for?`)) return;
-  markOrdersBilled(ids);
+  openMarkOrdersBilledModal(ids,'Save Selected as Billed');
 }
 async function unmarkOrdersBilled(orderIds){
   if(!orderIds.length){ toast('No billed orders selected','err'); return; }
@@ -4153,6 +4226,9 @@ function orderRow(o,selectionMode=''){
   const distName=isDist?String(o.distribution.distributorName||'').trim():'';
   const customerTitle=isDist?'Distributor Channel':o.cname;
   const customerSub=isDist?(distName?`via ${distName}`:'via Distributor'):`Ordered ${fd(o.at)}`;
+  const billingTag=billingTagValue(o);
+  const billingRemark=billingRemarkValue(o);
+  const billingMeta=isBilledOrder(o)&&(billingTag||billingRemark)?`<div style="font-size:11px;color:var(--text-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${billingTag?`Tag: ${esc(billingTag)}`:''}${billingTag&&billingRemark?' · ':''}${billingRemark?esc(billingRemark):''}</div>`:'';
   const subTagRaw=(o.subscriptionTag||o.subscription?.tag||o.notes||'').toString().trim();
   const subTag=subTagRaw?`<div style="font-size:11px;color:var(--text-3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(subTagRaw)}</div>`:'';
   const adjustmentBits=[
@@ -4178,6 +4254,7 @@ function orderRow(o,selectionMode=''){
     <td>
       <div style="font-weight:600">${esc(customerTitle)}</div>
       <div style="font-size:11.5px;color:var(--text-3)">${esc(customerSub)}</div>
+      ${billingMeta}
     </td>
     <td style="color:var(--text-2);max-width:220px">
       <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(o.prod)}</div>
@@ -4220,6 +4297,9 @@ function orderMobileCard(o,selectionMode=''){
   const subTagRaw=(o.subscriptionTag||o.subscription?.tag||o.notes||'').toString().trim();
   const subTag=subTagRaw?` · ${esc(subTagRaw)}`:'';
   const customerSub=isDist?(distName?`via ${esc(distName)}`:'via Distributor'):`Ordered ${fd(o.at)}`;
+  const billingTag=billingTagValue(o);
+  const billingRemark=billingRemarkValue(o);
+  const billingMeta=isBilledOrder(o)&&(billingTag||billingRemark)?`<div class="order-card-prod">${billingTag?`Tag: ${esc(billingTag)}`:''}${billingTag&&billingRemark?' · ':''}${billingRemark?esc(billingRemark):''}</div>`:'';
   const productMeta=`${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}${subTag}`;
   const stSel=`<select class="inline-status-sel ${STATUS_CLS[o.status||'pending']}" onchange="mobileQuickStatus(${o.id},this)">${opts.map(s=>`<option value="${s.id}" ${o.status===s.id?'selected':''}>${s.label}</option>`).join('')}</select>`;
   const revenueLine=isCompleted(o)&&rev>0?`<span class="order-fin-main">₹${rev.toFixed(0)} <span class="order-fin-sub" style="display:inline;color:var(--text-3);margin-left:4px">Invoice total</span></span>`:'';
@@ -4241,6 +4321,7 @@ function orderMobileCard(o,selectionMode=''){
       <div>
         <div class="order-card-name">${selectBox}<span class="pill pn order-id-pill">#${o.id}</span>${esc(customerTitle)}</div>
         <div class="order-card-prod">${customerSub}</div>
+        ${billingMeta}
         <div class="order-card-prod">${productMeta}</div>
         ${isDist?`<div class="order-card-prod">${esc(o.prod)} · ${VL[o.variant]||o.variant} × ${o.qty}</div>`:''}
       </div>
@@ -5564,10 +5645,11 @@ function updBadge(){
   const mb=g('bnav-badge');
   if(mb){ mb.textContent=n; mb.style.display=n>0?'flex':'none'; }
 }
-function calcInventoryUsageFromOrders(){
+function calcInventoryUsageFromOrders(channelFilter='all'){
   let moved=0;
   (S.orders||[]).forEach(o=>{
     if(o.status!=='completed') return;
+    if(channelFilter!=='all' && normalizedOrderChannel(o)!==channelFilter) return;
     const prod=(S.products||[]).find(p=>p.id===o.prodId);
     const comp=(prod&&Array.isArray(prod.composition))?prod.composition:[];
     if(!comp.length) return;
@@ -5583,12 +5665,13 @@ function calcInventoryUsageFromOrders(){
   const position=calcInventoryPosition();
   return { moved, left:position.total, inStock:position.inStock, onHold:position.onHold, connected:inventoryConnected };
 }
-function calcInventoryUsageFromOrdersForProduct(inventoryProductId){
+function calcInventoryUsageFromOrdersForProduct(inventoryProductId, channelFilter='all'){
   const targetPid=String(inventoryProductId||'').trim();
-  if(!targetPid) return calcInventoryUsageFromOrders();
+  if(!targetPid) return calcInventoryUsageFromOrders(channelFilter);
   let moved=0;
   (S.orders||[]).forEach(o=>{
     if(o.status!=='completed') return;
+    if(channelFilter!=='all' && normalizedOrderChannel(o)!==channelFilter) return;
     const prod=(S.products||[]).find(p=>p.id===o.prodId);
     const comp=(prod&&Array.isArray(prod.composition))?prod.composition:[];
     if(!comp.length) return;
@@ -5723,13 +5806,13 @@ function inventoryMovementForProduct(order, inventoryProductId){
   if(pack<=0||qty<=0) return 0;
   return pack*qty*(pct/100);
 }
-function calcInventoryAnalyticsForProduct(inventoryProductId){
+function calcInventoryAnalyticsForProduct(inventoryProductId, channelFilter='all'){
   const pid=String(inventoryProductId||'').trim();
   const item=visibleInventorySnapshot().find(p=>String(p.id||'')===pid) || null;
   const stockGrams=Number(item?.stockGrams||0)||0;
   const now=Date.now();
   const dayMs=86400000;
-  const completed=(S.orders||[]).filter(o=>String(o.status||'')==='completed');
+  const completed=(S.orders||[]).filter(o=>String(o.status||'')==='completed' && (channelFilter==='all' || normalizedOrderChannel(o)===channelFilter));
   const dayBuckets=new Map();
   let used30=0, firstAt=0;
   completed.forEach(o=>{
@@ -5795,6 +5878,26 @@ function showInventoryAnalyticsInfo(){
       <button class="btn btn-p" onclick="closeModal()">OK</button>
     </div>
   `);
+}
+function dashChannelFilterHTML(){
+  const options=[
+    ['all','Together'],
+    ['retail','Retail'],
+    ['website','Website'],
+  ];
+  return `<div class="dash-channel-filter" role="group" aria-label="Dashboard channel filter">
+    ${options.map(([value,label])=>`<button type="button" class="dash-channel-btn ${DASH_CHANNEL_FILTER===value?'active':''}" onclick="setDashChannelFilter('${value}')">${label}</button>`).join('')}
+  </div>`;
+}
+function renderDashChannelFilter(){
+  const host=g('dash-channel-filter');
+  if(host) host.innerHTML=dashChannelFilterHTML();
+}
+function setDashChannelFilter(channel){
+  const next=['all','retail','website'].includes(String(channel||'')) ? String(channel) : 'all';
+  if(DASH_CHANNEL_FILTER===next) return;
+  DASH_CHANNEL_FILTER=next;
+  rDash();
 }
 
 // ─── DASHBOARD ───────────────────────────────────────────────────────────────
@@ -6091,17 +6194,18 @@ function websiteCartDeviceText(metrics,bucket){
 function rDash(){
   const visibleInventory=visibleInventorySnapshot();
   g('dd').textContent=new Date().toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  renderDashChannelFilter();
+  const dashChannel=String(DASH_CHANNEL_FILTER||'all').trim().toLowerCase();
   const f=calcFin();
-  const inv=calcInventoryUsageFromOrders();
   if(!DASH_INV_ANALYTICS_PID) loadDashInventoryPid();
   loadDashInventoryMovedPid();
   const selectedPid=defaultDashInventoryPid();
   const selectedMovedPid=defaultDashInventoryMovedPid();
   if(selectedPid && selectedPid!==DASH_INV_ANALYTICS_PID) saveDashInventoryPid(selectedPid);
   if(selectedMovedPid!==DASH_INV_MOVED_PID) saveDashInventoryMovedPid(selectedMovedPid);
-  const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid);
+  const invAnalytics=calcInventoryAnalyticsForProduct(selectedPid,dashChannel);
   const invOpts=visibleInventory.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedPid)?'selected':''}>${esc(p.name||p.id)}</option>`).join('');
-  const invMoved=calcInventoryUsageFromOrdersForProduct(selectedMovedPid);
+  const invMoved=calcInventoryUsageFromOrdersForProduct(selectedMovedPid,dashChannel);
   const invMovedOpts=[
     `<option value="" ${!selectedMovedPid?'selected':''}>Total</option>`,
     ...visibleInventory.map(p=>`<option value="${esc(p.id)}" ${String(p.id)===String(selectedMovedPid)?'selected':''}>${esc(p.name||p.id)}</option>`)
@@ -6116,12 +6220,13 @@ function rDash(){
       ? 'Runout: now'
       : `Runout ~${invAnalytics.daysLeft}d · ${invAnalytics.runoutDate.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})}`;
   const confidencePill=`<span class="pill ${invAnalytics.confidenceClass}" style="display:inline-flex;align-items:center;gap:4px;font-size:9px;font-weight:600;padding:0 6px;height:20px;line-height:1;white-space:nowrap;margin-right:8px">${invAnalytics.confidenceLabel}<button class="btn btn-g btn-xs" type="button" onclick="showInventoryAnalyticsInfo()" title="How this works" style="min-width:12px;height:12px;padding:0 3px;border-radius:999px;line-height:1;font-size:9px">i</button></span>`;
-  const hasBoot=!FULL_DATA_READY && !!DASH_BOOTSTRAP_METRICS;
-  const hasData=hasBoot ? ((Number(f.revAll)||0)>0 || (Number(f.revM)||0)>0) : S.orders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
-  const completedOrders=S.orders.filter(isCompleted);
+  const hasBoot=!FULL_DATA_READY && !!DASH_BOOTSTRAP_METRICS && dashChannel==='all';
+  const filteredOrders=dashFilteredOrders();
+  const hasData=hasBoot ? ((Number(f.revAll)||0)>0 || (Number(f.revM)||0)>0) : filteredOrders.some(o=>isCompleted(o)&&orderRevenue(o)>0);
+  const completedOrders=filteredOrders.filter(isCompleted);
   const completedCount=hasBoot ? (Number(f.completedOrders)||0) : completedOrders.length;
   const totalCustomers=hasBoot ? (Number(f.totalCustomers)||0) : S.customers.length;
-  const totalOrders=hasBoot ? (Number(f.totalOrders)||0) : S.orders.length;
+  const totalOrders=hasBoot ? (Number(f.totalOrders)||0) : filteredOrders.length;
   const ordersPerCustomer=hasBoot ? (Number(f.ordersPerCustomer)||0) : (totalCustomers>0?(totalOrders/totalCustomers):0);
   const websiteUsersTotal=Number(f.websiteUsersTotal)||0;
   const websiteUsersActive=Number(f.websiteUsersActive)||0;
@@ -6132,7 +6237,7 @@ function rDash(){
   const websiteCarts=websiteMetrics.carts||{};
   const checkoutLoginRequired=websiteMetrics.checkoutLoginRequired||{};
   const orderCountByCid={};
-  (S.orders||[]).forEach(o=>{
+  filteredOrders.forEach(o=>{
     if(!o||!o.cid||o.cid<=0) return;
     orderCountByCid[o.cid]=(orderCountByCid[o.cid]||0)+1;
   });
@@ -7417,7 +7522,7 @@ function rPricingCalculator(){
   const extraCostRows=(draft.extraCosts||[]).map((row,idx)=>`<tr><td><input type="text" value="${esc(row.label)}" placeholder="e.g. Wastage / misc" oninput="updatePricingCalcExtraCost(${idx},'label',this.value)"></td><td><div class="input-prefix"><span>₹</span><input type="number" min="0" step="0.01" value="${row.amount}" oninput="updatePricingCalcExtraCost(${idx},'amount',this.value)"></div></td><td><select onchange="updatePricingCalcExtraCost(${idx},'applyTo',this.value)">${PRICING_CALC_EXTRA_COST_SCOPES.map((scope)=>`<option value="${scope.id}" ${row.applyTo===scope.id?'selected':''}>${scope.label}</option>`).join('')}</select></td><td><button type="button" class="btn btn-g btn-xs" data-pc-action="remove-extra-cost" data-pc-index="${idx}">Remove</button></td></tr>`).join('');
   const productRows=draft.rows.map((row,idx)=>`<tr class="${row.enabled===false?'pc-row-disabled':''}"><td><label style="display:flex;align-items:center;gap:8px"><input type="checkbox" ${row.enabled!==false?'checked':''} onchange="togglePricingCalcRow(${idx},this.checked)"><span>${esc(row.productName||row.productNameSnapshot||row.crmProductId)}${row.missingProduct?' <span class="pill pn">Missing</span>':''}</span></label></td><td><input type="number" min="0" step="0.01" value="${row.robustaPct}" oninput="updatePricingCalcRow(${idx},'robustaPct',this.value)"></td><td><input type="number" min="0" step="0.01" value="${row.arabicaPct}" oninput="updatePricingCalcRow(${idx},'arabicaPct',this.value)"></td><td><input type="number" min="0" step="0.01" value="${row.chicoryPct}" oninput="updatePricingCalcRow(${idx},'chicoryPct',this.value)"></td><td id="pc-total-${idx}">-</td><td id="pc-raw-${idx}">-</td><td id="pc-bulk-${idx}">-</td>${draft.variants.map((variant)=>`<td id="pc-var-${idx}-${variant.id}">-</td>`).join('')}</tr>`).join('');
   const profileOptions=['<option value="0">Unsaved draft</option>',...PRICING_CALC_STATE.profiles.map((profile)=>`<option value="${profile.id}" ${draft.id===profile.id?'selected':''}>${esc(profile.name)}</option>`)].join('');
-  host.innerHTML=`<div class="ph"><div><div class="ph-title">Pricing Calculator</div><div class="ph-sub">Standalone pricing workbench. Save stores calculator profiles. Update Product Pricing publishes MRPs and bulk prices into Settings → Products.</div></div><div style="display:flex;gap:8px;flex-wrap:wrap"><button type="button" class="btn btn-s btn-sm" data-pc-action="new-profile">New</button><button type="button" class="btn btn-s btn-sm" data-pc-action="duplicate-profile">Duplicate</button><button type="button" class="btn btn-danger btn-sm" data-pc-action="delete-profile" ${draft.id?'':'disabled'}>Delete</button><button type="button" class="btn btn-s btn-sm" data-pc-action="publish-products" ${canManagePricingCalculator()?'':'disabled'}>Update Product Pricing</button><button type="button" class="btn btn-p btn-sm" data-pc-action="save-profile" ${canManagePricingCalculator()?'':'disabled'}>Save</button></div></div><div class="card" style="margin-bottom:12px"><div class="cb" style="display:flex;flex-direction:column;gap:12px"><div class="fr"><div class="fg"><label>Saved Profile</label><select onchange="loadPricingCalcProfile(this.value)">${profileOptions}</select></div><div class="fg"><label>Profile Name</label><input type="text" value="${esc(draft.name)}" oninput="updatePricingCalcName(this.value)"></div></div><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" ${draft.roundToFive?'checked':''} onchange="togglePricingCalcRoundToFive(this.checked)"><span>Round selling prices up to the next ₹5</span></label><div id="pc-errors" style="font-size:12px;color:var(--red)"></div></div></div><div class="two"><div class="card"><div class="ch"><div class="ct">Input Costs</div></div><div class="cb"><div class="fr2">${pricingCalcInventorySelect('robusta','Robusta')}${pricingCalcInventorySelect('arabica','Arabica')}${pricingCalcInventorySelect('chicory','Chicory')}${[['robustaCostPerKg','Robusta / kg'],['arabicaCostPerKg','Arabica / kg'],['chicoryCostPerKg','Chicory / kg'],['processingCostPerKg','Processing / kg'],['bulkPackagingPerKg','Bulk packaging / kg'],['nonBulkPackagingPerKg','Non-bulk packaging / kg'],['bulkShippingPerKg','Bulk shipping / kg'],['nonBulkShippingPerKg','Non-bulk shipping / kg'],['baseTransportPerKg','Base transport / kg']].map(([key,label])=>`<div class="fg"><label>${label}</label><div class="input-prefix"><span>₹</span><input type="number" min="0" step="0.01" value="${draft.inputs[key]}" oninput="updatePricingCalcInput('${key}',this.value)"></div></div>`).join('')}<div class="fg"><label>Bulk margin (markup on cost before discount)</label><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.bulkMarginPct)}" oninput="updatePricingCalcInput('bulkMarginPct',this.value,true)"></div></div><div class="fg"><label>Non-bulk margin</label><select onchange="updatePricingCalcNonBulkMarginMode(this.value)" style="margin-bottom:6px"><option value="markup" ${draft.nonBulkMarginMode==='markup'?'selected':''}>Markup Entered</option><option value="effective" ${draft.nonBulkMarginMode==='effective'?'selected':''}>Effective Margin</option></select><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.nonBulkMarginPct)}" oninput="updatePricingCalcInput('nonBulkMarginPct',this.value,true)"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">${draft.nonBulkMarginMode==='effective'?'Entered as final margin on selling price before discount. Variant discounts are applied after this margin is set.':'Entered as markup on cost before discount. Variant discounts are applied after this markup.'}</div></div></div><div style="margin-top:12px;font-size:11.5px;color:var(--text-3)" id="pc-cost-summary"></div><div style="margin-top:16px"><div class="sl-label" style="margin-bottom:8px">Extra Input Costs</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Amount / kg</th><th>Apply To</th><th></th></tr></thead><tbody>${extraCostRows||'<tr><td colspan="4" style="color:var(--text-3)">No extra costs added.</td></tr>'}</tbody></table></div><div style="margin-top:10px"><button type="button" class="btn btn-s btn-sm" data-pc-action="add-extra-cost">＋ Add Extra Cost</button></div></div></div></div><div class="card"><div class="ch"><div class="ct">Variants</div><button type="button" class="btn btn-s btn-xs" data-pc-action="add-variant">＋ Add Variant</button></div><div class="cb"><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px">The smallest size is automatically treated as the base variant.</div><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px">Discount is applied after markup. The margin shown in the results is the effective margin after discount.</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Grams</th><th>Discount</th><th></th></tr></thead><tbody>${variantRows}</tbody></table></div></div></div></div><div class="card" style="margin-top:12px"><div class="ch"><div class="ct">Product Calculator</div></div><div class="cb" style="overflow:auto"><table class="tbl"><thead><tr><th>Product</th><th>Robusta %</th><th>Arabica %</th><th>Chicory %</th><th>Total</th><th>Raw Cost / kg</th><th>Bulk MRP / kg</th>${variantHead}</tr></thead><tbody>${productRows}</tbody></table></div></div>`;
+  host.innerHTML=`<div class="ph"><div><div class="ph-title">Pricing Calculator</div><div class="ph-sub">Standalone pricing workbench. Save stores calculator profiles. Update Product Pricing publishes MRPs and bulk prices into Settings → Products.</div></div><div class="pc-top-actions"><button type="button" class="btn btn-s btn-sm" data-pc-action="new-profile">New</button><button type="button" class="btn btn-s btn-sm" data-pc-action="duplicate-profile">Duplicate</button><button type="button" class="btn btn-danger btn-sm" data-pc-action="delete-profile" ${draft.id?'':'disabled'}>Delete</button><button type="button" class="btn btn-s btn-sm" data-pc-action="publish-products" ${canManagePricingCalculator()?'':'disabled'}>Update Product Pricing</button><button type="button" class="btn btn-p btn-sm" data-pc-action="save-profile" ${canManagePricingCalculator()?'':'disabled'}>Save</button></div></div><div class="card" style="margin-bottom:12px"><div class="cb" style="display:flex;flex-direction:column;gap:12px"><div class="pc-profile-grid"><div class="fg"><label>Saved Profile</label><select onchange="loadPricingCalcProfile(this.value)">${profileOptions}</select></div><div class="fg"><label>Profile Name</label><input type="text" value="${esc(draft.name)}" oninput="updatePricingCalcName(this.value)"></div></div><label style="display:flex;align-items:center;gap:8px;font-size:13px"><input type="checkbox" ${draft.roundToFive?'checked':''} onchange="togglePricingCalcRoundToFive(this.checked)"><span>Round selling prices up to the next ₹5</span></label><div id="pc-errors" style="font-size:12px;color:var(--red)"></div></div></div><div class="pc-main-grid"><div class="card"><div class="ch"><div class="ct">Input Costs</div></div><div class="cb"><div class="fr2">${pricingCalcInventorySelect('robusta','Robusta')}${pricingCalcInventorySelect('arabica','Arabica')}${pricingCalcInventorySelect('chicory','Chicory')}${[['robustaCostPerKg','Robusta / kg'],['arabicaCostPerKg','Arabica / kg'],['chicoryCostPerKg','Chicory / kg'],['processingCostPerKg','Processing / kg'],['bulkPackagingPerKg','Bulk packaging / kg'],['nonBulkPackagingPerKg','Non-bulk packaging / kg'],['bulkShippingPerKg','Bulk shipping / kg'],['nonBulkShippingPerKg','Non-bulk shipping / kg'],['baseTransportPerKg','Base transport / kg']].map(([key,label])=>`<div class="fg"><label>${label}</label><div class="input-prefix"><span>₹</span><input type="number" min="0" step="0.01" value="${draft.inputs[key]}" oninput="updatePricingCalcInput('${key}',this.value)"></div></div>`).join('')}<div class="fg"><label>Bulk margin (markup on cost before discount)</label><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.bulkMarginPct)}" oninput="updatePricingCalcInput('bulkMarginPct',this.value,true)"></div></div><div class="fg"><label>Non-bulk margin</label><select onchange="updatePricingCalcNonBulkMarginMode(this.value)" style="margin-bottom:6px"><option value="markup" ${draft.nonBulkMarginMode==='markup'?'selected':''}>Markup Entered</option><option value="effective" ${draft.nonBulkMarginMode==='effective'?'selected':''}>Effective Margin</option></select><div class="input-prefix"><span>%</span><input type="number" min="0" step="0.01" value="${pricingCalcPercentValue(draft.inputs.nonBulkMarginPct)}" oninput="updatePricingCalcInput('nonBulkMarginPct',this.value,true)"></div><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">${draft.nonBulkMarginMode==='effective'?'Entered as final margin on selling price before discount. Variant discounts are applied after this margin is set.':'Entered as markup on cost before discount. Variant discounts are applied after this markup.'}</div></div></div><div style="margin-top:12px;font-size:11.5px;color:var(--text-3)" id="pc-cost-summary"></div><div style="margin-top:16px"><div class="sl-label" style="margin-bottom:8px">Extra Input Costs</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Amount / kg</th><th>Apply To</th><th></th></tr></thead><tbody>${extraCostRows||'<tr><td colspan="4" style="color:var(--text-3)">No extra costs added.</td></tr>'}</tbody></table></div><div style="margin-top:10px"><button type="button" class="btn btn-s btn-sm" data-pc-action="add-extra-cost">＋ Add Extra Cost</button></div></div></div></div><div class="card"><div class="ch"><div class="ct">Variants</div><button type="button" class="btn btn-s btn-xs" data-pc-action="add-variant">＋ Add Variant</button></div><div class="cb"><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px">The smallest size is automatically treated as the base variant.</div><div style="font-size:11.5px;color:var(--text-3);margin-bottom:8px">Discount is applied after markup. The margin shown in the results is the effective margin after discount.</div><div style="overflow:auto"><table class="tbl"><thead><tr><th>Label</th><th>Grams</th><th>Discount</th><th></th></tr></thead><tbody>${variantRows}</tbody></table></div></div></div></div><div class="card pc-results-card" style="margin-top:12px"><div class="ch"><div class="ct">Product Calculator</div></div><div class="cb" style="overflow:auto"><table class="tbl"><thead><tr><th>Product</th><th>Robusta %</th><th>Arabica %</th><th>Chicory %</th><th>Total</th><th>Raw Cost / kg</th><th>Bulk MRP / kg</th>${variantHead}</tr></thead><tbody>${productRows}</tbody></table></div></div>`;
   refreshPricingCalcComputed();
 }
 function refreshPricingCalcComputed(){

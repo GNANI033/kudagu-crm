@@ -616,6 +616,14 @@ html[data-theme="dracula"] .btn-p:active { background: #c3cad2; color: #111315; 
   animation: spin .8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.dash-head-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.dash-channel-filter { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: var(--r-sm); background: var(--surface-2); }
+.dash-channel-btn { border: 0; background: transparent; color: var(--text-2); border-radius: calc(var(--r-sm) - 3px); padding: 8px 12px; min-height: 32px; font-family: 'Instrument Sans', sans-serif; font-size: 12px; font-weight: 700; cursor: pointer; transition: all .15s; }
+.dash-channel-btn:hover { background: var(--surface-3); color: var(--text); }
+.dash-channel-btn.active { background: var(--accent); color: #fff; box-shadow: var(--sh-sm); }
+html[data-theme="dark"] .dash-channel-btn.active,
+html[data-theme="nord"] .dash-channel-btn.active,
+html[data-theme="dracula"] .dash-channel-btn.active { color: #111315; }
 
 /* ─── CUSTOMER SEARCH DROPDOWN ──────────────────────────────────────────── */
 .sw { position: relative; }
@@ -989,6 +997,15 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .global-wa-note { background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); padding: 12px 14px; font-size: 12px; color: var(--text-2); margin-bottom: 16px; }
 .global-wa-note code { font-family: monospace; font-size: 11px; background: var(--surface-3); padding: 1px 5px; border-radius: 3px; color: var(--text); }
 
+/* ─── PRICING CALCULATOR RESPONSIVE ───────────────────────────────────── */
+#view-pricing-calculator { min-width: 0; }
+#view-pricing-calculator .ph { gap: 12px; align-items: flex-start; flex-wrap: wrap; }
+#view-pricing-calculator .ph > div:first-child { min-width: 0; flex: 1 1 300px; }
+.pc-top-actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
+.pc-profile-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+.pc-main-grid { display: grid; grid-template-columns: minmax(0,1.15fr) minmax(340px,.85fr); gap: 14px; align-items: start; }
+.pc-results-card .cb { overflow-x: auto; }
+
 /* ─── MODAL ─────────────────────────────────────────────────────────────── */
 .modal-overlay { position: fixed; inset: 0; background: rgba(17,17,16,.5); z-index: 1000; display: none; align-items: center; justify-content: center; padding: 16px; }
 .modal-overlay.open { display: flex; }
@@ -1067,11 +1084,20 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .main { margin-left: 60px; max-width: calc(100% - 60px); padding: 24px 20px; }
   .two { grid-template-columns: 1fr; }
   .fr3 { grid-template-columns: 1fr 1fr; }
+  .pc-main-grid,
+  .pc-profile-grid { grid-template-columns: 1fr; }
+  .pc-top-actions { justify-content: flex-start; }
   .settings-layout { grid-template-columns: 1fr; }
   .mkt-filter-grid { grid-template-columns: repeat(2,minmax(170px,1fr)); }
   .sub-layout { grid-template-columns: 1fr; }
   .tbl th:nth-child(8), .tbl td:nth-child(8),
   .tbl th:nth-child(9), .tbl td:nth-child(9) { display: none; }
+}
+
+@media (min-width: 1024px) and (max-width: 1480px) {
+  .pc-main-grid { grid-template-columns: 1fr; }
+  .pc-profile-grid { grid-template-columns: 1fr; }
+  .pc-top-actions { justify-content: flex-start; }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -1229,6 +1255,9 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 
   /* Settings: single col */
   .settings-layout { grid-template-columns: 1fr; }
+  .pc-main-grid,
+  .pc-profile-grid { grid-template-columns: 1fr; }
+  .pc-top-actions { justify-content: flex-start; }
   .mkt-filter-grid { grid-template-columns: 1fr; }
   .settings-menu { display: grid; grid-template-columns: 1fr; gap: 6px; overflow: visible; padding: 8px; }
   .smenu-item { flex-shrink: 1; width: 100%; justify-content: flex-start; }
@@ -1313,7 +1342,10 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   <div class="view active" id="view-dashboard">
     <div class="ph">
       <div><div class="ph-title">Overview</div><div class="ph-sub" id="dd"></div></div>
-      <button class="btn btn-p btn-sm dash-sale-btn" onclick="nav('sales')">＋ Record Sale</button>
+      <div class="dash-head-actions">
+        <div id="dash-channel-filter"></div>
+        <button class="btn btn-p btn-sm dash-sale-btn" onclick="nav('sales')">＋ Record Sale</button>
+      </div>
     </div>
     <div class="stats-merged dash-row-top" id="sg"></div>
     <div class="stats-merged" id="sg2"></div>
@@ -2258,6 +2290,6 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 </div>
 
 <div class="toasts" id="toasts"></div>
-<script src="/static/app.js?v=20260623-activity-chart-2"></script>
+<script src="/static/app.js?v=20260630-dashboard-channel-filter"></script>
 </body>
 </html>
