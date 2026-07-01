@@ -531,6 +531,14 @@ input[type="checkbox"] {
   cursor: pointer;
   accent-color: var(--accent);
 }
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
 .checkline { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-2); }
 .checkline input { flex: 0 0 auto; }
 input:focus, select:focus, textarea:focus { border-color: var(--text); box-shadow: 0 0 0 3px rgba(17,17,16,.08); }
@@ -970,6 +978,8 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .size-tab:hover { border-color: var(--border-s); color: var(--text); }
 .size-tab.active { background: var(--accent); color: #fff; border-color: var(--accent); }
 .size-panel { display: none; } .size-panel.active { display: block; }
+.product-variant-row { display: grid; grid-template-columns: 1fr 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
+.product-variant-editor { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-top: 10px; }
 .expense-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
 .expense-matrix { border: 1px solid var(--border); border-radius: var(--r-sm); overflow-x: auto; overflow-y: hidden; }
 .expense-matrix-head,
@@ -1268,6 +1278,7 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
   .expense-matrix-head,
   .expense-matrix-row { min-width: 620px; }
   .comp-row, .pc-comp-row { grid-template-columns: 1fr 88px 40px; }
+  .product-variant-editor { grid-template-columns: 1fr; }
   .split-input-row { grid-template-columns: 1fr; }
 
   /* Modal: full-screen sheet on mobile */

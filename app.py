@@ -1074,18 +1074,16 @@ PRICING_CALCULATOR_DEFAULT_INPUTS: dict[str, float] = {
     "chicoryCostPerKg": 180.0,
     "processingCostPerKg": 100.0,
     "bulkPackagingPerKg": 27.0,
-    "nonBulkPackagingPerKg": 80.0,
     "bulkShippingPerKg": 65.0,
-    "nonBulkShippingPerKg": 110.0,
     "baseTransportPerKg": 15.0,
     "bulkMarginPct": 0.30,
     "nonBulkMarginPct": 0.60,
 }
 
 PRICING_CALCULATOR_DEFAULT_VARIANTS: list[dict[str, Any]] = [
-    {"id": "base-250g", "label": "250g", "grams": 250.0, "discountPct": 0.0, "isBase": True},
-    {"id": "var-500g", "label": "500g", "grams": 500.0, "discountPct": 0.085, "isBase": False},
-    {"id": "var-1000g", "label": "1000g", "grams": 1000.0, "discountPct": 0.085, "isBase": False},
+    {"id": "base-250g", "label": "250g", "grams": 250.0, "discountPct": 0.0, "packagingCost": 20.0, "shippingCost": 27.5, "isBase": True},
+    {"id": "var-500g", "label": "500g", "grams": 500.0, "discountPct": 0.085, "packagingCost": 40.0, "shippingCost": 55.0, "isBase": False},
+    {"id": "var-1000g", "label": "1000g", "grams": 1000.0, "discountPct": 0.085, "packagingCost": 80.0, "shippingCost": 110.0, "isBase": False},
 ]
 PRICING_CALC_COST_SCOPES = {"bulk", "nonBulk", "both"}
 PRICING_CALC_MARGIN_MODES = {"markup", "effective"}
@@ -1282,6 +1280,8 @@ def _normalize_pricing_calc_variants(
     values: Any,
     *,
     allow_missing_products: bool = True,
+    legacy_non_bulk_packaging_per_kg: float = 80.0,
+    legacy_non_bulk_shipping_per_kg: float = 110.0,
 ) -> list[dict]:
     incoming = values if isinstance(values, list) else copy.deepcopy(PRICING_CALCULATOR_DEFAULT_VARIANTS)
     rows: list[dict] = []
@@ -1295,12 +1295,20 @@ def _normalize_pricing_calc_variants(
         label = re.sub(r"\s+", " ", str(row.get("label") or "").strip())[:80] or f"Variant {idx}"
         grams = _safe_float(row.get("grams"))
         discount_pct = _safe_float(row.get("discountPct"))
+        packaging_cost = _safe_float(row.get("packagingCost"))
+        shipping_cost = _safe_float(row.get("shippingCost"))
+        if packaging_cost <= 0 and "packagingCost" not in row:
+            packaging_cost = max(0.0, legacy_non_bulk_packaging_per_kg) * (grams / 1000.0)
+        if shipping_cost <= 0 and "shippingCost" not in row:
+            shipping_cost = max(0.0, legacy_non_bulk_shipping_per_kg) * (grams / 1000.0)
         rows.append(
             {
                 "id": variant_id,
                 "label": label,
                 "grams": grams,
                 "discountPct": max(0.0, discount_pct),
+                "packagingCost": max(0.0, packaging_cost),
+                "shippingCost": max(0.0, shipping_cost),
                 "isBase": bool(row.get("isBase")),
             }
         )
@@ -1418,7 +1426,13 @@ def _normalize_pricing_calc_rows(
 
 def _pricing_calc_results(profile: dict) -> dict:
     inputs = _normalize_pricing_calc_inputs(profile.get("inputs"))
-    variants = _normalize_pricing_calc_variants(profile.get("variants"))
+    legacy_non_bulk_packaging_per_kg = _safe_float((profile.get("inputs") if isinstance(profile.get("inputs"), dict) else {}).get("nonBulkPackagingPerKg") or 80.0)
+    legacy_non_bulk_shipping_per_kg = _safe_float((profile.get("inputs") if isinstance(profile.get("inputs"), dict) else {}).get("nonBulkShippingPerKg") or 110.0)
+    variants = _normalize_pricing_calc_variants(
+        profile.get("variants"),
+        legacy_non_bulk_packaging_per_kg=legacy_non_bulk_packaging_per_kg,
+        legacy_non_bulk_shipping_per_kg=legacy_non_bulk_shipping_per_kg,
+    )
     rows = _normalize_pricing_calc_rows(profile.get("rows"), [], allow_missing_products=True)
     extra_costs = _normalize_pricing_calc_extra_costs(profile.get("extraCosts"))
     round_to_five = bool(profile.get("roundToFive", False))
@@ -1436,11 +1450,9 @@ def _pricing_calc_results(profile: dict) -> dict:
             + (row.get("arabicaPct", 0.0) / 100.0) * inputs["arabicaCostPerKg"]
             + (row.get("chicoryPct", 0.0) / 100.0) * inputs["chicoryCostPerKg"]
         )
-        non_bulk_cost_per_gram_before_margin = (
+        shared_non_bulk_cost_per_gram_before_margin = (
             raw_coffee_cost
             + inputs["processingCostPerKg"]
-            + inputs["nonBulkPackagingPerKg"]
-            + inputs["nonBulkShippingPerKg"]
             + inputs["baseTransportPerKg"]
             + non_bulk_extra_cost
         ) / 1000.0
@@ -1454,27 +1466,21 @@ def _pricing_calc_results(profile: dict) -> dict:
         bulk_mrp_per_kg = bulk_cost_per_kg_before_margin * (1.0 + bulk_margin)
         if round_to_five:
             bulk_mrp_per_kg = _pricing_calc_round_up_to_five(bulk_mrp_per_kg)
-        non_bulk_cost_per_kg_before_margin = (
-            raw_coffee_cost
-            + inputs["processingCostPerKg"]
-            + inputs["nonBulkPackagingPerKg"]
-            + inputs["nonBulkShippingPerKg"]
-            + inputs["baseTransportPerKg"]
-            + non_bulk_extra_cost
-        )
-        if non_bulk_margin_mode == "effective":
-            divisor = max(0.000001, 1.0 - min(non_bulk_margin, 0.999999))
-            non_bulk_base_per_gram = (non_bulk_cost_per_kg_before_margin / divisor) / 1000.0
-        else:
-            non_bulk_base_per_gram = non_bulk_cost_per_kg_before_margin * (1.0 + non_bulk_margin) / 1000.0
         variant_prices = []
         for variant in variants:
             grams = _safe_float(variant.get("grams"))
             discount_pct = _safe_float(variant.get("discountPct"))
-            undiscounted_mrp = grams * non_bulk_base_per_gram
-            mrp = undiscounted_mrp * (1.0 - discount_pct)
+            packaging_cost = max(0.0, _safe_float(variant.get("packagingCost")))
+            shipping_cost = max(0.0, _safe_float(variant.get("shippingCost")))
+            cost_per_pack = (grams * shared_non_bulk_cost_per_gram_before_margin) + packaging_cost + shipping_cost
+            if non_bulk_margin_mode == "effective":
+                divisor = max(0.000001, 1.0 - min(non_bulk_margin, 0.999999))
+                undiscounted_mrp = cost_per_pack / divisor
+            else:
+                undiscounted_mrp = cost_per_pack * (1.0 + non_bulk_margin)
             if round_to_five:
                 undiscounted_mrp = _pricing_calc_round_up_to_five(undiscounted_mrp)
+            mrp = undiscounted_mrp * (1.0 - discount_pct)
             if round_to_five:
                 mrp = _pricing_calc_round_up_to_five(mrp)
             variant_prices.append(
@@ -1483,10 +1489,12 @@ def _pricing_calc_results(profile: dict) -> dict:
                     "label": str(variant.get("label") or ""),
                     "grams": grams,
                     "discountPct": discount_pct,
+                    "packagingCost": packaging_cost,
+                    "shippingCost": shipping_cost,
                     "undiscountedMrp": undiscounted_mrp,
                     "mrp": mrp,
-                    "costPerPack": grams * non_bulk_cost_per_gram_before_margin,
-                    "marginRupees": mrp - (grams * non_bulk_cost_per_gram_before_margin),
+                    "costPerPack": cost_per_pack,
+                    "marginRupees": mrp - cost_per_pack,
                     "isBase": bool(variant.get("isBase")),
                 }
             )
@@ -1500,7 +1508,6 @@ def _pricing_calc_results(profile: dict) -> dict:
                 "bulkMrpPerKg": bulk_mrp_per_kg,
                 "bulkMarginRupees": bulk_mrp_per_kg - bulk_cost_per_kg_before_margin,
                 "bulkEffectiveMarginPct": ((bulk_mrp_per_kg - bulk_cost_per_kg_before_margin) / bulk_mrp_per_kg * 100.0) if bulk_mrp_per_kg > 0 else 0.0,
-                "nonBulkBasePerGram": non_bulk_base_per_gram,
                 "variants": variant_prices,
             }
         )
@@ -1524,10 +1531,7 @@ def _normalize_pricing_calc_profile(
         "ingredientSources": _normalize_pricing_calc_ingredient_sources(incoming.get("ingredientSources")),
         "roundToFive": bool(incoming.get("roundToFive", False)),
         "nonBulkMarginMode": str(incoming.get("nonBulkMarginMode") or "markup").strip(),
-        "variants": _normalize_pricing_calc_variants(
-            incoming.get("variants"),
-            allow_missing_products=allow_missing_products,
-        ),
+        "variants": [],
         "rows": _normalize_pricing_calc_rows(
             incoming.get("rows"),
             known_products,
@@ -1536,6 +1540,12 @@ def _normalize_pricing_calc_profile(
         "createdAt": int(_safe_float(incoming.get("createdAt")) or 0),
         "updatedAt": int(_safe_float(incoming.get("updatedAt")) or 0),
     }
+    normalized["variants"] = _normalize_pricing_calc_variants(
+        incoming.get("variants"),
+        allow_missing_products=allow_missing_products,
+        legacy_non_bulk_packaging_per_kg=_safe_float((incoming.get("inputs") if isinstance(incoming.get("inputs"), dict) else {}).get("nonBulkPackagingPerKg") or 80.0),
+        legacy_non_bulk_shipping_per_kg=_safe_float((incoming.get("inputs") if isinstance(incoming.get("inputs"), dict) else {}).get("nonBulkShippingPerKg") or 110.0),
+    )
     if normalized["nonBulkMarginMode"] not in PRICING_CALC_MARGIN_MODES:
         normalized["nonBulkMarginMode"] = "markup"
     return normalized
@@ -1608,8 +1618,8 @@ def _pricing_calc_publish_to_products(data: dict, profile: dict) -> tuple[list[d
             }
             pricing_calculator_cost = _safe_float(variant.get("costPerPack"))
             pricing_calculator_shipping = (
-                (_safe_float(profile.get("inputs", {}).get("nonBulkShippingPerKg")) + _safe_float(profile.get("inputs", {}).get("baseTransportPerKg")))
-                * (grams / 1000.0)
+                _safe_float(variant.get("shippingCost"))
+                + (_safe_float(profile.get("inputs", {}).get("baseTransportPerKg")) * (grams / 1000.0))
             )
             existing_by_channel = row.get("expensesByChannel") if isinstance(row.get("expensesByChannel"), dict) else {}
             next_row["expensesByChannel"] = {
@@ -1799,6 +1809,22 @@ def _normalize_product_pricing(pricing: Any, sizes: list[str] | None = None) -> 
             },
         )
     return normalized
+
+
+def _normalize_product_sizes(values: Any) -> list[str]:
+    incoming = values if isinstance(values, list) else []
+    sizes: list[str] = []
+    seen: set[str] = set()
+    for raw in incoming:
+        size = re.sub(r"\s+", " ", str(raw or "").strip())[:80]
+        if not size:
+            continue
+        key = size.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        sizes.append(size)
+    return sizes
 
 
 def _expense_creator_payload(user: dict | None) -> dict:

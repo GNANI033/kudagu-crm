@@ -97,6 +97,37 @@ class PricingCalculatorTests(unittest.TestCase):
         self.assertAlmostEqual(result["bulkMrpPerKg"], 993.2, places=3)
         self.assertAlmostEqual(result["variants"][0]["mrp"], 348.8, places=3)
 
+    def test_packaging_and_shipping_are_variant_costs(self):
+        profile = _normalize_pricing_calc_profile(
+            {
+                "name": "Variant Costs",
+                "inputs": {
+                    "robustaCostPerKg": 500,
+                    "processingCostPerKg": 100,
+                    "bulkPackagingPerKg": 0,
+                    "bulkShippingPerKg": 0,
+                    "baseTransportPerKg": 20,
+                    "bulkMarginPct": 0,
+                    "nonBulkMarginPct": 0.50,
+                },
+                "variants": [
+                    {"id": "v250", "label": "250g", "grams": 250, "packagingCost": 12, "shippingCost": 45, "discountPct": 0},
+                    {"id": "v500", "label": "500g", "grams": 500, "packagingCost": 16, "shippingCost": 60, "discountPct": 0},
+                ],
+                "rows": [{"crmProductId": "p1", "robustaPct": 100, "arabicaPct": 0, "chicoryPct": 0, "enabled": True}],
+            },
+            PRODUCTS,
+            profile_id=1,
+            allow_missing_products=False,
+        )
+
+        result = _pricing_calc_results(profile)["rows"][0]
+
+        self.assertAlmostEqual(result["variants"][0]["costPerPack"], 212.0, places=3)
+        self.assertAlmostEqual(result["variants"][0]["mrp"], 318.0, places=3)
+        self.assertAlmostEqual(result["variants"][1]["costPerPack"], 386.0, places=3)
+        self.assertAlmostEqual(result["variants"][1]["mrp"], 579.0, places=3)
+
     def test_round_to_five_rounds_prices_and_margin_upward(self):
         profile = _normalize_pricing_calc_profile(
             {
@@ -133,7 +164,7 @@ class PricingCalculatorTests(unittest.TestCase):
         self.assertAlmostEqual(result["variants"][0]["mrp"], 350.0, places=3)
         self.assertAlmostEqual(result["variants"][1]["undiscountedMrp"], 695.0, places=3)
         self.assertAlmostEqual(result["variants"][1]["mrp"], 640.0, places=3)
-        self.assertAlmostEqual(result["variants"][0]["marginRupees"], 132.5, places=3)
+        self.assertAlmostEqual(result["variants"][0]["marginRupees"], 133.75, places=3)
 
     def test_non_bulk_effective_margin_mode_uses_margin_on_selling_price(self):
         profile = _normalize_pricing_calc_profile(
@@ -204,6 +235,7 @@ class PricingCalculatorTests(unittest.TestCase):
                 {
                     "id": "p2",
                     "name": "Disabled Product",
+                    "category": "current-roasts",
                     "sizes": ["250g"],
                     "pricing": {"250g": {"mrp": 99, "bulkPrice": 88, "salePrices": {"retail": 1, "website": 2}}},
                 },
@@ -325,16 +357,16 @@ class PricingCalculatorTests(unittest.TestCase):
         pricing = data["products"][0]["pricing"]
         self.assertAlmostEqual(pricing["250g"]["mrp"], 320.0, places=3)
         self.assertAlmostEqual(pricing["500g"]["mrp"], 635.0, places=3)
-        self.assertAlmostEqual(pricing["1kg"]["mrp"], 1270.0, places=3)
+        self.assertAlmostEqual(pricing["1kg"]["mrp"], 1265.0, places=3)
         self.assertAlmostEqual(pricing["250g"]["bulkPrice"], 220.0, places=3)
         self.assertAlmostEqual(pricing["500g"]["bulkPrice"], 440.0, places=3)
         self.assertAlmostEqual(pricing["1kg"]["bulkPrice"], 880.0, places=3)
         self.assertEqual(pricing["500g"]["calculatorManagedChannels"], ["website"])
         self.assertAlmostEqual(pricing["250g"]["salePrices"]["website"], 320.0, places=3)
-        self.assertAlmostEqual(pricing["250g"]["expensesByChannel"]["website"][0]["cost"], 216.25, places=3)
-        self.assertAlmostEqual(pricing["500g"]["expensesByChannel"]["website"][0]["cost"], 432.5, places=3)
-        self.assertAlmostEqual(pricing["1kg"]["expensesByChannel"]["website"][0]["cost"], 865.0, places=3)
-        self.assertAlmostEqual(pricing["500g"]["salePrices"]["website"], 580.0, places=3)
+        self.assertAlmostEqual(pricing["250g"]["expensesByChannel"]["website"][0]["cost"], 197.25, places=3)
+        self.assertAlmostEqual(pricing["500g"]["expensesByChannel"]["website"][0]["cost"], 394.5, places=3)
+        self.assertAlmostEqual(pricing["1kg"]["expensesByChannel"]["website"][0]["cost"], 789.0, places=3)
+        self.assertAlmostEqual(pricing["500g"]["salePrices"]["website"], 585.0, places=3)
         self.assertAlmostEqual(pricing["1kg"]["salePrices"]["website"], 1160.0, places=3)
 
 
