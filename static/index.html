@@ -913,6 +913,7 @@ html[data-theme="dark"] .bnav-item.active,
 html[data-theme="dark"] .btn-p,
 html[data-theme="dark"] .vb.on,
 html[data-theme="dark"] .ch-btn.on,
+html[data-theme="dark"] .edit-prod-tab.active,
 html[data-theme="nord"] .smenu-item.active,
 html[data-theme="nord"] .smenu-plus.active,
 html[data-theme="nord"] .nb.active,
@@ -920,13 +921,15 @@ html[data-theme="nord"] .bnav-item.active,
 html[data-theme="nord"] .btn-p,
 html[data-theme="nord"] .vb.on,
 html[data-theme="nord"] .ch-btn.on,
+html[data-theme="nord"] .edit-prod-tab.active,
 html[data-theme="dracula"] .smenu-item.active,
 html[data-theme="dracula"] .smenu-plus.active,
 html[data-theme="dracula"] .nb.active,
 html[data-theme="dracula"] .bnav-item.active,
 html[data-theme="dracula"] .btn-p,
 html[data-theme="dracula"] .vb.on,
-html[data-theme="dracula"] .ch-btn.on { color: #111315; }
+html[data-theme="dracula"] .ch-btn.on,
+html[data-theme="dracula"] .edit-prod-tab.active { color: #111315; }
 .smenu-row { display: flex; align-items: center; gap: 6px; }
 .smenu-row .smenu-item { flex: 1; }
 .smenu-plus {
@@ -980,6 +983,12 @@ html[data-theme="dracula"] .ch-btn.on { color: #111315; }
 .size-panel { display: none; } .size-panel.active { display: block; }
 .product-variant-row { display: grid; grid-template-columns: 1fr 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
 .product-variant-editor { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center; margin-top: 10px; }
+.edit-prod-tabs { display: flex; gap: 4px; padding: 4px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--r-sm); }
+.edit-prod-tab { flex: 1; border: none; background: transparent; color: var(--text-2); border-radius: calc(var(--r-sm) - 3px); padding: 8px 12px; min-height: 34px; font-family: 'Instrument Sans', sans-serif; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all .15s; }
+.edit-prod-tab:hover { background: var(--surface-3); color: var(--text); }
+.edit-prod-tab.active { background: var(--accent); color: #fff; box-shadow: var(--sh-sm); }
+.edit-prod-panel { display: none; }
+.edit-prod-panel.active { display: block; }
 .expense-row { display: grid; grid-template-columns: 1fr 120px 40px; gap: 8px; align-items: center; margin-bottom: 8px; }
 .expense-matrix { border: 1px solid var(--border); border-radius: var(--r-sm); overflow-x: auto; overflow-y: hidden; }
 .expense-matrix-head,

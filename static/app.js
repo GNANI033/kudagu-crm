@@ -6835,21 +6835,122 @@ async function saveExistingProductVariants(pid){
   }catch(e){ toast('Error: '+e.message,'err'); }
 }
 function buildProdCard(p){
-  const compRows=(p.composition&&p.composition.length)?p.composition:[{inventoryProductId:'',percentage:100}];
-  const compEditorRows=buildExistingCompRows(p.id, compRows);
-  const compTotal=(p.composition||[]).reduce((s,c)=>s+(parseFloat(c.percentage)||0),0);
-  const compOk=(p.composition||[]).length>0 && Math.abs(compTotal-100)<=0.01;
   const sizes=(Array.isArray(p.sizes)&&p.sizes.length)?p.sizes:DEFAULT_SIZES;
-  const variantRows=buildExistingProductVariantRows(p.id, sizes);
   const st=sizes.map((sz,i)=>`<button class="size-tab ${i===0?'active':''}" onclick="switchSizeTab('${p.id}','${sz}')" id="tab-${p.id}-${variantIdToken(sz)}">${esc(VL[sz]||sz)}</button>`).join('');
   const sp=sizes.map((sz,i)=>buildSizePanel(p,sz,i===0)).join('');
   const comp=(p.composition||[]).map(c=>`${String(c.inventoryProductName||c.inventoryProductId||'')} ${Number(c.percentage||0).toFixed(0)}%`).join(' + ');
   const bulkMin=getBulkMinQty(p);
   const category=normalizeProductCategory(p.category||productCategoryForPricing(p));
   const categoryLabel=(PRODUCT_CATEGORY_OPTIONS.find((row)=>row.id===category)||{}).label||'Other';
-  const categoryOptions=PRODUCT_CATEGORY_OPTIONS.map((row)=>`<option value="${row.id}" ${category===row.id?'selected':''}>${row.label}</option>`).join('');
   const sub=[`Category: ${categoryLabel}`, sizes.map(s=>VL[s]||s).join(' · '), bulkMin?`Bulk from ${bulkMin} packs`:'Bulk: Not set', comp?`Mix: ${comp}`:'Mix: Not configured'].join(' · ');
-  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▶</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();renameProductPrompt('${esc(p.id)}')">Rename</button><button class="btn btn-danger btn-xs" onclick="event.stopPropagation();delProduct('${esc(p.id)}')">Delete</button></div></div><div class="prod-card-body collapsed" id="pcard-body-${esc(p.id)}"><div class="sl-label" style="margin-bottom:10px">Category</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Product Category</label><select id="prod-category-${esc(p.id)}">${categoryOptions}</select></div><button class="btn btn-p btn-sm" onclick="saveProductCategory('${esc(p.id)}')">Save Category</button></div><hr><div class="sl-label" style="margin-bottom:10px">Composition (Inventory Mapping)</div><div id="pc-comp-rows-${esc(p.id)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div><div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:8px"><button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(p.id)}')">＋ Add Ingredient</button><div id="pc-comp-hint-${esc(p.id)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div></div><div style="margin-top:10px"><button class="btn btn-p btn-sm" onclick="saveExistingComposition('${esc(p.id)}')">Save Composition</button></div><hr><div class="sl-label" style="margin-bottom:10px">Bulk Order Rule</div><div class="fr2" style="align-items:flex-end;margin-bottom:16px"><div class="fg"><label>Quantity Qualifies As Bulk</label><input type="number" id="bulk-min-${esc(p.id)}" value="${bulkMin||''}" min="0" step="1" placeholder="Optional"></div><button class="btn btn-p btn-sm" onclick="saveBulkMinQty('${esc(p.id)}')">Save Bulk Rule</button></div><hr><div class="sl-label" style="margin-bottom:10px">Variants</div><div id="prod-var-rows-${esc(p.id)}">${variantRows}</div><div class="product-variant-editor"><input id="prod-var-new-${esc(p.id)}" type="text" placeholder="e.g. 750g"><button class="btn btn-s btn-sm" onclick="addExistingProductVariantRow('${esc(p.id)}')">＋ Add Variant</button><button class="btn btn-p btn-sm" onclick="saveExistingProductVariants('${esc(p.id)}')">Save Variants</button></div><div id="prod-var-hint-${esc(p.id)}" style="font-size:11.5px;color:var(--text-3);margin-top:8px">${sizes.length} variant${sizes.length!==1?'s':''}: ${esc(sizes.join(', '))}</div><hr><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+  return`<div class="prod-card" id="pcard-${esc(p.id)}"><div class="prod-card-header" onclick="toggleProdCard('${esc(p.id)}')"><div><div class="prod-card-title">${esc(p.name)}</div><div style="font-size:11.5px;color:var(--text-3);margin-top:2px">${esc(sub)}</div></div><div style="display:flex;align-items:center;gap:8px"><span style="font-size:11px;color:var(--text-3)" id="pcard-chevron-${esc(p.id)}">▶</span><button class="btn btn-s btn-xs" onclick="event.stopPropagation();openEditProductModal('${esc(p.id)}')">Edit</button></div></div><div class="prod-card-body collapsed" id="pcard-body-${esc(p.id)}"><div class="size-tab-row">${st}</div><div id="size-panels-${esc(p.id)}">${sp}</div></div></div>`;
+}
+function openEditProductModal(pid){
+  const p=S.products.find(x=>x.id===pid); if(!p) return;
+  const sizes=(Array.isArray(p.sizes)&&p.sizes.length)?p.sizes:DEFAULT_SIZES;
+  const category=normalizeProductCategory(p.category||productCategoryForPricing(p));
+  const categoryOptions=PRODUCT_CATEGORY_OPTIONS.map((row)=>`<option value="${row.id}" ${category===row.id?'selected':''}>${row.label}</option>`).join('');
+  const compRows=(p.composition&&p.composition.length)?p.composition:[{inventoryProductId:'',percentage:100}];
+  const compEditorRows=buildExistingCompRows(pid, compRows);
+  const compTotal=(p.composition||[]).reduce((s,c)=>s+(parseFloat(c.percentage)||0),0);
+  const compOk=(p.composition||[]).length>0 && Math.abs(compTotal-100)<=0.01;
+  const variantRows=buildExistingProductVariantRows(pid, sizes);
+  const bulkMin=getBulkMinQty(p);
+  openModal(`
+    <div class="modal-title">${esc(p.name)}</div>
+    <div style="font-size:12px;color:var(--text-3);margin-top:2px">Edit product configuration</div>
+    <div class="edit-prod-tabs" style="margin-top:16px">
+      <button class="edit-prod-tab active" onclick="switchEditProdTab(event,'ep-general')">General</button>
+      <button class="edit-prod-tab" onclick="switchEditProdTab(event,'ep-composition')">Composition</button>
+      <button class="edit-prod-tab" onclick="switchEditProdTab(event,'ep-variants')">Variants</button>
+    </div>
+    <div id="ep-general" class="edit-prod-panel active" style="margin-top:16px">
+      <div class="fg" style="margin-bottom:14px"><label>Product Name</label><input id="edit-prod-name-${esc(pid)}" type="text" value="${esc(p.name||'')}"></div>
+      <div class="fg" style="margin-bottom:14px"><label>Product Category</label><select id="edit-prod-category-${esc(pid)}">${categoryOptions}</select></div>
+      <div class="fg"><label>Quantity Qualifies As Bulk</label><input type="number" id="edit-prod-bulk-${esc(pid)}" value="${bulkMin||''}" min="0" step="1" placeholder="Optional"><div style="font-size:11.5px;color:var(--text-3);margin-top:4px">Orders above this quantity use the bulk price.</div></div>
+    </div>
+    <div id="ep-composition" class="edit-prod-panel" style="margin-top:16px">
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:10px">Map inventory ingredients and their proportions. Total must equal 100%.</div>
+      <div id="pc-comp-rows-${esc(pid)}" style="display:flex;flex-direction:column;gap:8px">${compEditorRows}</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:10px">
+        <button class="btn btn-s btn-sm" onclick="addExistingCompRow('${esc(pid)}')">＋ Add Ingredient</button>
+        <div id="pc-comp-hint-${esc(pid)}" style="font-size:12px;color:${compOk?'var(--green)':'var(--amber)'}">${(p.composition||[]).length?`Total: <strong>${compTotal.toFixed(2)}%</strong> ${compOk?'✓':'(must be 100%)'}`:'Set at least one ingredient. Total must be 100%.'}</div>
+      </div>
+    </div>
+    <div id="ep-variants" class="edit-prod-panel" style="margin-top:16px">
+      <div style="font-size:12px;color:var(--text-3);margin-bottom:10px">Add or remove product sizes / variants. E.g. 100g, 250g, 500g, 1kg.</div>
+      <div id="prod-var-rows-${esc(pid)}">${variantRows}</div>
+      <div class="product-variant-editor">
+        <input id="prod-var-new-${esc(pid)}" type="text" placeholder="e.g. 750g">
+        <button class="btn btn-s btn-sm" onclick="addExistingProductVariantRow('${esc(pid)}')">＋ Add</button>
+      </div>
+      <div id="prod-var-hint-${esc(pid)}" style="font-size:11.5px;color:var(--text-3);margin-top:8px">${sizes.length} variant${sizes.length!==1?'s':''}: ${esc(sizes.join(', '))}</div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:20px">
+      <button class="btn btn-danger" onclick="delProduct('${esc(pid)}')">Delete</button>
+      <div style="flex:1"></div>
+      <button class="btn btn-s" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-p" onclick="saveEditProductModal('${esc(pid)}')">Save Changes</button>
+    </div>
+  `,'lg');
+}
+function switchEditProdTab(e,panelId){
+  const tabs=document.querySelectorAll('.edit-prod-tab');
+  const panels=document.querySelectorAll('.edit-prod-panel');
+  tabs.forEach(t=>t.classList.remove('active'));
+  panels.forEach(p=>p.classList.remove('active'));
+  e.currentTarget.classList.add('active');
+  const panel=g(panelId); if(panel) panel.classList.add('active');
+}
+async function saveEditProductModal(pid){
+  const prod=S.products.find(p=>p.id===pid); if(!prod) return;
+  const payload={};
+  let hasErrors=false;
+  // Name
+  const nameEl=g(`edit-prod-name-${pid}`);
+  if(nameEl){
+    const name=String(nameEl.value||'').trim();
+    if(!name){ toast('Product name cannot be empty','err'); return; }
+    payload.name=name;
+  }
+  // Category
+  const catEl=g(`edit-prod-category-${pid}`);
+  if(catEl) payload.category=normalizeProductCategory(catEl.value||'other');
+  // Bulk min
+  const bulkEl=g(`edit-prod-bulk-${pid}`);
+  if(bulkEl) payload.bulkMinQty=Math.max(0,parseInt(bulkEl.value||0,10)||0);
+  // Composition
+  const compRows=getExistingCompRows(pid).filter(r=>r.inventoryProductId||r.percentage>0);
+  if(compRows.length){
+    if(compRows.some(r=>!r.inventoryProductId||r.percentage<=0)){ toast('Each composition row needs product + percentage','err'); hasErrors=true; }
+    const totalPct=compRows.reduce((s,r)=>s+r.percentage,0);
+    if(Math.abs(totalPct-100)>0.01){ toast('Composition total must be exactly 100%','err'); hasErrors=true; }
+    if(!hasErrors){
+      payload.composition=compRows.map(r=>{const inv=inventorySnapshot.find(p=>p.id===r.inventoryProductId);return{inventoryProductId:r.inventoryProductId,inventoryProductName:inv?.name||r.inventoryProductId,percentage:r.percentage};});
+    }
+  }
+  // Variants (sizes)
+  const sizes=getExistingProductVariantRows(pid);
+  if(!sizes.length){ toast('Add at least one variant','err'); hasErrors=true; }
+  if(!hasErrors) payload.sizes=sizes;
+  payload.pricing=prod.pricing||{};
+  if(hasErrors) return;
+  try{
+    const updated=await api.put(`/api/products/${pid}`,payload);
+    const idx=S.products.findIndex(p=>p.id===pid); if(idx>=0) S.products[idx]=updated;
+    if(payload.name && payload.name!==prod.name){
+      (S.orders||[]).forEach((o)=>{ if(o && o.prodId===pid) o.prod=updated.name; });
+      (S.distributorBatches||[]).forEach((b)=>{ if(b && b.prodId===pid) b.prod=updated.name; });
+    }
+    syncPricingCalculatorState();
+    closeModal();
+    toast('Product updated','ok');
+    rSettings();
+    populateProdSelect();
+    if(g('view-orders')?.classList.contains('active')) rOrders();
+    if(g('view-alerts')?.classList.contains('active')) rAlerts();
+    if(g('view-distribution')?.classList.contains('active')) rDistribution();
+  }catch(e){ toast('Error: '+e.message,'err'); }
 }
 async function saveProductCategory(pid){
   const prod=S.products.find((p)=>p.id===pid); if(!prod) return;
@@ -7058,7 +7159,7 @@ async function addProduct(){
     toast(name+' added','ok');sPanel('products');rSettings();populateProdSelect();
   }catch(e){toast('Error: '+e.message,'err');}
 }
-async function delProduct(pid){ if(!confirm('Delete this product or service?'))return;try{await api.del(`/api/products/${pid}`);S.products=S.products.filter(p=>p.id!==pid);rSettings();populateProdSelect();toast('Item deleted');}catch(e){toast('Error: '+e.message,'err');} }
+async function delProduct(pid){ if(!confirm('Delete this product or service?'))return;try{await api.del(`/api/products/${pid}`);S.products=S.products.filter(p=>p.id!==pid);closeModal();rSettings();populateProdSelect();toast('Item deleted');}catch(e){toast('Error: '+e.message,'err');} }
 async function renameProductPrompt(pid){
   const prod=S.products.find(p=>p.id===pid); if(!prod) return;
   const next=prompt('Enter new product/service name', prod.name||'');
